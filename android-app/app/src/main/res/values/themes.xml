@@ -1,0 +1,7 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.Aicli" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">@color/aicli_primary</item>
+        <item name="android:navigationBarColor">@color/aicli_background</item>
+    </style>
+</resources>

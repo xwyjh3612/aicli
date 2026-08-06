@@ -1,0 +1,40 @@
+# Native desktop build and staged runtime
+/desktop/build/
+/desktop/bin/
+/target/
+
+# Android/Gradle build state
+/android-app/.gradle/
+/android-app/**/build/
+/android-app/local.properties
+
+# IDE and compiler-local files
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.VC.db
+*.opendb
+*.pdb
+*.ilk
+
+# Local diagnostics and crash output
+/desktop/tools/cdb-*.txt
+*.log
+*.dmp
+*.trace
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p12
+*.pfx
+
+# Operating-system noise
+Thumbs.db
+Desktop.ini
+.DS_Store
