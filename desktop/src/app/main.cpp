@@ -22,6 +22,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.UI.Xaml.h>
 #include <winrt/Windows.UI.Xaml.Controls.h>
+#include <winrt/Windows.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Windows.UI.Xaml.Hosting.h>
 #include <winrt/Windows.UI.Xaml.Markup.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
@@ -64,6 +65,7 @@ constexpr int ID_CTX_RENAME = 3005;
 constexpr int ID_MINIMIZE = 3010;
 constexpr int ID_CLOSE = 3011;
 constexpr wchar_t kClassName[] = L"AicliDesktopWindow";
+constexpr UINT_PTR kXamlIslandSubclassId = 0xA1C11;
 
 struct Project { std::wstring name, type, group, folder, command; };
 struct OutputMessage { std::wstring text; };
@@ -307,6 +309,15 @@ private:
     HWND owner_{}; HPCON pty_{}; HANDLE input_{},output_{},process_{}; std::thread reader_; std::atomic<bool> running_{false};
 };
 
+class XamlIslandAdapter;
+LRESULT CALLBACK XamlIslandSubclassProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam,
+    UINT_PTR subclass_id,
+    DWORD_PTR reference_data);
+
 class XamlIslandAdapter {
 public:
     bool Attach(HWND parent, RECT rc) {
@@ -318,6 +329,13 @@ public:
             auto interop=source_.as<::IDesktopWindowXamlSourceNative>();
             winrt::check_hresult(interop->AttachToWindow(parent));
             interop->get_WindowHandle(&hwnd_);
+            if (!SetWindowSubclass(
+                    hwnd_,
+                    XamlIslandSubclassProc,
+                    kXamlIslandSubclassId,
+                    reinterpret_cast<DWORD_PTR>(this))) {
+                winrt::throw_last_error();
+            }
             grid_=winrt::Windows::UI::Xaml::Controls::Grid();
             grid_.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(winrt::Windows::UI::Color{0xff,0x12,0x12,0x12}));
             try {
@@ -352,6 +370,7 @@ public:
             default_settings.StartingTitle(title);
             default_settings.InitialRows(32);
             default_settings.InitialCols(120);
+            default_settings.HistorySize(10000);
 
             // A directly activated TerminalSettings instance uses white as its
             // default foreground. Apply Windows Terminal's Campbell palette so
@@ -432,7 +451,6 @@ public:
             control_ = control_factory.CreateInstance2(control_settings, unfocused_settings, connection_);
             set_stage(L"attach TermControl");
             control_.OwningHwnd(reinterpret_cast<uint64_t>(owner));
-            control_.WindowVisibilityChanged(true);
             control_.HorizontalAlignment(winrt::Windows::UI::Xaml::HorizontalAlignment::Stretch);
             control_.VerticalAlignment(winrt::Windows::UI::Xaml::VerticalAlignment::Stretch);
             grid_.Children().Append(control_);
@@ -441,6 +459,8 @@ public:
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
             grid_.UpdateLayout();
             control_.UpdateLayout();
+            visible_ = false;
+            SetVisible(true);
             control_.Focus(winrt::Windows::UI::Xaml::FocusState::Programmatic);
             last_error_.clear();
             return true;
@@ -461,38 +481,107 @@ public:
         }
     }
     void Stop() {
+        SetVisible(false);
         try {
-            if (control_) control_.WindowVisibilityChanged(false);
             if (connection_) connection_.Close();
             if (grid_) grid_.Children().Clear();
         } catch (...) {}
         control_ = nullptr;
         connection_ = nullptr;
         official_connection_ = false;
+        visible_ = false;
         if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
     }
-    void Resize(RECT rc) {
+    void SetVisible(bool visible) {
         if (!hwnd_) return;
-        const int width = std::max(1L, rc.right - rc.left);
-        const int height = std::max(1L, rc.bottom - rc.top);
-        SetWindowPos(hwnd_, HWND_TOP, rc.left, rc.top, width, height, SWP_NOACTIVATE);
-        if (grid_) {
-            const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
-            const double scale = dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0;
-            grid_.Width(width / scale);
-            grid_.Height(height / scale);
-            if (control_) {
-                control_.Width(width / scale);
-                control_.Height(height / scale);
-                control_.UpdateLayout();
+        try {
+            if (control_ && visible_ != visible) {
+                control_.WindowVisibilityChanged(visible);
+                visible_ = visible;
             }
-            grid_.UpdateLayout();
+            ShowWindow(hwnd_, visible ? SW_SHOW : SW_HIDE);
+            if (visible) EnsureNativeScrollbar();
+        } catch (...) {
+            ShowWindow(hwnd_, visible ? SW_SHOW : SW_HIDE);
+        }
+    }
+    void Resize(RECT rc) {
+        if (!hwnd_ || !parent_ || IsIconic(parent_)) return;
+        const LONG raw_width = rc.right - rc.left;
+        const LONG raw_height = rc.bottom - rc.top;
+        if (raw_width <= 0 || raw_height <= 0) return;
+        const int width = static_cast<int>(raw_width);
+        const int height = static_cast<int>(raw_height);
+        try {
+            SetWindowPos(hwnd_, nullptr, rc.left, rc.top, width, height,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            if (grid_) {
+                const UINT dpi = GetDpiForWindow(parent_);
+                const double scale = dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0;
+                grid_.Width(width / scale);
+                grid_.Height(height / scale);
+                if (control_) {
+                    control_.Width(width / scale);
+                    control_.Height(height / scale);
+                    control_.UpdateLayout();
+                }
+                grid_.UpdateLayout();
+                EnsureNativeScrollbar();
+            }
+        } catch (...) {
+            OutputDebugStringW(L"AI CLI TermControl: ignored invalid resize during window transition\n");
         }
     }
     HWND Window() const { return hwnd_; }
     bool Active() const { return control_ != nullptr; }
+    bool HandleMouseWheel(WPARAM wparam, LPARAM lparam, bool horizontal = false) {
+        if (!control_ || !visible_ || !hwnd_) return false;
+        const auto delta = static_cast<int32_t>(GET_WHEEL_DELTA_WPARAM(wparam));
+        if (delta == 0) return false;
+        try {
+            POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            ScreenToClient(hwnd_, &point);
+            const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
+            const float scale = dpi ? static_cast<float>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0f;
+            const auto keys = GET_KEYSTATE_WPARAM(wparam);
+            control_.as<winrt::Microsoft::Terminal::Control::IMouseWheelListener>().OnMouseWheel(
+                winrt::Windows::Foundation::Point{
+                    static_cast<float>(point.x) / scale,
+                    static_cast<float>(point.y) / scale},
+                winrt::Microsoft::Terminal::Core::Point{
+                    horizontal ? delta : 0,
+                    horizontal ? 0 : delta},
+                (keys & MK_LBUTTON) != 0,
+                (keys & MK_MBUTTON) != 0,
+                (keys & MK_RBUTTON) != 0);
+            EnsureNativeScrollbar();
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    void OnIslandDestroyed(HWND window) noexcept {
+        if (hwnd_ == window) hwnd_ = nullptr;
+    }
     const std::wstring& LastError() const { return last_error_; }
 private:
+    void EnsureNativeScrollbar() {
+        if (!control_) return;
+        try {
+            const auto element = control_.as<winrt::Windows::UI::Xaml::FrameworkElement>()
+                                     .FindName(L"ScrollBar");
+            if (const auto scrollbar = element.try_as<
+                    winrt::Windows::UI::Xaml::Controls::Primitives::ScrollBar>()) {
+                scrollbar.Visibility(winrt::Windows::UI::Xaml::Visibility::Visible);
+                scrollbar.IndicatorMode(
+                    winrt::Windows::UI::Xaml::Controls::Primitives::ScrollingIndicatorMode::MouseIndicator);
+                scrollbar.IsHitTestVisible(true);
+                scrollbar.Opacity(1.0);
+            }
+        } catch (...) {
+        }
+    }
+
     winrt::com_ptr<HostXamlApplication> application_;
     winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager manager_{nullptr};
     winrt::Windows::UI::Xaml::Hosting::DesktopWindowXamlSource source_{nullptr};
@@ -500,10 +589,30 @@ private:
     winrt::Microsoft::Terminal::Control::TermControl control_{nullptr};
     winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection connection_{nullptr};
     bool official_connection_{};
+    bool visible_{};
     std::wstring last_error_;
     HWND parent_{};
     HWND hwnd_{};
 };
+
+LRESULT CALLBACK XamlIslandSubclassProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam,
+    UINT_PTR subclass_id,
+    DWORD_PTR reference_data) {
+    auto* adapter = reinterpret_cast<XamlIslandAdapter*>(reference_data);
+    if (adapter) {
+        if (message == WM_MOUSEWHEEL && adapter->HandleMouseWheel(wparam, lparam)) return 0;
+        if (message == WM_MOUSEHWHEEL && adapter->HandleMouseWheel(wparam, lparam, true)) return 0;
+        if (message == WM_NCDESTROY) {
+            adapter->OnIslandDestroyed(hwnd);
+            RemoveWindowSubclass(hwnd, XamlIslandSubclassProc, subclass_id);
+        }
+    }
+    return DefSubclassProc(hwnd, message, wparam, lparam);
+}
 
 HWND g_hwnd{}, g_list{}, g_output{}, g_input{}, g_status{}, g_codex{}, g_claude{}, g_new_project{}, g_settings{}, g_group{}, g_bind{}, g_cli_tab{}, g_ps_tab{}, g_sidebar_title{}, g_search{}, g_terminal_title{}, g_minimize{}, g_close{};
 HWND g_detail_title{}, g_detail_folder{}, g_detail_command{}, g_detail_state{}, g_start_project{}, g_edit_project{};
@@ -582,8 +691,10 @@ void RefreshProjectList(){
     RefreshProjectDetails();
 }
 void Layout(){
-    RECT r; GetClientRect(g_hwnd,&r);
+    if(!g_hwnd || IsIconic(g_hwnd))return;
+    RECT r{}; if(!GetClientRect(g_hwnd,&r))return;
     constexpr int top=52, left=286, bottom=30;
+    if(r.right<=left+80 || r.bottom<=top+bottom+120)return;
     ShowWindow(g_codex,SW_HIDE); ShowWindow(g_claude,SW_HIDE);
     MoveWindow(g_group,168,10,106,32,TRUE);
     MoveWindow(g_bind,std::max(760,(int)r.right-282),10,96,32,TRUE);
@@ -626,7 +737,10 @@ void Layout(){
         ApplyRoundedRegion(g_input,terminal.right-terminal.left,40,9);
     }
     MoveWindow(g_status,14,r.bottom-bottom+6,r.right-28,20,TRUE);
-    if(g_island.Window()){g_island.Resize(terminal);ShowWindow(g_island.Window(),showingNative?SW_SHOW:SW_HIDE);}
+    if(g_island.Window()){
+        if(showingNative)g_island.Resize(terminal);
+        g_island.SetVisible(showingNative);
+    }
 }
 void CreateProject(){ if(!ShowProjectDialog(g_hwnd))return; g_projects.push_back(g_project_draft); SendMessageW(g_list,LB_ADDSTRING,0,(LPARAM)g_project_draft.name.c_str()); SendMessageW(g_list,LB_SETCURSEL,(WPARAM)g_projects.size()-1,0); RefreshProjectDetails(); Layout(); SetText(g_status,L"项目已创建    |    选择右侧立即开始"); }
 void EditProject(){const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;const Project before=g_projects[index];if(!ShowProjectDialog(g_hwnd,&before))return;g_projects[index]=g_project_draft;RefreshProjectList();SetText(g_status,L"项目配置已更新");Layout();}
@@ -667,7 +781,10 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         g_island.Attach(h,RECT{250,60,500,400}); RefreshProjectDetails(); Layout(); return 0;}
     case WM_MEASUREITEM: if(((MEASUREITEMSTRUCT*)l)->CtlID==ID_PROJECT_LIST){((MEASUREITEMSTRUCT*)l)->itemHeight=72;return TRUE;} break;
     case WM_DRAWITEM: {auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){DrawProjectItem(item);return TRUE;}} break;
-    case WM_SIZE: Layout(); return 0;
+    case WM_SIZE: if(w==SIZE_MINIMIZED){g_island.SetVisible(false);return 0;}Layout();return 0;
+    case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;info->ptMinTrackSize.x=900;info->ptMinTrackSize.y=600;return 0;}
+    case WM_MOUSEWHEEL: if(g_island.HandleMouseWheel(w,l))return 0; break;
+    case WM_MOUSEHWHEEL: if(g_island.HandleMouseWheel(w,l,true))return 0; break;
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,ID_CTX_PAUSE,L"暂停");AppendMenuW(menu,MF_STRING,ID_CTX_CONTINUE,L"继续");AppendMenuW(menu,MF_STRING,ID_CTX_CANCEL,L"取消");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,ID_CTX_RESTART,L"重新开始");AppendMenuW(menu,MF_STRING,ID_CTX_RENAME,L"重命名");TrackPopupMenu(menu,TPM_RIGHTBUTTON,GET_X_LPARAM(l),GET_Y_LPARAM(l),0,h,nullptr);DestroyMenu(menu);return 0;} break;
     case WM_CTLCOLORSTATIC: {HDC dc=(HDC)w;SetBkMode(dc,TRANSPARENT);SetTextColor(dc,fg);static HBRUSH brush=CreateSolidBrush(bg);return (LRESULT)brush;}
