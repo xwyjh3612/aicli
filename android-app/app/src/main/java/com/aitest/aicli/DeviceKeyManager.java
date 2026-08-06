@@ -2,6 +2,7 @@ package com.aitest.aicli;
 
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+import android.os.Build;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
@@ -37,13 +38,21 @@ public final class DeviceKeyManager {
         }
         KeyPairGenerator generator = KeyPairGenerator.getInstance(
                 KeyProperties.KEY_ALGORITHM_EC, KEYSTORE);
-        generator.initialize(new KeyGenParameterSpec.Builder(
+        KeyGenParameterSpec.Builder builder = new KeyGenParameterSpec.Builder(
                 KEY_ALIAS,
                 KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY)
                 .setAlgorithmParameterSpec(new java.security.spec.ECGenParameterSpec("secp256r1"))
-                .setDigests(KeyProperties.DIGEST_SHA256)
-                .setUserAuthenticationRequired(false)
-                .build());
+                .setDigests(KeyProperties.DIGEST_SHA256);
+        // The key is usable after the phone has been unlocked, without a
+        // biometric prompt for every terminal keystroke. On Android 28+ this
+        // is enforced by Keystore itself; older versions rely on file-based
+        // encryption and the app process boundary.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            builder.setUnlockedDeviceRequired(true);
+        } else {
+            builder.setUserAuthenticationRequired(false);
+        }
+        generator.initialize(builder.build());
         return generator.generateKeyPair();
     }
 
@@ -52,10 +61,22 @@ public final class DeviceKeyManager {
     }
 
     public String signChallenge(String challenge) throws Exception {
+        return sign(challenge);
+    }
+
+    public String sign(String message) throws Exception {
         Signature signature = Signature.getInstance("SHA256withECDSA");
         signature.initSign(getOrCreateKeyPair().getPrivate());
-        signature.update(challenge.getBytes(StandardCharsets.UTF_8));
+        signature.update(message.getBytes(StandardCharsets.UTF_8));
         return Base64.encodeToString(signature.sign(), Base64.NO_WRAP);
+    }
+
+    public String deviceName() {
+        return android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL;
+    }
+
+    public String model() {
+        return android.os.Build.MODEL;
     }
 
     public String keyAlias() {

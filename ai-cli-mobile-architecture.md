@@ -1,315 +1,456 @@
-# AI CLI Mobile Architecture
+# AI CLI 桌面端与 Android 辅助端实现说明
 
-## 1. 结论
+更新时间：2026-08-07
 
-桌面端采用方案 B：使用 C++/WinUI 3/Windows App SDK 作为原生窗口，并嵌入 Windows Terminal 的 Terminal Control。右侧终端内部使用 PowerShell 作为宿主，Codex、Claude 和项目启动命令都在该终端中运行，由 Terminal Control 负责显示和输入。
+## 1. 开发背景
 
-这不是给现有 egui 页面加一个控件，而是重做桌面端窗口。Windows Terminal 的终端控件主要是 C++/WinRT 组件，不能直接作为 Rust/egui 的普通控件使用，需要固定 Windows Terminal 源码版本并维护 C++ 构建集成。
+AI CLI 主要在 Windows 电脑上使用。电脑端负责创建项目、运行 Codex/Claude、显示原生终端、管理分组和绑定设备；Android App 只在不方便坐在电脑前时使用，用于查看运行进度、切换会话、继续输入和执行暂停/继续/取消/重启。
 
-方案可行，但实现难度为中高。阶段 0 必须先验证 Terminal Control 能独立编译、连接 ConPTY、接收键盘和显示 Codex TUI，验证通过后再开发完整页面。
+固定要求如下：
 
-不采用浏览器、WebView、Electron，也不通过 `SetParent` 强行嵌入独立的 `wt.exe` 窗口。独立启动 `wt.exe` 虽然输入体验最好，但应用无法可靠获得其 PTY 输入句柄，手机输入、暂停、重启和项目切换都会失去可靠控制。
+- 电脑端不使用浏览器、WebView、Electron，也不嵌入独立 `wt.exe` 窗口；
+- 电脑中央区域必须是真正的 Windows Terminal `TermControl`，键盘、快捷键、选择、复制、滚动和全屏 TUI 都在终端内部完成；
+- PowerShell 只作为终端内部宿主，不作为产品功能单独展示；
+- Android 使用 Java/XML，不使用 Kotlin；
+- 手机首次绑定只在电脑确认一次，断网、App 重启和电脑重启后不重复确认；
+- 手机输入必须进入电脑当前项目的同一个 ConPTY，不能只写入聊天记录；
+- Codex 默认使用 `codex --yolo resume --last`；
+- Claude 默认使用 `claude --dangerously-skip-permissions --continue`；
+- 项目数据、设备授权和终端事件使用 SQLite 持久化；
+- 构建依赖、Gradle 缓存、Windows Terminal 源码和大体积运行环境放在 F 盘。
 
-### 1.1 开发范围冻结
+## 2. 当前技术结构
 
-当前只开发和测试电脑端。Android App、公网 Relay、手机扫码绑定和手机输入全部延期，直到电脑端完成真实 CLI、Terminal Control、项目管理和恢复测试后再开始。
+```text
+Windows 原生桌面窗口
+    ├─ 项目、分组、设置、设备和绑定模态框
+    ├─ Windows Terminal TermControl
+    │      └─ 自建 ITerminalConnection
+    │             └─ Windows ConPTY
+    │                    └─ powershell.exe
+    │                           └─ Codex / Claude / 自定义 CLI
+    ├─ SQLite DataStore
+    └─ HTTPS/WSS Remote Agent
+             ⇅ TLS + 签名请求
+        Android Java App
+```
 
-电脑端阶段不依赖 Android 才能运行，先使用本机键盘、本机 Agent 和本机 SQLite 完成闭环。
+桌面端使用 C++20、Win32/XAML Island、Windows Terminal 1.24 控件、ConPTY、CivetWeb、OpenSSL 和系统 WinSQLite。Android 使用 Java 17、AndroidX、Material、OkHttp、Gson、ZXing 和 Android Keystore。
 
-## 2. 产品范围
+`TerminalConnection.dll`、`OpenConsoleProxy.dll` 和 `OpenConsole.exe` 已从运行链路删除。桌面桥接层直接实现 Windows Terminal 需要的 `ITerminalConnection`，由系统 ConPTY 启动 PowerShell；Windows Terminal Control 只负责原生终端渲染和输入体验。
 
-### 2.1 桌面端
+## 3. 电脑端功能
 
-桌面端是主控制端，负责项目创建、分组、Codex/Claude 启动、内嵌终端、设备绑定、网络设置、SQLite 和运行状态。PowerShell 只作为终端内部宿主，界面不单独提示。
+### 3.1 主窗口
 
-### 2.2 Android 端
+电脑端入口：
 
-Android 端只做辅助：切换 Codex/Claude、查看项目和实时终端事件、发送文字和控制键、暂停/继续/取消/重启、扫码绑定以及连接设置。Android 不运行 CLI，不保存模型密钥。
+```text
+C:\project\aitest\codex_tool\desktop\bin\Debug\aicli.exe
+```
 
-## 3. 固定技术栈
+主窗口默认夜间模式，支持白天/夜间主题切换。窗口使用系统原生最小化、最大化/还原和关闭按钮，中央终端使用原生滚动、选择、复制粘贴和键盘焦点。
 
-| 层 | 技术 |
+标题栏信息固定包含：
+
+```text
+[AI CLI] [当前分组] [+] [绑定手机] [已绑定 N 台] [Agent 状态] [内存] [公网状态] [设置]
+```
+
+标题栏不再放 Codex/Claude 全局过滤按钮。左侧 `AI CLI` 下方旧的 `Local Workplace` 已删除。
+
+### 3.2 项目列表
+
+左侧显示当前分组中的项目，支持：
+
+- 使用公共 `StyledInput` 搜索项目名称和项目类型；
+- 搜索提示使用类似 HTML `placeholder` 的灰色占位文字；
+- 显示项目名称、项目类型、所属分组和运行状态；
+- 双击项目或点击“立即开始”启动项目；
+- 右键菜单包含打开项目文件夹、项目详情、移动分组、重新启动、暂停、继续、取消和删除；
+- 删除项目只删除 SQLite 中的项目配置，不删除项目目录及其文件；
+- 启动时恢复上次选择的分组和项目，并自动重新运行上次项目的启动命令。
+
+### 3.3 新建和编辑项目
+
+新建/编辑使用主窗口内模态层，不创建独立顶级窗口。模态框背景使用半透明遮罩；关闭模态框后恢复同一个终端控件，不把终端区域清空。
+
+项目字段：
+
+| 字段 | 行为 |
 |---|---|
-| 桌面 UI | C++、WinUI 3、Windows App SDK |
-| 终端 | Windows Terminal `TerminalControl`/`TerminalCore` 源码集成 |
-| 进程 | Windows ConPTY、原生进程 API |
-| Agent | 保留现有 Rust Agent 或迁移为 C++ 服务 |
-| Broker | Rust/C++，负责 ConPTY 和进程生命周期 |
-| 数据库 | SQLite |
-| Android | Java、XML、AndroidX、ViewBinding、OkHttp |
-| 身份 | Windows DPAPI/Credential Manager、Android Keystore、TLS |
+| 项目名称 | 必填，可编辑，作为项目 Tab/列表标题 |
+| 项目类型 | 新建时从动态类型列表选择；编辑已有项目时只读 |
+| 分组 | 从动态分组列表选择，后续可移动 |
+| 项目目录 | 必须通过系统文件夹选择器选择存在的目录 |
+| 启动命令 | 根据项目类型自动填入默认值，也允许当前项目覆盖 |
+| 执行策略 | AI CLI 使用无逐条确认模式；Codex/Claude 默认命令已固定 |
 
-推荐进程结构：
+项目创建后先写入 SQLite，右侧显示目录、启动命令、状态、“立即开始”和“编辑项目”。只有点击“立即开始”或双击项目时才创建真实 ConPTY 并运行命令。
 
-```text
-AI CLI Desktop.exe       C++/WinUI 3 主窗口和 Terminal Control
-AI CLI Agent.exe         HTTP/WebSocket、SQLite、设备授权、Relay
-AI CLI Broker.exe        ConPTY、进程和输入队列
-Android App              Java/XML
-```
+### 3.4 动态项目类型
 
-Rust/egui 不再负责桌面 UI，但现有 Rust Agent、Broker、SQLite 和协议可以逐步保留。
+设置页提供“管理项目类型”：
 
-## 4. Terminal Control 结构
+- `Codex` 和 `Claude` 是内置类型；
+- 内置类型不可重命名、不可删除；
+- 用户可以新增自定义类型，只填写类型名称和默认启动命令；
+- 自定义类型可以重命名、修改默认命令和删除；
+- 重命名类型时，SQLite 事务会同步更新已有项目；
+- 类型仍被项目使用时禁止删除；
+- 新建项目选择类型后自动填入该类型的默认命令；
+- 编辑已有项目时类型保持只读，避免改变既有会话执行语义。
 
-```text
-WinUI TerminalControl
-        |
-        +-- TerminalCore：ANSI、光标、滚动、全屏 TUI、键盘
-        |
-        +-- ConPTY：Windows 伪控制台
-                  |
-                  +-- powershell.exe
-                        |
-                        +-- codex / claude / 项目启动命令
-```
-
-每个项目维护一个独立的内嵌终端会话。终端启动后进入项目目录，再执行项目配置中的启动命令。Codex、Claude 或自定义命令都是这个终端里的进程，不再额外创建独立的“PowerShell Tab”。
-
-所有输入统一进入项目输入队列：
+内置默认命令：
 
 ```text
-桌面键盘或 Android 消息
-        -> 项目输入队列
-        -> Terminal Control / Broker
-        -> ConPTY 输入句柄
-        -> PowerShell 宿主中的 Codex / Claude / 项目命令
+Codex  : codex --yolo resume --last
+Claude : claude --dangerously-skip-permissions --continue
 ```
 
-必须支持普通文本、Enter、Backspace、Tab、方向键、Home/End、PageUp/PageDown、Escape、Ctrl+C、Ctrl+D、Ctrl+L、复制和粘贴。不能再使用自绘聊天输入框转发命令。
+### 3.5 动态分组
 
-## 5. 桌面整体布局
+标题栏当前分组按钮和 `+` 都进入分组管理模态框。分组功能包括：
 
-默认窗口为 1440 x 900，最小 1100 x 680，默认夜间主题。
+- 永远存在 `默认分组`；
+- 默认分组不可重命名、不可删除；
+- 可以新增、重命名和切换分组；
+- 分组重命名时同步更新已有项目；
+- 非空分组禁止删除，必须先移动其中的项目；
+- 项目右键菜单可以直接移动到任意分组；
+- 当前分组写入 SQLite 设置，重启后恢复。
+
+### 3.6 原生 AI 终端
+
+右侧运行区域只有真正的 Windows Terminal `TermControl`。项目启动流程为：
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────┐
-│ AI CLI | 分组 Tab | + | 设备 | 绑定手机 | 内存 | Agent | Relay | 设置      │
-├──────────────────┬───────────────────────────────────────────────────────┤
-│ 项目              │ Codex 新项目              ● 运行中                    │
-│ [Codex] [Claude]  │ C:\project\demo · Codex CLI                         │
-│ 搜索项目          ├───────────────────────────────────────────────────────┤
-│                  │ [项目终端]                                             │
-│ ● 项目 A          │                                                       │
-│   运行中          │              Windows Terminal Control                 │
-│                  │          原生 TUI / ANSI / 光标 / 输入                │
-│ ○ 项目 B          │                                                       │
-│   已暂停          │                                                       │
-│                  ├───────────────────────────────────────────────────────┤
-│ + 新建项目        │ Terminal ready · 点击终端直接输入                    │
-└──────────────────┴───────────────────────────────────────────────────────┘
+选择项目
+  → 创建系统 ConPTY
+  → 启动 powershell.exe -NoLogo -NoExit
+  → 设置 UTF-8 输入/输出
+  → Set-Location 到项目目录
+  → 在同一 PTY 中输入项目启动命令并回车
 ```
 
-### 5.1 顶部栏
+终端支持：
 
-顶部只放全局信息：AI CLI、分组 Tab、添加分组、设备数、绑定手机、内存、Agent、Relay、主题和设置。Codex/Claude 不放在顶部全局栏，而是放在左侧作为项目类型过滤。
+- 直接点击获得焦点并输入；
+- Enter、Backspace、Tab、Escape、方向键、Home/End、PageUp/PageDown；
+- Ctrl+C、Ctrl+D、Ctrl+L；
+- 中文输入、复制、粘贴、文本选择；
+- Windows Terminal 原生滚动和全屏 TUI；
+- Codex/Claude ANSI、光标和弱化文字颜色；
+- 最小化后恢复、窗口缩放和最大化；
+- 终端输出同时写入 SQLite 事件并通过 WSS 推送给手机。
 
-### 5.2 左侧项目栏
+### 3.7 设置
 
-左侧显示当前分组中的项目，支持 Codex/Claude 过滤、搜索、状态点、最近活动时间和底部“新建项目”。项目 Tab 右键菜单固定包含：暂停、继续、取消、重新开始、恢复 CLI 历史、重命名、移动分组、编辑项目配置。
+电脑设置当前包含：
 
-### 5.3 中央区域
+- 白天/夜间主题，默认夜间；
+- Agent 监听地址，默认 `0.0.0.0`；
+- HTTPS/WSS 端口，默认 `4280`；
+- 本机/内网访问地址；
+- 公网访问地址；
+- 动态项目类型管理；
+- Windows 防火墙“允许手机访问”；
+- 保存设置并重启 Agent。
 
-中央必须是 Windows Terminal Control，不显示聊天气泡、自绘 Markdown 消息列表、普通文本滚动列表或自制命令行假界面。终端底部只显示焦点和连接状态，点击终端后键盘直接进入 PTY。
+本机地址和公网地址只接受 `https://`。修改端口后需要重新执行一次防火墙配置。
 
-未运行项目时，中央区域显示项目启动面板：
+### 3.8 设备管理和绑定
+
+点击“绑定手机”打开二维码模态框：
+
+- 二维码由桌面端生成，五分钟有效；
+- 二维码包含电脑 ID、配对 ID、随机 challenge、TLS 证书指纹、内网地址和公网地址；
+- 手机必须使用 AI CLI App 内扫码入口；
+- 手机提交设备名称、型号、随机 `phoneId`、公钥和 challenge 签名；
+- 电脑显示手机信息，用户点击一次“确认绑定”；
+- 绑定完成后标题栏更新已绑定设备数；
+- 设备页显示已绑定和已撤销设备；
+- 点击解绑会立即撤销短期 token、输入租约和该设备的 WSS 连接；
+- 同一手机重新扫码后可以再次绑定。
+
+## 4. Android 辅助端功能
+
+Android App 使用 Java/XML，当前最低 Android 版本为 API 26。
+
+### 4.1 主页面
+
+- 顶部只保留 Codex/Claude 切换；
+- 会话列表默认折叠，通过顶部按钮展开；
+- 顶部提供扫码入口和设置入口；
+- 自动加载电脑端项目列表，并按 Codex/Claude 类型过滤；
+- 选择项目后加载 SQLite 历史事件；
+- 建立 WSS 获取实时终端输出和状态；
+- WSS 断线后按最后 `eventId` 补发遗漏事件并自动重连；
+- 可输入文字或终端命令，回车后写入电脑同一个 PTY；
+- 支持暂停、继续、取消和重启；
+- 本地只保留有限长度的显示文本，CLI 和模型密钥始终留在电脑端。
+
+### 4.2 扫码和设置
+
+- App 首次打开即生成随机 `phoneId`；
+- P-256 私钥在 Android Keystore 内生成，不能从 App data 导出；
+- Android 9 及以上设置为设备解锁后才可使用私钥；
+- App 内置 ZXing 扫码页面，不调用浏览器或外部扫码应用；
+- 设置页显示当前电脑 ID、当前地址、内网地址、公网地址、证书指纹和手机 ID；
+- 可以保存 HTTPS 地址、重新扫码或清除当前电脑连接；
+- 清除电脑连接不会删除 Android Keystore 私钥和 `phoneId`；
+- 通知和震动开关已持久化。
+
+配对完成后，主页面会比较完整连接配置，而不仅比较 URL；如果证书指纹、电脑 ID、内网地址或公网地址变化，会重新创建客户端并加载新的 TLS pin，避免继续使用旧证书配置。
+
+## 5. 手机连接流程
+
+### 5.1 首次绑定
 
 ```text
-项目名称 / 类型
-文件夹: C:\\project\\demo
-启动命令: codex
-状态: 未运行
-
-[立即开始] [编辑项目]
+电脑点击“绑定手机”
+  → 电脑生成 5 分钟二维码
+  → 手机 App 扫码
+  → 手机 Keystore 私钥签名配对 challenge
+  → 电脑显示手机名称、型号和 phoneId
+  → 电脑点击一次“确认绑定”
+  → 电脑保存 phoneId、公钥和设备信息
+  → 手机请求认证 challenge
+  → 手机签名 challenge
+  → 电脑签发 15 分钟短期 token
+  → Android 加载会话并连接 WSS
 ```
 
-项目运行后，启动面板被同一个项目的 Windows Terminal Control 替换。界面不单独提示 PowerShell，PowerShell 只作为终端内部宿主。
+### 5.2 后续重连
 
-## 6. 项目模型
-
-创建项目必须填写：
-
-| 字段 | 要求 |
-|---|---|
-| 项目名称 | 必填，可修改 |
-| 项目类型 | Codex 或 Claude |
-| 启动命令 | 必填，例如 `codex`、`claude` 或完整路径和参数 |
-| 项目目录 | 必填，使用系统文件夹选择器选择，必须是存在的目录 |
-| 分组 | 默认分组或用户分组 |
-| 执行策略 | 固定 `trusted_admin` |
-
-创建成功后先写入 SQLite 并切换到项目详情面板，不立即执行命令。右侧显示项目目录、启动命令、当前状态和“立即开始”“编辑项目”。点击“立即开始”后才创建 Broker/ConPTY、创建 Terminal Control、进入项目目录并执行真实启动命令。启动失败时保留终端和错误信息，不生成假会话。
-
-项目目录字段不能只提供普通文本输入。创建和编辑项目时必须提供原生文件夹选择器；选择结果回填到项目配置，目录不存在或未选择时不能保存项目。
-
-`conversation` 字段：
+网络断开、手机 App 重启或电脑重启后不重新弹出电脑确认：
 
 ```text
-id
-name
-provider
-executor
-cwd
-group_name
-execution_policy
-status
-created_at
-updated_at
+手机读取已保存的电脑地址和证书指纹
+  → 电脑返回新的随机认证 challenge
+  → 手机用同一 Keystore 私钥签名
+  → 电脑用已绑定公钥验签
+  → 电脑签发新的短期 token
 ```
 
-状态固定为 `created`、`starting`、`running`、`paused`、`cancelled`、`failed`、`stopped`。
+电脑重启会清空旧 token，但不会删除已绑定公钥，因此只重新认证，不重新配对。
 
-## 7. 分组和恢复
+## 6. 安全通信
 
-- 永远存在 `默认分组`，不能删除；
-- 可以添加分组、移动项目和删除空分组；
-- 当前分组、提供方过滤和项目 ID 写入设置；
-- 重启桌面后恢复上次分组、项目和终端；
-- Codex 使用 `codex resume`，Claude 使用 `claude -r`；
-- 不复制 Codex/Claude 私有历史数据库；
-- 关闭窗口不删除项目和事件。
+该工具允许手机输入进入高权限 AI CLI，安全边界按“远程管理员终端”处理。
 
-## 8. Agent、Broker 和安全
+### 6.1 设备身份
 
-### 8.1 Broker
+- 手机身份由随机 `phoneId` 和 Android Keystore P-256 私钥共同组成；
+- `phoneId` 不是秘密，只负责稳定标识设备；
+- 私钥不通过二维码、HTTP、WSS、SQLite 或日志传输；
+- 电脑只保存手机公钥、名称、型号、绑定时间、最后活动时间和最后序列号；
+- 首次配对签名绑定电脑 ID、配对 ID、challenge、phoneId、设备信息和公钥，防止替换字段。
 
-Broker 创建 ConPTY、启动和终止 CLI、读取输出、接收输入、调整行列数并执行项目级 `trusted_admin`。Broker 不开放公网端口。
+### 6.2 TLS 和证书固定
 
-### 8.2 Agent
+- Agent 只提供 HTTPS/WSS；
+- 首次启动生成 P-256 自签名 TLS 证书；
+- Android 从二维码获取 SHA-256 证书指纹并固定；
+- 使用固定指纹时允许内网 IP/公网域名变化，但证书必须完全匹配；
+- TLS pin 初始化失败时 Android 直接拒绝连接，不回退到不安全信任链；
+- TLS PEM 同时包含私钥，Windows ACL 每次启动都会重新收紧，只允许当前文件所有者和 `SYSTEM` 完全访问。
 
-Agent 提供本地 HTTP/WebSocket、SQLite、Android 设备绑定、challenge-response、输入租约、请求去重、Relay 和事件补发。
+### 6.3 请求签名和防重放
 
-### 8.3 Android 身份
+配对后的每个 HTTP 请求都包含：
 
-Android 首次打开 App 生成随机 `phoneId`，私钥只存 Android Keystore。电脑生成二维码，手机 App 内扫码，电脑端确认一次。后续重连使用 challenge-response，不重复确认。撤销设备后立即拒绝请求。
+```text
+Authorization: Bearer <short-lived-token>
+X-Aicli-Phone
+X-Aicli-Request-Id
+X-Aicli-Timestamp
+X-Aicli-Sequence
+X-Aicli-Signature
+```
 
-### 8.4 网络
+签名原文固定为：
 
-内网使用 TLS 或配对 token，公网只经 Relay。所有手机消息包含 `phoneId`、`conversationId`、`requestId`、序列号、时间戳和签名。WebSocket 断线按 `eventId` 补发。Relay 不保存命令、密钥和完整终端内容。
+```text
+HTTP_METHOD
+CANONICAL_PATH
+REQUEST_ID
+UNIX_TIMESTAMP
+SEQUENCE
+SHA256(BODY)
+```
 
-### 8.5 trusted_admin
+电脑端执行以下检查：
 
-`trusted_admin` 是创建项目时的一次授权。项目运行期间不逐条确认高风险命令，但拥有有效设备凭证的手机等价于该项目的远程管理员终端，必须在设备页和项目页明确显示风险。
+- token 存在且未过期；
+- token 对应设备仍处于 active；
+- `X-Aicli-Phone` 与 token 设备一致；
+- 时间戳在电脑时间前后五分钟内；
+- sequence 严格大于该设备最后接受的值；
+- requestId 未使用过；
+- 请求体 SHA-256 和 ECDSA 签名正确；
+- 检查通过后，在同一个 SQLite 事务中记录 requestId、sequence 和 lastSeen。
 
-### 8.6 安全方案沿用说明
+### 6.4 输入租约
 
-桌面 UI 从 Rust/egui 改为 C++/WinUI 3/Terminal Control，不改变手机和电脑之间已经确定的安全模型。以下规则保持不变：
+- 每个项目同一时刻只允许一台手机写入；
+- 手机第一次输入后获得 30 秒租约；
+- 同一手机继续输入会续期；
+- 另一台手机在租约期间写入会收到 HTTP 409；
+- 手机可主动 `release`；
+- 设备解绑会立即清除该设备持有的所有租约。
 
-- Android 私钥只存 Android Keystore；
-- `phoneId` 是 App 首次生成并持久化的设备唯一标识；
-- 首次绑定使用 App 内扫码、电脑端一次人工确认；
-- 后续连接使用电脑随机 challenge 和手机私钥签名，不重复确认；
-- 每次会话使用短期 capability token，绑定 `phoneId`、电脑 ID、conversationId、权限和过期时间；
-- TLS 负责传输加密，签名负责设备身份和消息完整性；
-- `requestId`、序列号和时间窗口用于防重放和断线重试去重；
-- 设备撤销后立即拒绝 challenge、WebSocket 和输入请求；
-- 输入租约保证同一项目同一时刻只有一个控制端写入 PTY；
-- Relay 只转发加密消息，不保存私钥、命令、模型密钥和完整终端内容；
-- Agent、Broker 和 Terminal Control 只允许本机受保护 IPC，公网不能直接访问 Broker；
-- 桌面端关闭窗口不会删除授权设备，但撤销设备必须立即生效。
+### 6.5 解绑
 
-Terminal Control 只是显示和键盘承载层，不拥有 Android 设备密钥、Relay 凭据或数据库写权限。手机请求仍必须先经过 Agent 的身份验证、权限检查和输入租约，再由 Broker 写入对应 ConPTY。
+解绑后立即执行：
 
-## 9. SQLite
+- SQLite 中设备标记为 inactive；
+- 清空该设备所有内存 token；
+- 清空该设备输入租约；
+- 向该设备的 WSS 发送关闭帧；
+- 后续 challenge、token、签名 HTTP 请求和 WSS 都被拒绝；
+- 手机若需再次使用，必须重新扫码并由电脑重新确认。
 
-`events` 保存聊天输入、助手输出、工具输出、终端输入、终端输出和控制事件。Terminal Control 的屏幕状态属于运行时状态，不依赖 SQLite 逐帧恢复。
+## 7. Agent 接口
 
-终端和工具输出默认 100 MB 滚动上限；聊天内容、助手事件、项目配置和控制事件保留。SQLite 使用 WAL 和定期 checkpoint。
+| 接口 | 用途 | 身份要求 |
+|---|---|---|
+| `GET /api/health` | Agent 健康状态和电脑 ID | 无 |
+| `POST /api/pair/request` | 提交手机公钥和配对签名 | 有效二维码 |
+| `GET /api/pair/status` | 查询电脑是否确认 | 配对 ID |
+| `GET /api/auth/challenge` | 获取后续认证 challenge | 已绑定设备 |
+| `POST /api/auth/token` | 用设备私钥签名换短期 token | 已绑定设备 |
+| `GET /api/conversations` | 获取项目/会话列表 | token + 请求签名 |
+| `GET /api/conversations/{id}/events` | 获取历史和断线补发事件 | token + 请求签名 |
+| `POST /api/conversations/{id}/input` | 写入原始 PTY 输入 | token + 签名 + 输入租约 |
+| `POST /api/conversations/{id}/chat` | 写入文本并追加回车 | token + 签名 + 输入租约 |
+| `POST /api/conversations/{id}/control` | 暂停/继续/取消/重启/release | token + 签名 + 输入租约 |
+| `WSS /api/events` | 实时终端和状态事件 | token + 请求签名 |
 
-## 10. Android 页面
+WSS 只负责服务器向手机推送事件；手机输入和控制始终走单独签名的 HTTPS 请求。
 
-- 顶部 Codex/Claude 切换；
-- 项目列表，左侧默认折叠；
-- 当前项目实时终端事件；
-- 文本输入和控制键；
-- 暂停、继续、取消、重新开始；
-- 扫码绑定；
-- 连接、主题、通知和设备设置。
+## 8. SQLite
 
-手机输入必须进入电脑上同一个项目 PTY，不能只写入数据库事件。
+SQLite 当前表：
 
-## 11. 开发阶段
+- `project_types`：动态项目类型和默认启动命令；
+- `groups`：动态项目分组；
+- `projects`：项目名称、类型、分组、目录、命令和状态；
+- `devices`：手机公钥、设备信息、状态和最后序列；
+- `device_requests`：已使用 requestId，用于防重放；
+- `events`：终端输入、终端输出和会话控制事件；
+- `settings`：主题、地址、端口、当前分组、上次项目和电脑 ID。
 
-### 阶段 0：Terminal Control 验证（当前第一目标）
+数据库启用 WAL、`synchronous=NORMAL`、外键和五秒 busy timeout。事件文件超过约 100 MB 时，优先分批删除最早的 `terminal.output`，项目配置、设备授权和控制事件继续保留，并执行被动 checkpoint。
 
-安装 Visual Studio 2022 C++、Windows App SDK、Windows 11 SDK。创建最小 WinUI 3 程序，编译固定版本的 Windows Terminal Control，连接自建 ConPTY，验证 Codex/Claude 的键盘、ANSI、全屏 TUI、复制粘贴和窗口调整。
+SQLite 不保存模型 API Key、Android 私钥或 TLS 私钥。TLS 私钥单独保存在受 ACL 保护的 PEM 文件中。
 
-阶段 0 不通过时，不开始完整桌面 UI。
+## 9. 公网访问
 
-### 阶段 1：桌面终端核心
+当前版本已经支持在设置中填写公网 HTTPS 地址，并把该地址写入绑定二维码。可用部署方式为：
 
-完成单项目、单 Codex Terminal Control、ConPTY、本地键盘、窗口调整、Ctrl+C、方向键和全屏 TUI。
+```text
+公网域名或公网 IP:端口
+  → 路由器端口映射 / VPN / 反向隧道
+  → Windows 电脑 Agent 的 HTTPS/WSS 端口
+```
 
-### 阶段 2：项目和分组
+当前仓库没有部署一个托管的云 Relay 服务；`remote_address` 是公网直连、VPN 或自建反向代理地址。即使使用公网地址，仍然必须通过 TLS 指纹固定、设备签名、短期 token、防重放和输入租约。
 
-完成项目创建表单、Codex/Claude、启动命令、目录、分组、右键菜单和 SQLite。
+公网使用前必须完成：
 
-### 阶段 3：项目会话和多项目
+- 固定或可解析的公网地址；
+- 路由器端口映射、VPN 或反向隧道；
+- Windows 防火墙允许 Agent 端口；
+- 不把 Broker/ConPTY 句柄或 SQLite 直接暴露到公网；
+- 只暴露 Remote Agent 的 HTTPS/WSS 端口。
 
-完成项目启动面板、内嵌终端会话、多项目 PTY、项目切换、暂停、继续、取消、重启和上次恢复。PowerShell 作为内部终端宿主，不单独作为 UI 功能展示。
+## 10. 权限说明
 
-### 阶段 4：桌面端完整测试
+Codex/Claude 默认命令已经关闭 AI CLI 自身的逐条高风险确认。当前桌面包为 `mediumIL` 的 packaged classic app，`trusted_admin` 表示 AI CLI 执行策略，不自动等同于 Windows UAC 提权。
 
-在开始 Android 之前，必须完成以下桌面端验收：
+如果项目必须拥有真正的 Windows 管理员令牌，需要后续增加独立的高权限 Broker/Windows Service，由当前 UI 通过受保护本机 IPC 连接；不能简单把公网 Agent 直接放进管理员进程。当前版本不得在文档或 UI 中把 `--yolo`/`--dangerously-skip-permissions` 描述成已经获得 Windows Administrator token。
 
-- Codex 和 Claude 真实 CLI 启动；
-- Windows Terminal Control 键盘输入、中文输入、复制粘贴和快捷键；
-- 项目启动面板、内嵌终端和项目命令自动执行；
-- 多项目、多分组和项目配置编辑；
-- 暂停、继续、取消、重新开始和 CLI 历史恢复；
-- 关闭窗口后恢复上次项目；
-- SQLite 事件记录和终端输出上限；
-- 夜间/白天主题、设置和设备页面；
-- 管理员权限和本机 IPC；
-- 桌面端在目标机器上连续运行测试。
+## 11. 构建和运行
 
-阶段 4 未通过前，不创建 Android 业务页面，不接入公网 Relay。
+### 11.1 桌面端
 
-### 阶段 5：Agent 和 Android
+```powershell
+$cmake='C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+& $cmake -S desktop -B desktop\build -G 'Visual Studio 17 2022' -A x64
+& $cmake --build desktop\build --config Debug --target aicli -- /m:2
+.\desktop\tools\stage-runtime.ps1
+.\desktop\bin\Debug\aicli.exe
+```
 
-完成 HTTP/WebSocket、Java Android App、Keystore、扫码绑定、challenge-response、手机输入和事件补发。
+构建前必须停止正在运行的 `aicli.exe`，否则链接器会因文件锁定报 `LNK1168`。
 
-### 阶段 6：公网和发布
+### 11.2 数据层测试
 
-完成 Relay、TLS、输入租约、日志、安装包、运行环境迁移和更新机制。
+```powershell
+& $cmake --build desktop\build --config Debug --target aicli_data_store_tests -- /m:2
+.\desktop\bin\Debug\aicli_data_store_tests.exe F:\codex_tool-target\desktop\tests\aicli-data-store-test.db
+```
 
-## 12. 验收标准
+### 11.3 Android
 
-- 右侧是真正的 Windows Terminal Control，不是聊天面板或普通文本列表；
-- 点击右侧终端即可直接输入，不需要额外聊天输入框；
-- Codex 信任确认可以直接按 Enter；
-- Codex/Claude 的方向键、Escape、Tab、Ctrl+C、复制和粘贴正常；
-- 全屏 TUI 不乱码、不重叠、不出现外层滚动条；
-- 新建项目必须选择类型、启动命令、目录和分组，并立即启动真实 CLI；
-- 每个项目拥有一个内嵌 Terminal Control，PowerShell 宿主中运行 Codex/Claude 或配置命令；
-- 右键项目可以暂停、继续、取消、重启和恢复历史；
-- 手机和电脑输入进入同一个 PTY；
-- 断网重连已绑定手机不需要重新确认；
-- 关闭窗口后重新打开恢复上次项目；
-- 不启动浏览器、WebView 或 Electron；
-- Rust/Cargo、构建缓存和运行环境放在 F 盘；
-- 模型密钥不写入 SQLite、日志或 Android 数据库。
+```powershell
+$env:JAVA_HOME='F:\android\Java\jdk-17.0.11'
+$env:ANDROID_HOME='F:\android\sdk'
+$env:ANDROID_SDK_ROOT='F:\android\sdk'
+$env:GRADLE_USER_HOME='F:\android\.gradle'
+F:\android\.gradle\wrapper\dists\gradle-8.10.2-bin\e0thjr3we83usdufs66z371ne\gradle-8.10.2\bin\gradle.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+```
 
-## 13. 关键风险
+APK：
 
-1. Windows Terminal Control 不是普通稳定公共控件，需要固定源码版本和 C++ 构建补丁；
-2. Windows App SDK 与 Terminal Control 版本必须匹配；
-3. 多个 Terminal Control 和 ConPTY 会增加内存，需要限制并发项目数；
-4. Android 远程输入必须经过签名、租约、去重和撤销检查；
-5. `trusted_admin` 不是沙箱，必须持续显示风险；
-6. 桌面端目标平台固定为 Windows，Android 独立支持。
+```text
+android-app\app\build\outputs\apk\debug\app-debug.apk
+```
 
-## 14. 当前实现状态（2026-08-06）
+### 11.4 Android 真机联调
 
-- 已确认 Visual Studio 2022 Community 17.7、MSVC 14.37、Windows SDK 10.0.22621.0 可用；SDK 实际安装在 `D:\Windows Kits\10`，构建缓存继续放在 F 盘。
-- 已下载并解包 Windows App SDK `1.7.250606001` 到 `F:\deps\windowsappsdk-1.7.250606001-pkg`，后续 WinUI 3 工程固定使用此版本。
-- 系统已安装 Windows Terminal `1.24.11911.0`，包含 `Microsoft.Terminal.Control.dll`/`.winmd`；该二进制只用于接口和激活探测，不能替代发布时固定的源码集成。
-- 已将 Windows Terminal `v1.20.11381.0` 源码解包到 `F:\deps\terminal-v1.20.11381.0`。该版本的 `TerminalControlLib` 依赖 Terminal 私有 NuGet feed；匿名恢复返回 401，必须改用公开等价包或配置凭据后才能编译源码控件。
-- 已用公开 NuGet 包和补齐的 GSL/fmt submodule 编译通过 `TerminalControlLib` 与 `Microsoft.Terminal.Control.dll`。为兼容 VS 17.7，F 盘副本使用 GSL 3.1.0，并对 `til/math.h` 做了局部编译器兼容补丁。
-- v1.20 的 TerminalControl 元数据仍基于 `Windows.UI.Xaml`（WinUI 2/UWP XAML），不是可直接放入 WinUI 3 树的 `Microsoft.UI.Xaml` 控件。`desktop/src/app/main.cpp` 已实现 `WindowsXamlManager` + `DesktopWindowXamlSource` 适配层，主窗口不再依赖浏览器、WebView 或独立 `wt.exe`。
-- 已创建新的 `desktop` C++ 桌面入口并编译为工作区内的 `desktop\bin\Debug\aicli.exe`：深色终端式窗口、项目列表、分组、项目创建/编辑、文件夹选择、启动命令和未运行项目启动面板已落地；项目启动后通过 ConPTY/Terminal Control 创建内嵌终端，在内部终端宿主中进入项目目录并执行真实 `codex`/`claude` 命令。
-- 已删除运行时对 `TerminalConnection.dll` 和 `OpenConsoleProxy.dll` 的依赖。`desktop/src/terminal/conpty_connection_bridge.cpp` 直接实现 Windows Terminal 的 `ITerminalConnection`，内部连接系统 ConPTY；`TermControl` 继续负责原生终端渲染、焦点、键盘、ANSI、选择和滚动。
-- PowerShell 使用干净的 `powershell.exe -NoLogo -NoExit` 启动。PTY 建立后通过同一个终端输入通道依次写入 UTF-8 初始化、`Set-Location -LiteralPath` 和项目启动命令，不再使用 `-EncodedCommand`。
-- `desktop/tools/stage-runtime.ps1` 只部署 TerminalControl、SettingsModel 和 WinUI 2 runtime，并主动清理旧的 TerminalConnection/OpenConsoleProxy 文件，避免旧 DLL 再次进入启动链路。
-- 已实测 `aicli.exe` 启动、Codex TUI 渲染、终端直接获得焦点、回车、窗口缩放、取消和重新启动；主进程保持响应，应用事件日志未再出现新的 TerminalConnection 崩溃。
-- Android、Relay、公网绑定和手机业务仍冻结，直到阶段 4 桌面验收全部通过。
+局域网可直接使用二维码中的内网地址。开发机也可使用 ADB 反向映射：
+
+```powershell
+F:\android\sdk\platform-tools\adb.exe -s 607faa8d reverse tcp:4280 tcp:4280
+.\tools\run-android-pairing-test.ps1 -LocalAddressOverride https://127.0.0.1:4280
+```
+
+## 12. 已完成验证
+
+2026-08-07 已完成：
+
+- 桌面端 Debug 构建成功；
+- Android 主 APK 和 AndroidTest APK 构建成功；
+- 原生 TermControl、ConPTY、Codex 启动、键盘输入和滚动可用；
+- Android 扫码、手机公钥提交和电脑一次确认成功；
+- 配对后销毁 Android 客户端并重新创建，仍可用 Keystore 私钥重新认证，不再次确认；
+- HTTPS 会话列表和 SQLite 历史事件成功；
+- WSS `hello` 和实时事件成功；
+- 手机发送 Ctrl+L/Ctrl+C 类控制输入进入真实桌面 PTY，并广播 `terminal.input`；
+- 电脑解绑手机后，原设备重新认证和会话请求被拒绝；
+- 动态类型新增、重命名、内置保护、使用中删除保护通过数据层测试；
+- 分组新增、重命名、默认分组保护、非空删除保护通过数据层测试；
+- 类型/分组重命名会事务性更新项目；
+- requestId、sequence 重复请求和撤销设备请求被拒绝；
+- TLS PEM ACL 只允许文件所有者和 `SYSTEM` 完全访问。
+
+Android 真机测试结果：
+
+```text
+OK (1 test)
+```
+
+## 13. 当前边界和后续扩展
+
+以下内容未伪装成已经完成：
+
+- 当前桌面端只有一个活动 `TermControl`/ConPTY；切换并启动其他项目会停止当前 PTY。项目配置和历史事件会保留，但还没有做到多个项目终端同时在后台常驻；
+- 当前公网方案是 HTTPS 直连、端口映射、VPN 或反向隧道，仓库内没有托管 Relay 服务；
+- 当前 Windows 进程是 `mediumIL`，尚未拆分真正的管理员 Broker/Service；
+- Android 通知和震动设置已保存，但完整的后台通知调度尚未实现；
+- Agent 已实现输入租约，但 Android 页面尚未显示租约持有设备和 30 秒倒计时；
+- Android 当前只管理一个电脑连接配置；多电脑列表可作为后续扩展。
+
+这些扩展不得破坏现有约束：桌面继续使用原生 TermControl，手机私钥继续留在 Android Keystore，公网入口继续只暴露经过认证的 HTTPS/WSS Agent。

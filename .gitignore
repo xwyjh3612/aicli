@@ -18,6 +18,7 @@
 *.opendb
 *.pdb
 *.ilk
+*.class
 
 # Local diagnostics and crash output
 /desktop/tools/cdb-*.txt

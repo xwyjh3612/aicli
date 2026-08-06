@@ -3,16 +3,17 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="#0C0E12"
     android:orientation="vertical">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
-        android:paddingStart="12dp"
-        android:paddingTop="8dp"
-        android:paddingEnd="8dp"
-        android:paddingBottom="4dp">
+        android:paddingStart="10dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="6dp"
+        android:paddingBottom="2dp">
 
         <com.google.android.material.tabs.TabLayout
             android:id="@+id/providerTabs"
@@ -20,52 +21,62 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             app:tabGravity="fill"
-            app:tabMode="fixed" />
+            app:tabIndicatorColor="#539CFF"
+            app:tabMode="fixed"
+            app:tabSelectedTextColor="#F1F4F9"
+            app:tabTextColor="#8B94A2" />
 
         <ImageButton
             android:id="@+id/conversationsButton"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="会话列表"
+            app:tint="#C8D0DC"
             android:src="@android:drawable/ic_menu_sort_by_size" />
 
         <ImageButton
+            android:id="@+id/scanButton"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="扫描二维码绑定电脑"
+            app:tint="#C8D0DC"
+            android:src="@android:drawable/ic_menu_camera" />
+
+        <ImageButton
             android:id="@+id/settingsButton"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="设置"
+            app:tint="#C8D0DC"
             android:src="@android:drawable/ic_menu_preferences" />
     </LinearLayout>
-
-    <TextView
-        android:id="@+id/emptyState"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="24dp"
-        android:layout_marginTop="32dp"
-        android:layout_marginEnd="24dp"
-        android:gravity="center"
-        android:text="尚未绑定电脑"
-        android:textSize="16sp" />
 
     <TextView
         android:id="@+id/connectionStatus"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:paddingStart="16dp"
+        android:paddingTop="2dp"
         android:paddingEnd="16dp"
-        android:text="未连接电脑"
-        android:textColor="#666666" />
+        android:paddingBottom="6dp"
+        android:text="未绑定电脑"
+        android:textColor="#8B94A2"
+        android:textSize="12sp" />
 
-    <Button
-        android:id="@+id/scanButton"
-        android:layout_width="wrap_content"
+    <TextView
+        android:id="@+id/emptyState"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginTop="16dp"
-        android:text="扫描二维码绑定电脑" />
+        android:layout_marginStart="24dp"
+        android:layout_marginTop="28dp"
+        android:layout_marginEnd="24dp"
+        android:gravity="center"
+        android:text="扫描电脑端二维码后开始使用"
+        android:textColor="#C8D0DC"
+        android:textSize="16sp" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/conversationList"
@@ -73,20 +84,68 @@
         android:layout_height="180dp"
         android:layout_marginStart="8dp"
         android:layout_marginEnd="8dp"
+        android:background="#12151B"
         android:visibility="gone" />
 
-    <TextView
-        android:id="@+id/terminalOutput"
+    <ScrollView
+        android:id="@+id/terminalScroll"
         android:layout_width="match_parent"
         android:layout_height="0dp"
+        android:layout_margin="8dp"
         android:layout_weight="1"
-        android:background="#111111"
-        android:fontFamily="monospace"
-        android:gravity="start|top"
-        android:padding="12dp"
-        android:textColor="#EEEEEE"
-        android:textIsSelectable="true"
-        android:visibility="gone" />
+        android:background="#090A0D"
+        android:fillViewport="true"
+        android:scrollbars="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/terminalOutput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:gravity="start|top"
+            android:minHeight="260dp"
+            android:padding="12dp"
+            android:textColor="#C8D0DC"
+            android:textIsSelectable="true"
+            android:textSize="13sp" />
+    </ScrollView>
+
+    <LinearLayout
+        android:id="@+id/controlBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/pauseButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="暂停" />
+        <Button
+            android:id="@+id/continueButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="继续" />
+        <Button
+            android:id="@+id/cancelButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="取消" />
+        <Button
+            android:id="@+id/restartButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="重启" />
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/inputBar"
@@ -101,10 +160,13 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:backgroundTint="#539CFF"
             android:hint="输入消息或终端命令"
             android:imeOptions="actionSend"
-            android:inputType="textCapSentences|textMultiLine"
-            android:maxLines="4" />
+            android:inputType="textMultiLine|textNoSuggestions"
+            android:maxLines="4"
+            android:textColor="#F1F4F9"
+            android:textColorHint="#6F7887" />
 
         <Button
             android:id="@+id/sendButton"

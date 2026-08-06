@@ -20,6 +20,7 @@ final class ConversationAdapter extends RecyclerView.Adapter<ConversationAdapter
 
     private final List<AicliClient.Conversation> items = new ArrayList<>();
     private final OnConversationClickListener listener;
+    private String selectedId = "";
 
     ConversationAdapter(OnConversationClickListener listener) {
         this.listener = listener;
@@ -28,6 +29,11 @@ final class ConversationAdapter extends RecyclerView.Adapter<ConversationAdapter
     void replace(List<AicliClient.Conversation> conversations) {
         items.clear();
         items.addAll(conversations);
+        notifyDataSetChanged();
+    }
+
+    void select(String conversationId) {
+        selectedId = conversationId == null ? "" : conversationId;
         notifyDataSetChanged();
     }
 
@@ -40,10 +46,10 @@ final class ConversationAdapter extends RecyclerView.Adapter<ConversationAdapter
         int padding = (int) (12 * parent.getResources().getDisplayMetrics().density);
         row.setPadding(padding, padding / 2, padding, padding / 2);
         TextView title = new TextView(parent.getContext());
-        title.setTextColor(Color.DKGRAY);
+        title.setTextColor(Color.parseColor("#F1F4F9"));
         title.setTextSize(16);
         TextView status = new TextView(parent.getContext());
-        status.setTextColor(Color.GRAY);
+        status.setTextColor(Color.parseColor("#8B94A2"));
         status.setTextSize(12);
         row.addView(title);
         row.addView(status);
@@ -54,7 +60,9 @@ final class ConversationAdapter extends RecyclerView.Adapter<ConversationAdapter
     public void onBindViewHolder(@NonNull Holder holder, int position) {
         AicliClient.Conversation item = items.get(position);
         holder.title.setText(item.name);
-        holder.status.setText(item.status);
+        holder.status.setText(item.provider + " · " + item.status);
+        holder.itemView.setBackgroundColor(item.id.equals(selectedId)
+                ? Color.parseColor("#1D2B3F") : Color.TRANSPARENT);
         holder.itemView.setOnClickListener(view -> listener.onConversationClicked(item));
     }
 

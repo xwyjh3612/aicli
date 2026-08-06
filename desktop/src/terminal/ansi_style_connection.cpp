@@ -117,11 +117,18 @@ bool ContainsSgrParameter(std::wstring_view parameters, std::wstring_view wanted
 }
 
 AnsiStyleConnection::AnsiStyleConnection(
-    winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection inner) :
-    inner_(std::move(inner)) {
+    winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection inner,
+    std::function<void(std::wstring_view)> output_observer) :
+    inner_(std::move(inner)), output_observer_(std::move(output_observer)) {
     inner_output_token_ = inner_.TerminalOutput([this](const winrt::hstring& output) {
         const auto transformed = TransformOutput(output);
-        if (!transformed.empty()) output_handlers_(transformed);
+        if (!transformed.empty()) {
+            if (output_observer_) {
+                try { output_observer_(std::wstring_view{transformed.c_str(), transformed.size()}); }
+                catch (...) {}
+            }
+            output_handlers_(transformed);
+        }
     });
     inner_state_token_ = inner_.StateChanged(
         [this](const auto&, const auto&) { state_handlers_(*this, nullptr); });

@@ -1,0 +1,672 @@
+#include "data/data_store.h"
+
+#include <windows.h>
+#include <objbase.h>
+#include <shlobj.h>
+#include <winsqlite/winsqlite3.h>
+
+#include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <memory>
+
+namespace aicli {
+namespace {
+
+struct StatementDeleter {
+    void operator()(sqlite3_stmt* statement) const noexcept {
+        if (statement) sqlite3_finalize(statement);
+    }
+};
+using Statement = std::unique_ptr<sqlite3_stmt, StatementDeleter>;
+
+std::int64_t UnixSeconds() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+std::wstring ColumnText(sqlite3_stmt* statement, int column) {
+    const auto* value = static_cast<const wchar_t*>(sqlite3_column_text16(statement, column));
+    return value ? std::wstring{value} : std::wstring{};
+}
+
+void BindText(sqlite3_stmt* statement, int index, const std::wstring& value) {
+    sqlite3_bind_text16(statement, index, value.c_str(),
+                        static_cast<int>(value.size() * sizeof(wchar_t)), SQLITE_TRANSIENT);
+}
+
+void BindUtf8(sqlite3_stmt* statement, int index, const std::string& value) {
+    sqlite3_bind_text(statement, index, value.c_str(), static_cast<int>(value.size()),
+                      SQLITE_TRANSIENT);
+}
+
+std::wstring NewId() {
+    GUID guid{};
+    if (FAILED(CoCreateGuid(&guid))) return L"project-" + std::to_wstring(UnixSeconds());
+    wchar_t value[40]{};
+    StringFromGUID2(guid, value, static_cast<int>(std::size(value)));
+    std::wstring result{value};
+    if (result.size() > 2) result = result.substr(1, result.size() - 2);
+    return result;
+}
+
+bool IsBlank(const std::wstring& value) {
+    return value.empty() || std::all_of(value.begin(), value.end(), iswspace);
+}
+
+Statement Prepare(sqlite3* db, const char* sql) {
+    sqlite3_stmt* raw{};
+    if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) return {};
+    return Statement{raw};
+}
+
+}
+
+DataStore::~DataStore() {
+    Close();
+}
+
+bool DataStore::Initialize(const std::wstring& database_path, std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    Close();
+    try {
+        const std::filesystem::path path{database_path};
+        if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path());
+    } catch (...) {
+        if (error) *error = L"无法创建数据目录";
+        return false;
+    }
+    if (sqlite3_open16(database_path.c_str(), &db_) != SQLITE_OK) {
+        if (error) *error = LastError();
+        Close();
+        return false;
+    }
+    database_path_ = database_path;
+    sqlite3_busy_timeout(db_, 5000);
+    if (!Execute("PRAGMA journal_mode=WAL;", error) ||
+        !Execute("PRAGMA synchronous=NORMAL;", error) ||
+        !Execute("PRAGMA foreign_keys=ON;", error) ||
+        !CreateSchema(error) || !SeedDefaults(error)) {
+        Close();
+        return false;
+    }
+    return true;
+}
+
+void DataStore::Close() {
+    std::scoped_lock lock(mutex_);
+    if (db_) sqlite3_close_v2(db_);
+    db_ = nullptr;
+    database_path_.clear();
+}
+
+bool DataStore::Ready() const noexcept {
+    std::scoped_lock lock(mutex_);
+    return db_ != nullptr;
+}
+
+bool DataStore::Execute(const char* sql, std::wstring* error) {
+    char* raw_error{};
+    const int result = sqlite3_exec(db_, sql, nullptr, nullptr, &raw_error);
+    if (result == SQLITE_OK) return true;
+    if (error) {
+        if (raw_error) {
+            const int count = MultiByteToWideChar(CP_UTF8, 0, raw_error, -1, nullptr, 0);
+            std::wstring message(static_cast<size_t>(std::max(1, count)), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, raw_error, -1, message.data(), count);
+            if (!message.empty() && message.back() == L'\0') message.pop_back();
+            *error = std::move(message);
+        } else {
+            *error = LastError();
+        }
+    }
+    if (raw_error) sqlite3_free(raw_error);
+    return false;
+}
+
+bool DataStore::CreateSchema(std::wstring* error) {
+    static constexpr char schema[] = R"SQL(
+CREATE TABLE IF NOT EXISTS project_types(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    default_command TEXT NOT NULL,
+    builtin INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS groups(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    builtin INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS projects(
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type_name TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    folder TEXT NOT NULL,
+    command TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'created',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS devices(
+    phone_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    model TEXT NOT NULL,
+    public_key_base64 TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    paired_at INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL,
+    last_sequence INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS device_requests(
+    request_id TEXT PRIMARY KEY,
+    phone_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(phone_id) REFERENCES devices(phone_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS events(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_project_id ON events(project_id, id);
+CREATE INDEX IF NOT EXISTS idx_device_requests_created ON device_requests(created_at);
+CREATE TABLE IF NOT EXISTS settings(
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+)SQL";
+    return Execute(schema, error);
+}
+
+bool DataStore::SeedDefaults(std::wstring* error) {
+    if (!Execute("INSERT OR IGNORE INTO project_types(name,default_command,builtin) VALUES"
+                 "('Codex','codex --yolo resume --last',1),"
+                 "('Claude','claude --dangerously-skip-permissions --continue',1);",
+                 error) ||
+        !Execute("INSERT OR IGNORE INTO groups(name,builtin) VALUES('默认分组',1);", error) ||
+        !Execute("INSERT OR IGNORE INTO settings(key,value) VALUES"
+                 "('theme','dark'),('listen_port','4280'),('listen_address','0.0.0.0'),"
+                 "('remote_address',''),('last_group','默认分组'),('last_project_id','');",
+                 error)) {
+        return false;
+    }
+    return true;
+}
+
+std::vector<ProjectType> DataStore::LoadProjectTypes() {
+    std::scoped_lock lock(mutex_);
+    std::vector<ProjectType> result;
+    if (!db_) return result;
+    auto statement = Prepare(db_, "SELECT id,name,default_command,builtin FROM project_types ORDER BY builtin DESC,id;");
+    while (statement && sqlite3_step(statement.get()) == SQLITE_ROW) {
+        result.push_back({sqlite3_column_int64(statement.get(), 0),
+                          ColumnText(statement.get(), 1), ColumnText(statement.get(), 2),
+                          sqlite3_column_int(statement.get(), 3) != 0});
+    }
+    return result;
+}
+
+std::vector<ProjectGroup> DataStore::LoadGroups() {
+    std::scoped_lock lock(mutex_);
+    std::vector<ProjectGroup> result;
+    if (!db_) return result;
+    auto statement = Prepare(db_, "SELECT id,name,builtin FROM groups ORDER BY builtin DESC,id;");
+    while (statement && sqlite3_step(statement.get()) == SQLITE_ROW) {
+        result.push_back({sqlite3_column_int64(statement.get(), 0), ColumnText(statement.get(), 1),
+                          sqlite3_column_int(statement.get(), 2) != 0});
+    }
+    return result;
+}
+
+std::vector<Project> DataStore::LoadProjects() {
+    std::scoped_lock lock(mutex_);
+    std::vector<Project> result;
+    if (!db_) return result;
+    auto statement = Prepare(db_, "SELECT id,name,type_name,group_name,folder,command,status FROM projects ORDER BY updated_at DESC;");
+    while (statement && sqlite3_step(statement.get()) == SQLITE_ROW) {
+        Project project;
+        project.id = ColumnText(statement.get(), 0);
+        project.name = ColumnText(statement.get(), 1);
+        project.type = ColumnText(statement.get(), 2);
+        project.group = ColumnText(statement.get(), 3);
+        project.folder = ColumnText(statement.get(), 4);
+        project.command = ColumnText(statement.get(), 5);
+        project.status = ColumnText(statement.get(), 6);
+        result.push_back(std::move(project));
+    }
+    return result;
+}
+
+bool DataStore::SaveProject(Project& project, std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    if (!db_ || IsBlank(project.name) || IsBlank(project.type) || IsBlank(project.group) ||
+        IsBlank(project.folder) || IsBlank(project.command)) {
+        if (error) *error = L"项目字段不完整";
+        return false;
+    }
+    if (project.id.empty()) project.id = NewId();
+    if (project.status.empty()) project.status = L"created";
+    auto statement = Prepare(db_, R"SQL(
+INSERT INTO projects(id,name,type_name,group_name,folder,command,status,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?, ?,?)
+ON CONFLICT(id) DO UPDATE SET name=excluded.name,type_name=excluded.type_name,
+group_name=excluded.group_name,folder=excluded.folder,command=excluded.command,
+status=excluded.status,updated_at=excluded.updated_at;
+)SQL");
+    if (!statement) {
+        if (error) *error = LastError();
+        return false;
+    }
+    BindText(statement.get(), 1, project.id);
+    BindText(statement.get(), 2, project.name);
+    BindText(statement.get(), 3, project.type);
+    BindText(statement.get(), 4, project.group);
+    BindText(statement.get(), 5, project.folder);
+    BindText(statement.get(), 6, project.command);
+    BindText(statement.get(), 7, project.status);
+    const auto now = UnixSeconds();
+    sqlite3_bind_int64(statement.get(), 8, now);
+    sqlite3_bind_int64(statement.get(), 9, now);
+    if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
+    if (error) *error = LastError();
+    return false;
+}
+
+bool DataStore::DeleteProject(const std::wstring& project_id, std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "DELETE FROM projects WHERE id=?;");
+    if (!statement) return false;
+    BindText(statement.get(), 1, project_id);
+    if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
+    if (error) *error = LastError();
+    return false;
+}
+
+bool DataStore::UpdateProjectStatus(const std::wstring& project_id, const std::wstring& status) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "UPDATE projects SET status=?,updated_at=? WHERE id=?;");
+    if (!statement) return false;
+    BindText(statement.get(), 1, status);
+    sqlite3_bind_int64(statement.get(), 2, UnixSeconds());
+    BindText(statement.get(), 3, project_id);
+    return sqlite3_step(statement.get()) == SQLITE_DONE;
+}
+
+bool DataStore::AddProjectType(const std::wstring& name, const std::wstring& command,
+                               std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    if (IsBlank(name) || IsBlank(command)) {
+        if (error) *error = L"类型名称和默认启动命令不能为空";
+        return false;
+    }
+    auto statement = Prepare(db_, "INSERT INTO project_types(name,default_command,builtin) VALUES(?,?,0);");
+    if (!statement) return false;
+    BindText(statement.get(), 1, name);
+    BindText(statement.get(), 2, command);
+    if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
+    if (error) *error = L"项目类型名称已存在";
+    return false;
+}
+
+bool DataStore::UpdateProjectType(std::int64_t id, const std::wstring& name,
+                                  const std::wstring& command, std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    auto existing = Prepare(db_, "SELECT name,builtin FROM project_types WHERE id=?;");
+    if (!existing) return false;
+    sqlite3_bind_int64(existing.get(), 1, id);
+    if (sqlite3_step(existing.get()) != SQLITE_ROW) return false;
+    const auto old_name = ColumnText(existing.get(), 0);
+    if (sqlite3_column_int(existing.get(), 1) != 0) {
+        if (error) *error = L"内置项目类型不能修改";
+        return false;
+    }
+    if (IsBlank(name) || IsBlank(command)) {
+        if (error) *error = L"类型名称和默认启动命令不能为空";
+        return false;
+    }
+    if (!Execute("BEGIN IMMEDIATE;", error)) return false;
+    auto update = Prepare(db_, "UPDATE project_types SET name=?,default_command=? WHERE id=?;");
+    if (!update) { Execute("ROLLBACK;"); return false; }
+    BindText(update.get(), 1, name);
+    BindText(update.get(), 2, command);
+    sqlite3_bind_int64(update.get(), 3, id);
+    if (sqlite3_step(update.get()) != SQLITE_DONE) {
+        Execute("ROLLBACK;");
+        if (error) *error = L"项目类型名称已存在";
+        return false;
+    }
+    auto projects = Prepare(db_, "UPDATE projects SET type_name=?,updated_at=? WHERE type_name=?;");
+    if (!projects) { Execute("ROLLBACK;"); return false; }
+    BindText(projects.get(), 1, name);
+    sqlite3_bind_int64(projects.get(), 2, UnixSeconds());
+    BindText(projects.get(), 3, old_name);
+    if (sqlite3_step(projects.get()) != SQLITE_DONE) {
+        Execute("ROLLBACK;");
+        return false;
+    }
+    return Execute("COMMIT;", error);
+}
+
+bool DataStore::DeleteProjectType(std::int64_t id, std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    auto query = Prepare(db_, "SELECT name,builtin FROM project_types WHERE id=?;");
+    if (!query) return false;
+    sqlite3_bind_int64(query.get(), 1, id);
+    if (sqlite3_step(query.get()) != SQLITE_ROW) return false;
+    const auto name = ColumnText(query.get(), 0);
+    if (sqlite3_column_int(query.get(), 1) != 0) {
+        if (error) *error = L"内置项目类型不能删除";
+        return false;
+    }
+    if (IsProjectTypeInUse(name)) {
+        if (error) *error = L"该项目类型仍被项目使用，不能删除";
+        return false;
+    }
+    auto statement = Prepare(db_, "DELETE FROM project_types WHERE id=?;");
+    if (!statement) return false;
+    sqlite3_bind_int64(statement.get(), 1, id);
+    return sqlite3_step(statement.get()) == SQLITE_DONE;
+}
+
+bool DataStore::IsProjectTypeInUse(const std::wstring& name) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "SELECT 1 FROM projects WHERE type_name=? LIMIT 1;");
+    if (!statement) return false;
+    BindText(statement.get(), 1, name);
+    return sqlite3_step(statement.get()) == SQLITE_ROW;
+}
+
+bool DataStore::AddGroup(const std::wstring& name, std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    if (IsBlank(name)) {
+        if (error) *error = L"分组名称不能为空";
+        return false;
+    }
+    auto statement = Prepare(db_, "INSERT INTO groups(name,builtin) VALUES(?,0);");
+    if (!statement) return false;
+    BindText(statement.get(), 1, name);
+    if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
+    if (error) *error = L"分组名称已存在";
+    return false;
+}
+
+bool DataStore::RenameGroup(std::int64_t id, const std::wstring& new_name,
+                            std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    auto query = Prepare(db_, "SELECT name,builtin FROM groups WHERE id=?;");
+    if (!query) return false;
+    sqlite3_bind_int64(query.get(), 1, id);
+    if (sqlite3_step(query.get()) != SQLITE_ROW) return false;
+    const auto old_name = ColumnText(query.get(), 0);
+    if (sqlite3_column_int(query.get(), 1) != 0) {
+        if (error) *error = L"默认分组不能重命名";
+        return false;
+    }
+    if (IsBlank(new_name)) {
+        if (error) *error = L"分组名称不能为空";
+        return false;
+    }
+    if (!Execute("BEGIN IMMEDIATE;", error)) return false;
+    auto update = Prepare(db_, "UPDATE groups SET name=? WHERE id=?;");
+    if (!update) { Execute("ROLLBACK;"); return false; }
+    BindText(update.get(), 1, new_name);
+    sqlite3_bind_int64(update.get(), 2, id);
+    if (sqlite3_step(update.get()) != SQLITE_DONE) {
+        Execute("ROLLBACK;");
+        if (error) *error = L"分组名称已存在";
+        return false;
+    }
+    auto projects = Prepare(db_, "UPDATE projects SET group_name=?,updated_at=? WHERE group_name=?;");
+    if (!projects) { Execute("ROLLBACK;"); return false; }
+    BindText(projects.get(), 1, new_name);
+    sqlite3_bind_int64(projects.get(), 2, UnixSeconds());
+    BindText(projects.get(), 3, old_name);
+    if (sqlite3_step(projects.get()) != SQLITE_DONE) {
+        Execute("ROLLBACK;");
+        return false;
+    }
+    return Execute("COMMIT;", error);
+}
+
+bool DataStore::DeleteGroup(std::int64_t id, std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    auto query = Prepare(db_, "SELECT name,builtin FROM groups WHERE id=?;");
+    if (!query) return false;
+    sqlite3_bind_int64(query.get(), 1, id);
+    if (sqlite3_step(query.get()) != SQLITE_ROW) return false;
+    const auto name = ColumnText(query.get(), 0);
+    if (sqlite3_column_int(query.get(), 1) != 0) {
+        if (error) *error = L"默认分组不能删除";
+        return false;
+    }
+    if (IsGroupInUse(name)) {
+        if (error) *error = L"该分组中仍有项目，请先移动项目";
+        return false;
+    }
+    auto statement = Prepare(db_, "DELETE FROM groups WHERE id=?;");
+    if (!statement) return false;
+    sqlite3_bind_int64(statement.get(), 1, id);
+    return sqlite3_step(statement.get()) == SQLITE_DONE;
+}
+
+bool DataStore::IsGroupInUse(const std::wstring& name) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "SELECT 1 FROM projects WHERE group_name=? LIMIT 1;");
+    if (!statement) return false;
+    BindText(statement.get(), 1, name);
+    return sqlite3_step(statement.get()) == SQLITE_ROW;
+}
+
+std::wstring DataStore::GetSetting(const std::wstring& key, const std::wstring& fallback) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "SELECT value FROM settings WHERE key=?;");
+    if (!statement) return fallback;
+    BindText(statement.get(), 1, key);
+    return sqlite3_step(statement.get()) == SQLITE_ROW ? ColumnText(statement.get(), 0) : fallback;
+}
+
+bool DataStore::SetSetting(const std::wstring& key, const std::wstring& value) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;");
+    if (!statement) return false;
+    BindText(statement.get(), 1, key);
+    BindText(statement.get(), 2, value);
+    return sqlite3_step(statement.get()) == SQLITE_DONE;
+}
+
+std::vector<DeviceRecord> DataStore::LoadDevices(bool include_revoked) {
+    std::scoped_lock lock(mutex_);
+    std::vector<DeviceRecord> result;
+    auto statement = Prepare(db_, include_revoked
+        ? "SELECT phone_id,name,model,public_key_base64,active,paired_at,last_seen,last_sequence FROM devices ORDER BY active DESC,paired_at DESC;"
+        : "SELECT phone_id,name,model,public_key_base64,active,paired_at,last_seen,last_sequence FROM devices WHERE active=1 ORDER BY paired_at DESC;");
+    while (statement && sqlite3_step(statement.get()) == SQLITE_ROW) {
+        result.push_back({ColumnText(statement.get(), 0), ColumnText(statement.get(), 1),
+                          ColumnText(statement.get(), 2), ColumnText(statement.get(), 3),
+                          sqlite3_column_int(statement.get(), 4) != 0,
+                          sqlite3_column_int64(statement.get(), 5),
+                          sqlite3_column_int64(statement.get(), 6),
+                          sqlite3_column_int64(statement.get(), 7)});
+    }
+    return result;
+}
+
+std::optional<DeviceRecord> DataStore::FindDevice(const std::wstring& phone_id) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "SELECT phone_id,name,model,public_key_base64,active,paired_at,last_seen,last_sequence FROM devices WHERE phone_id=?;");
+    if (!statement) return std::nullopt;
+    BindText(statement.get(), 1, phone_id);
+    if (sqlite3_step(statement.get()) != SQLITE_ROW) return std::nullopt;
+    return DeviceRecord{ColumnText(statement.get(), 0), ColumnText(statement.get(), 1),
+                        ColumnText(statement.get(), 2), ColumnText(statement.get(), 3),
+                        sqlite3_column_int(statement.get(), 4) != 0,
+                        sqlite3_column_int64(statement.get(), 5),
+                        sqlite3_column_int64(statement.get(), 6),
+                        sqlite3_column_int64(statement.get(), 7)};
+}
+
+bool DataStore::UpsertDevice(const DeviceRecord& device, std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, R"SQL(
+INSERT INTO devices(phone_id,name,model,public_key_base64,active,paired_at,last_seen,last_sequence)
+VALUES(?,?,?,?,1,?,?,0)
+ON CONFLICT(phone_id) DO UPDATE SET name=excluded.name,model=excluded.model,
+public_key_base64=excluded.public_key_base64,active=1,last_seen=excluded.last_seen,last_sequence=0;
+)SQL");
+    if (!statement) return false;
+    BindText(statement.get(), 1, device.phone_id);
+    BindText(statement.get(), 2, device.name);
+    BindText(statement.get(), 3, device.model);
+    BindText(statement.get(), 4, device.public_key_base64);
+    const auto now = UnixSeconds();
+    sqlite3_bind_int64(statement.get(), 5, device.paired_at ? device.paired_at : now);
+    sqlite3_bind_int64(statement.get(), 6, now);
+    if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
+    if (error) *error = LastError();
+    return false;
+}
+
+bool DataStore::RevokeDevice(const std::wstring& phone_id) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "UPDATE devices SET active=0,last_sequence=0 WHERE phone_id=?;");
+    if (!statement) return false;
+    BindText(statement.get(), 1, phone_id);
+    return sqlite3_step(statement.get()) == SQLITE_DONE;
+}
+
+bool DataStore::TouchDevice(const std::wstring& phone_id) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "UPDATE devices SET last_seen=? WHERE phone_id=? AND active=1;");
+    if (!statement) return false;
+    sqlite3_bind_int64(statement.get(), 1, UnixSeconds());
+    BindText(statement.get(), 2, phone_id);
+    return sqlite3_step(statement.get()) == SQLITE_DONE;
+}
+
+bool DataStore::AcceptSignedRequest(const std::wstring& phone_id,
+                                    const std::wstring& request_id,
+                                    std::int64_t sequence, std::int64_t timestamp,
+                                    std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    const auto now = UnixSeconds();
+    if (request_id.empty() || sequence <= 0 || timestamp < now - 300 || timestamp > now + 300) {
+        if (error) *error = L"请求时间或序列无效";
+        return false;
+    }
+    if (!Execute("BEGIN IMMEDIATE;", error)) return false;
+    auto query = Prepare(db_, "SELECT active,last_sequence FROM devices WHERE phone_id=?;");
+    if (!query) { Execute("ROLLBACK;"); return false; }
+    BindText(query.get(), 1, phone_id);
+    if (sqlite3_step(query.get()) != SQLITE_ROW ||
+        sqlite3_column_int(query.get(), 0) == 0 ||
+        sequence <= sqlite3_column_int64(query.get(), 1)) {
+        Execute("ROLLBACK;");
+        if (error) *error = L"设备已撤销或请求序列已使用";
+        return false;
+    }
+    auto insert = Prepare(db_, "INSERT INTO device_requests(request_id,phone_id,sequence,created_at) VALUES(?,?,?,?);");
+    if (!insert) { Execute("ROLLBACK;"); return false; }
+    BindText(insert.get(), 1, request_id);
+    BindText(insert.get(), 2, phone_id);
+    sqlite3_bind_int64(insert.get(), 3, sequence);
+    sqlite3_bind_int64(insert.get(), 4, now);
+    if (sqlite3_step(insert.get()) != SQLITE_DONE) {
+        Execute("ROLLBACK;");
+        if (error) *error = L"重复请求";
+        return false;
+    }
+    auto update = Prepare(db_, "UPDATE devices SET last_sequence=?,last_seen=? WHERE phone_id=?;");
+    if (!update) { Execute("ROLLBACK;"); return false; }
+    sqlite3_bind_int64(update.get(), 1, sequence);
+    sqlite3_bind_int64(update.get(), 2, now);
+    BindText(update.get(), 3, phone_id);
+    if (sqlite3_step(update.get()) != SQLITE_DONE) {
+        Execute("ROLLBACK;");
+        return false;
+    }
+    auto cleanup = Prepare(db_, "DELETE FROM device_requests WHERE created_at<?;");
+    if (cleanup) {
+        sqlite3_bind_int64(cleanup.get(), 1, now - 86400);
+        sqlite3_step(cleanup.get());
+    }
+    return Execute("COMMIT;", error);
+}
+
+std::int64_t DataStore::AppendEvent(const std::wstring& project_id,
+                                    const std::wstring& event_type,
+                                    const std::string& payload_json) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "INSERT INTO events(project_id,event_type,payload_json,created_at) VALUES(?,?,?,?);");
+    if (!statement) return 0;
+    BindText(statement.get(), 1, project_id);
+    BindText(statement.get(), 2, event_type);
+    BindUtf8(statement.get(), 3, payload_json);
+    sqlite3_bind_int64(statement.get(), 4, UnixSeconds());
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) return 0;
+    const auto id = sqlite3_last_insert_rowid(db_);
+    if (++append_count_ % 256 == 0) TrimEventsIfNeeded();
+    return id;
+}
+
+std::vector<EventRecord> DataStore::LoadEvents(const std::wstring& project_id,
+                                               std::int64_t after_event_id,
+                                               int limit) {
+    std::scoped_lock lock(mutex_);
+    std::vector<EventRecord> result;
+    auto statement = Prepare(db_, "SELECT id,project_id,event_type,payload_json,created_at FROM events WHERE project_id=? AND id>? ORDER BY id LIMIT ?;");
+    if (!statement) return result;
+    BindText(statement.get(), 1, project_id);
+    sqlite3_bind_int64(statement.get(), 2, std::max<std::int64_t>(0, after_event_id));
+    sqlite3_bind_int(statement.get(), 3, std::clamp(limit, 1, 5000));
+    while (sqlite3_step(statement.get()) == SQLITE_ROW) {
+        const auto* payload = reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 3));
+        result.push_back({sqlite3_column_int64(statement.get(), 0),
+                          ColumnText(statement.get(), 1), ColumnText(statement.get(), 2),
+                          payload ? std::string{payload} : std::string{},
+                          sqlite3_column_int64(statement.get(), 4)});
+    }
+    return result;
+}
+
+void DataStore::TrimEventsIfNeeded() {
+    if (!db_ || database_path_.empty()) return;
+    std::error_code error;
+    const auto size = std::filesystem::file_size(database_path_, error);
+    if (error || size <= 100ull * 1024ull * 1024ull) return;
+    Execute("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE event_type='terminal.output' ORDER BY id LIMIT 5000);", nullptr);
+    Execute("PRAGMA wal_checkpoint(PASSIVE);", nullptr);
+}
+
+std::wstring DataStore::LastError() const {
+    if (!db_) return L"SQLite 未初始化";
+    const char* message = sqlite3_errmsg(db_);
+    if (!message) return L"SQLite 操作失败";
+    const int count = MultiByteToWideChar(CP_UTF8, 0, message, -1, nullptr, 0);
+    std::wstring result(static_cast<size_t>(std::max(1, count)), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, message, -1, result.data(), count);
+    if (!result.empty() && result.back() == L'\0') result.pop_back();
+    return result;
+}
+
+std::wstring DefaultDataDirectory() {
+    if (wchar_t configured[32768]{};
+        GetEnvironmentVariableW(L"AICLI_DATA_DIR", configured,
+                                static_cast<DWORD>(std::size(configured))) > 0) {
+        return configured;
+    }
+    PWSTR local_app_data{};
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr,
+                                       &local_app_data)) && local_app_data) {
+        std::filesystem::path result{local_app_data};
+        CoTaskMemFree(local_app_data);
+        return (result / L"AI CLI").wstring();
+    }
+    return (std::filesystem::current_path() / L"data").wstring();
+}
+
+}

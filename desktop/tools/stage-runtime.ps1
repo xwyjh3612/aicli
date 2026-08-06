@@ -31,13 +31,19 @@ $terminalFiles = @(
     'Microsoft.Terminal.Settings.Model.winmd',
     'Microsoft.Terminal.UI.dll',
     'Microsoft.Terminal.UI.winmd',
-    'Microsoft.Terminal.TerminalConnection.winmd',
-    'TerminalConnection.dll',
-    'OpenConsoleProxy.dll',
-    'OpenConsole.exe'
+    'Microsoft.Terminal.TerminalConnection.winmd'
 )
 foreach ($file in $terminalFiles) {
     Copy-Item (Join-Path $TerminalPackage $file) $Output -Force
+}
+
+# The application supplies its own ITerminalConnection implementation backed
+# by ConPTY.  Never leave the private connection/proxy binaries from the
+# installed Windows Terminal package beside the app: loading one of them can
+# silently select an incompatible ABI path (or recreate the historical
+# 0xc0000142 startup crash).
+foreach ($legacy in @('TerminalConnection.dll', 'OpenConsoleProxy.dll', 'OpenConsole.exe')) {
+    Remove-Item -LiteralPath (Join-Path $Output $legacy) -Force -ErrorAction SilentlyContinue
 }
 
 # Terminal's DLL and compiled XAML must be from the exact same build. The
@@ -105,7 +111,10 @@ $packageRoot = Join-Path $PSScriptRoot '..\package'
 $assets = Join-Path $Output 'Assets'
 New-Item -ItemType Directory -Force -Path $assets | Out-Null
 Copy-Item (Join-Path $packageRoot 'AppxManifest.xml') $Output -Force
+Copy-Item (Join-Path $PSScriptRoot 'configure-agent-firewall.ps1') $Output -Force
 Copy-Item (Join-Path $xaml 'logo.png') (Join-Path $assets 'Logo.png') -Force
+$openssl = 'F:\deps\aicli\openssl'
+Copy-Item (Join-Path $openssl 'libssl-4-x64.dll'), (Join-Path $openssl 'libcrypto-4-x64.dll') $Output -Force
 $controlHashes = Get-FileHash (Join-Path $controlResourceFull '*.xbf') -Algorithm SHA256
 Write-Host "Windows Terminal 1.24.11911.0 runtime staged to $Output"
 $controlHashes | ForEach-Object { Write-Host "  $([IO.Path]::GetFileName($_.Path))  $($_.Hash)" }

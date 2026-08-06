@@ -1,8 +1,10 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
@@ -20,7 +22,8 @@ struct AnsiStyleConnection :
         AnsiStyleConnection,
         winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection> {
     explicit AnsiStyleConnection(
-        winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection inner);
+        winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection inner,
+        std::function<void(std::wstring_view)> output_observer = {});
     ~AnsiStyleConnection();
 
     void Initialize(const winrt::Windows::Foundation::Collections::ValueSet& settings);
@@ -54,6 +57,7 @@ private:
     bool codex_ui_seen_{false};
     std::atomic_bool user_input_active_{false};
     std::wstring placeholder_text_;
+    std::function<void(std::wstring_view)> output_observer_;
 
     winrt::event<winrt::Microsoft::Terminal::TerminalConnection::TerminalOutputHandler>
         output_handlers_;
