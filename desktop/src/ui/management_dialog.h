@@ -22,13 +22,21 @@ struct ManagementDialogResult {
 
 using AgentRestartCallback =
     std::function<bool(const aicli::agent::AgentConfig&, std::wstring* error)>;
+using ThemeChangedCallback = std::function<void(bool light_theme)>;
 
 ManagementDialogResult ShowManagementDialog(
     HWND owner,
     ManagementMode mode,
     aicli::DataStore& store,
     aicli::agent::RemoteAgent& agent,
-    AgentRestartCallback restart_agent = {});
+    AgentRestartCallback restart_agent = {},
+    ThemeChangedCallback theme_changed = {});
+
+bool ShowGroupNameDialog(HWND owner,
+                         const std::wstring& title,
+                         const std::wstring& subtitle,
+                         const std::wstring& initial_name,
+                         bool light_theme,
+                         std::wstring& name);
 
 } // namespace aicli::ui
-

@@ -7,6 +7,8 @@ namespace {
 
 constexpr std::wstring_view kMutedForeground = L"\x1b[38;2;102;102;102m";
 constexpr std::wstring_view kDefaultForeground = L"\x1b[39m";
+constexpr std::wstring_view kCodexInputBackground = L"\x1b[48;2;41;41;41m";
+constexpr std::wstring_view kLightInputBackground = L"\x1b[48;2;232;235;239m";
 
 void WrapMutedLiteral(std::wstring& value, std::wstring_view literal) {
     size_t position = 0;
@@ -48,8 +50,10 @@ size_t SkipCsiSequence(std::wstring_view value, size_t position) {
 
 void StyleCodexInputPlaceholder(std::wstring& value,
                                 std::wstring& known_placeholder,
-                                bool user_input_active) {
-    constexpr std::wstring_view input_background = L"\x1b[48;2;41;41;41m";
+                                bool user_input_active,
+                                bool light_theme) {
+    const std::wstring_view input_background =
+        light_theme ? kLightInputBackground : kCodexInputBackground;
     size_t block = 0;
     while ((block = value.find(input_background, block)) != std::wstring::npos) {
         size_t content = block + input_background.size();
@@ -86,8 +90,12 @@ void StyleCodexInputPlaceholder(std::wstring& value,
             if (skipped_prompt_glyph && !user_input_active) {
                 known_placeholder = visible_text;
             }
-            if (!user_input_active && !known_placeholder.empty() &&
-                visible_text == known_placeholder) {
+            // Once the placeholder has been learned, matching text is the
+            // placeholder even when the last user action was Backspace.  A
+            // boolean "input active" flag cannot know that the editor became
+            // empty again, which previously left this redraw bright until the
+            // next Enter reset the flag.
+            if (!known_placeholder.empty() && visible_text == known_placeholder) {
                 value.insert(content, kMutedForeground);
                 end += kMutedForeground.size();
                 value.insert(end, kDefaultForeground);
@@ -118,16 +126,22 @@ bool ContainsSgrParameter(std::wstring_view parameters, std::wstring_view wanted
 
 AnsiStyleConnection::AnsiStyleConnection(
     winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection inner,
+    bool light_theme,
     std::function<void(std::wstring_view)> output_observer) :
-    inner_(std::move(inner)), output_observer_(std::move(output_observer)) {
+    inner_(std::move(inner)), light_theme_(light_theme),
+    output_observer_(std::move(output_observer)) {
     inner_output_token_ = inner_.TerminalOutput([this](const winrt::hstring& output) {
         const auto transformed = TransformOutput(output);
         if (!transformed.empty()) {
+            // Keep the native terminal on the hot path. Recording/network
+            // observers may touch SQLite and sockets, so invoking them first
+            // makes one Codex repaint visibly pause at intermediate cursor
+            // positions.
+            output_handlers_(transformed);
             if (output_observer_) {
                 try { output_observer_(std::wstring_view{transformed.c_str(), transformed.size()}); }
                 catch (...) {}
             }
-            output_handlers_(transformed);
         }
     });
     inner_state_token_ = inner_.StateChanged(
@@ -177,6 +191,10 @@ void AnsiStyleConnection::Close() noexcept {
     }
 }
 
+void AnsiStyleConnection::SetLightTheme(bool light_theme) noexcept {
+    light_theme_.store(light_theme, std::memory_order_relaxed);
+}
+
 winrt::event_token AnsiStyleConnection::TerminalOutput(
     const winrt::Microsoft::Terminal::TerminalConnection::TerminalOutputHandler& handler) {
     return output_handlers_.add(handler);
@@ -217,6 +235,7 @@ AnsiStyleConnection::State() const noexcept {
 
 winrt::hstring AnsiStyleConnection::TransformOutput(const winrt::hstring& output) {
     std::scoped_lock lock(transform_mutex_);
+    const bool light_theme = light_theme_.load(std::memory_order_relaxed);
     pending_.append(output.c_str(), output.size());
 
     std::wstring result;
@@ -266,7 +285,12 @@ winrt::hstring AnsiStyleConnection::TransformOutput(const winrt::hstring& output
         // ConPTY normalizes Codex's faint text to SGR 90 in this hosting path.
         // TermControl's active color table renders that code too brightly, so
         // use the same explicit #666666 foreground visible in Windows Terminal.
-        if (parameters == L"2" || parameters == L"90") {
+        if (light_theme && parameters == L"48;2;41;41;41") {
+            // Codex paints its composer with a fixed dark true-color surface.
+            // Remap only that background in the application light theme while
+            // keeping all input and rendering inside the native TermControl.
+            result.append(kLightInputBackground);
+        } else if (parameters == L"2" || parameters == L"90") {
             result.append(kMutedForeground);
             dim_active_ = true;
         } else {
@@ -294,7 +318,8 @@ winrt::hstring AnsiStyleConnection::TransformOutput(const winrt::hstring& output
         if (result.find(L"/model") != std::wstring::npos) {
             WrapMutedLiteral(result, L"to change");
         }
-        StyleCodexInputPlaceholder(result, placeholder_text_, user_input_active_.load());
+        StyleCodexInputPlaceholder(result, placeholder_text_, user_input_active_.load(),
+                                   light_theme);
     }
     return winrt::hstring{result};
 }

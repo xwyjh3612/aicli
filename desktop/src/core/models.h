@@ -13,6 +13,7 @@ struct Project {
     std::wstring folder;
     std::wstring command;
     std::wstring status{L"created"};
+    std::int64_t sort_order{};
 };
 
 struct ProjectType {

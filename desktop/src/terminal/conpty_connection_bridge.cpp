@@ -64,9 +64,9 @@ std::vector<wchar_t> BuildTerminalEnvironment() {
 
     variables[L"WT_SESSION"] = GuidString(false);
     variables[L"WT_PROFILE_ID"] = GuidString(true);
-    // Some Windows TUI libraries fall back to legacy Console APIs when TERM
-    // is absent. That fallback cannot represent SGR 2 (dim/faint), so Codex
-    // loses its muted text hierarchy even though the ConPTY transport works.
+    // Advertise the ANSI and true-color capabilities implemented by
+    // TermControl.  Codex still owns its full-screen transcript navigation;
+    // host-side terminal scrollback is used only for ordinary shell output.
     variables[L"TERM"] = L"xterm-256color";
     variables[L"COLORTERM"] = L"truecolor";
 
@@ -143,8 +143,9 @@ bool ConPtyConnectionBridge::CreateProcessAttachedToConPty() {
     HANDLE output_read = nullptr;
     HANDLE output_write = nullptr;
 
-    if (!CreatePipe(&input_read, &input_write, &attributes, 0)) return false;
-    if (!CreatePipe(&output_read, &output_write, &attributes, 0)) {
+    constexpr DWORD pipe_buffer_size = 128 * 1024;
+    if (!CreatePipe(&input_read, &input_write, &attributes, pipe_buffer_size)) return false;
+    if (!CreatePipe(&output_read, &output_write, &attributes, pipe_buffer_size)) {
         CloseHandle(input_read);
         CloseHandle(input_write);
         return false;
@@ -224,8 +225,16 @@ void ConPtyConnectionBridge::WriteInput(winrt::array_view<const char16_t> data) 
     if (!input_ || data.empty()) return;
     const auto bytes = Utf8(std::wstring_view{
         reinterpret_cast<const wchar_t*>(data.data()), data.size()});
-    DWORD written = 0;
-    WriteFile(input_, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
+    std::scoped_lock lock(input_mutex_);
+    size_t offset = 0;
+    while (offset < bytes.size() && input_ && !closing_) {
+        DWORD written = 0;
+        const auto remaining = static_cast<DWORD>(std::min<size_t>(
+            bytes.size() - offset, static_cast<size_t>(MAXDWORD)));
+        if (!WriteFile(input_, bytes.data() + offset, remaining, &written, nullptr) || written == 0)
+            break;
+        offset += written;
+    }
 }
 
 void ConPtyConnectionBridge::Resize(uint32_t rows, uint32_t columns) {
@@ -239,7 +248,10 @@ void ConPtyConnectionBridge::Resize(uint32_t rows, uint32_t columns) {
 }
 
 void ConPtyConnectionBridge::ReadLoop() {
-    char buffer[8192];
+    // Windows Terminal's ConptyConnection reads 128 KiB at a time. Keeping
+    // the same batch size prevents one Codex TUI repaint from being presented
+    // as many small frames with the cursor at several transient positions.
+    char buffer[128 * 1024];
     DWORD read = 0;
     std::string pending;
     while (!closing_ && output_ &&

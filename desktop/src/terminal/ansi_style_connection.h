@@ -23,6 +23,7 @@ struct AnsiStyleConnection :
         winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection> {
     explicit AnsiStyleConnection(
         winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection inner,
+        bool light_theme,
         std::function<void(std::wstring_view)> output_observer = {});
     ~AnsiStyleConnection();
 
@@ -31,6 +32,7 @@ struct AnsiStyleConnection :
     void WriteInput(winrt::array_view<const char16_t> data);
     void Resize(uint32_t rows, uint32_t columns);
     void Close() noexcept;
+    void SetLightTheme(bool light_theme) noexcept;
 
     winrt::event_token TerminalOutput(
         const winrt::Microsoft::Terminal::TerminalConnection::TerminalOutputHandler& handler);
@@ -56,6 +58,7 @@ private:
     bool dim_active_{false};
     bool codex_ui_seen_{false};
     std::atomic_bool user_input_active_{false};
+    std::atomic_bool light_theme_{false};
     std::wstring placeholder_text_;
     std::function<void(std::wstring_view)> output_observer_;
 

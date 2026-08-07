@@ -7,6 +7,7 @@
 #include <appmodel.h>
 #include <roapi.h>
 #include <psapi.h>
+#include <gdiplus.h>
 #include <string>
 #include <vector>
 #include <mutex>
@@ -15,13 +16,19 @@
 #include <fstream>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cmath>
+#include <cstring>
+#include <cwctype>
 #include <filesystem>
 #include <functional>
 #include <string_view>
 #include <optional>
+#include <unordered_map>
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.UI.Core.h>
 #include <winrt/Windows.UI.Xaml.h>
 #include <winrt/Windows.UI.Xaml.Controls.h>
 #include <winrt/Windows.UI.Xaml.Controls.Primitives.h>
@@ -49,6 +56,7 @@
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "msimg32.lib")
 #pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 namespace {
 constexpr wchar_t kApplicationUserModelId[] = L"AiCli.Desktop.Dev_jw3zr00rmb0ym!App";
@@ -57,6 +65,8 @@ constexpr UINT WM_REMOTE_CONTROL = WM_APP + 21;
 constexpr UINT WM_PAIRING_PENDING = WM_APP + 22;
 constexpr UINT WM_AGENT_STATUS = WM_APP + 23;
 constexpr UINT WM_RESTORE_LAST_SESSION = WM_APP + 24;
+constexpr UINT WM_TERMINAL_DIRTY = WM_APP + 25;
+constexpr UINT WM_TRANSCRIPT_STATE = WM_APP + 26;
 constexpr int ID_PROJECT_LIST = 1001;
 constexpr int ID_NEW_PROJECT = 1004;
 constexpr int ID_SETTINGS = 1005;
@@ -77,19 +87,81 @@ constexpr int ID_CTX_DELETE = 3006;
 constexpr int ID_CTX_OPEN_FOLDER = 3007;
 constexpr int ID_CTX_MOVE_DEFAULT = 3008;
 constexpr int ID_CTX_MOVE_GROUP_BASE = 3200;
+constexpr int ID_GROUP_SELECT_BASE = 3500;
 constexpr int ID_MINIMIZE = 3010;
 constexpr int ID_CLOSE = 3011;
 constexpr wchar_t kClassName[] = L"AicliDesktopWindow";
+constexpr wchar_t kTranscriptOverlayClassName[] = L"AicliTranscriptOverlay";
 constexpr UINT_PTR kXamlIslandSubclassId = 0xA1C11;
+constexpr UINT_PTR kTerminalSnapshotTimerId = 2;
 constexpr int kCustomTitleBarHeight = 52;
+constexpr int kFooterHeight = 30;
+constexpr int kFooterTelemetryWidth = 344;
+
+struct GdiplusRuntime {
+    ULONG_PTR token{};
+    GdiplusRuntime(){
+        Gdiplus::GdiplusStartupInput input;
+        Gdiplus::GdiplusStartup(&token,&input,nullptr);
+    }
+    ~GdiplusRuntime(){if(token)Gdiplus::GdiplusShutdown(token);}
+};
+
+Gdiplus::Color SmoothColor(COLORREF color,BYTE alpha=255){
+    return Gdiplus::Color(alpha,GetRValue(color),GetGValue(color),GetBValue(color));
+}
+
+void AddRoundedPath(Gdiplus::GraphicsPath& path,const Gdiplus::RectF& rect,float radius){
+    const float diameter=std::min(radius*2.0f,std::min(rect.Width,rect.Height));
+    if(diameter<=1.0f){path.AddRectangle(rect);return;}
+    path.AddArc(rect.X,rect.Y,diameter,diameter,180.0f,90.0f);
+    path.AddArc(rect.GetRight()-diameter,rect.Y,diameter,diameter,270.0f,90.0f);
+    path.AddArc(rect.GetRight()-diameter,rect.GetBottom()-diameter,diameter,diameter,0.0f,90.0f);
+    path.AddArc(rect.X,rect.GetBottom()-diameter,diameter,diameter,90.0f,90.0f);
+    path.CloseFigure();
+}
+
+void DrawSmoothRoundedRect(HDC dc,const RECT& rect,float radius,
+                           COLORREF fill,COLORREF stroke,float stroke_width=1.0f,
+                           bool dashed=false){
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    Gdiplus::RectF bounds{
+        static_cast<float>(rect.left)+stroke_width/2.0f,
+        static_cast<float>(rect.top)+stroke_width/2.0f,
+        std::max(1.0f,static_cast<float>(rect.right-rect.left)-stroke_width),
+        std::max(1.0f,static_cast<float>(rect.bottom-rect.top)-stroke_width)};
+    Gdiplus::GraphicsPath path;
+    AddRoundedPath(path,bounds,radius);
+    Gdiplus::SolidBrush brush(SmoothColor(fill));
+    graphics.FillPath(&brush,&path);
+    Gdiplus::Pen pen(SmoothColor(stroke),stroke_width);
+    if(dashed)pen.SetDashStyle(Gdiplus::DashStyleDash);
+    graphics.DrawPath(&pen,&path);
+}
 
 using aicli::DeviceRecord;
 using aicli::Project;
 using aicli::ProjectGroup;
 using aicli::ProjectType;
-struct RemoteInputMessage { std::wstring project_id, phone_id, input; };
+struct RemoteInputMessage {
+    std::wstring project_id,phone_id,input;
+    HANDLE completed{CreateEventW(nullptr,TRUE,FALSE,nullptr)};
+    std::atomic_bool cancelled{};
+    bool accepted{};
+    std::wstring error;
+    RemoteInputMessage(std::wstring project,std::wstring phone,std::wstring value):
+        project_id(std::move(project)),phone_id(std::move(phone)),input(std::move(value)){}
+    ~RemoteInputMessage(){if(completed)CloseHandle(completed);}
+};
 struct RemoteControlMessage { std::wstring project_id, phone_id, action; };
 struct AgentStatusMessage { bool online{}; std::wstring text; };
+struct TranscriptStateMessage {
+    std::wstring project_id;
+    int open{-1};
+    int percent{-1};
+};
 
 int EnsurePackagedActivation() {
     UINT32 length = 0;
@@ -102,6 +174,49 @@ int EnsurePackagedActivation() {
     const HRESULT activated = manager->ActivateApplication(kApplicationUserModelId, nullptr, AO_NONE, &process_id);
     manager->Release();
     return SUCCEEDED(activated) ? 0 : -1;
+}
+
+std::wstring Base64EncodeUtf16(const std::wstring& text) {
+    static constexpr wchar_t alphabet[] =
+        L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const auto* bytes = reinterpret_cast<const unsigned char*>(text.data());
+    const size_t size = text.size() * sizeof(wchar_t);
+    std::wstring output;
+    output.reserve(((size + 2) / 3) * 4);
+    for (size_t offset = 0; offset < size; offset += 3) {
+        const unsigned value =
+            (static_cast<unsigned>(bytes[offset]) << 16) |
+            ((offset + 1 < size ? static_cast<unsigned>(bytes[offset + 1]) : 0) << 8) |
+            (offset + 2 < size ? static_cast<unsigned>(bytes[offset + 2]) : 0);
+        output.push_back(alphabet[(value >> 18) & 0x3f]);
+        output.push_back(alphabet[(value >> 12) & 0x3f]);
+        output.push_back(offset + 1 < size ? alphabet[(value >> 6) & 0x3f] : L'=');
+        output.push_back(offset + 2 < size ? alphabet[value & 0x3f] : L'=');
+    }
+    return output;
+}
+
+std::wstring PowerShellLiteral(std::wstring value) {
+    size_t position = 0;
+    while ((position = value.find(L'\'', position)) != std::wstring::npos) {
+        value.insert(position, 1, L'\'');
+        position += 2;
+    }
+    return L"'" + value + L"'";
+}
+
+std::wstring BuildTerminalCommand(const std::wstring& command, const std::wstring& cwd) {
+    std::wstring script =
+        L"$OutputEncoding=[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new();"
+        L"[Console]::InputEncoding=[System.Text.UTF8Encoding]::new();";
+    if (!cwd.empty()) {
+        const auto folder = PowerShellLiteral(cwd);
+        script += L"if(Test-Path -LiteralPath " + folder +
+                  L"){Set-Location -LiteralPath " + folder + L"};";
+    }
+    script += command;
+    return L"powershell.exe -NoLogo -NoExit -ExecutionPolicy Bypass -EncodedCommand " +
+           Base64EncodeUtf16(script);
 }
 
 class WinRtComponentRegistry {
@@ -127,7 +242,7 @@ public:
                     L"Microsoft.Terminal.UI.ResourceString",
                     L"Microsoft.Terminal.UI.Converters",
                     L"Microsoft.Terminal.UI.IconPathConverter"}) &&
-               Register(L"Microsoft.Terminal.Control.dll", {
+                Register(L"Microsoft.Terminal.Control.dll", {
                     L"Microsoft.Terminal.Control.ControlCore",
                     L"Microsoft.Terminal.Control.ControlInteractivity",
                     L"Microsoft.Terminal.Control.KeyChord",
@@ -151,9 +266,19 @@ private:
         const auto full_path = directory_ / file;
         HMODULE module = LoadLibraryExW(full_path.c_str(), nullptr,
             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS);
-        if (!module) return false;
+        if (!module) {
+            std::ofstream log(directory_ / L"component-load-error.txt", std::ios::trunc);
+            log << "LoadLibraryEx failed for " << std::filesystem::path(file).string()
+                << ": " << GetLastError() << "\n";
+            return false;
+        }
         auto callback = reinterpret_cast<PFNGETACTIVATIONFACTORY>(GetProcAddress(module, "DllGetActivationFactory"));
-        if (!callback) return false;
+        if (!callback) {
+            std::ofstream log(directory_ / L"component-load-error.txt", std::ios::trunc);
+            log << "DllGetActivationFactory missing for "
+                << std::filesystem::path(file).string() << "\n";
+            return false;
+        }
 
         modules_.push_back(module);
         std::vector<winrt::hstring> names;
@@ -168,8 +293,15 @@ private:
             callbacks.push_back(callback);
         }
         RO_REGISTRATION_COOKIE cookie{};
-        if (FAILED(RoRegisterActivationFactories(ids.data(), callbacks.data(),
-                                                 static_cast<UINT32>(ids.size()), &cookie))) return false;
+        const HRESULT registration = RoRegisterActivationFactories(
+            ids.data(), callbacks.data(), static_cast<UINT32>(ids.size()), &cookie);
+        if (FAILED(registration)) {
+            std::ofstream log(directory_ / L"component-load-error.txt", std::ios::trunc);
+            log << "RoRegisterActivationFactories failed for "
+                << std::filesystem::path(file).string() << ": 0x"
+                << std::hex << static_cast<unsigned long>(registration) << "\n";
+            return false;
+        }
         cookies_.push_back(cookie);
         return true;
     }
@@ -254,6 +386,11 @@ private:
 };
 
 class XamlIslandAdapter;
+LRESULT CALLBACK TranscriptOverlayProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam);
 LRESULT CALLBACK XamlIslandSubclassProc(
     HWND hwnd,
     UINT message,
@@ -264,6 +401,9 @@ LRESULT CALLBACK XamlIslandSubclassProc(
 
 class XamlIslandAdapter {
 public:
+    ~XamlIslandAdapter() {
+        if (overlay_) DestroyWindow(overlay_);
+    }
     bool Attach(HWND parent, RECT rc) {
         try {
             parent_ = parent;
@@ -281,7 +421,10 @@ public:
                 winrt::throw_last_error();
             }
             grid_=winrt::Windows::UI::Xaml::Controls::Grid();
-            grid_.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(winrt::Windows::UI::Color{0xff,0x12,0x12,0x12}));
+            const auto background = light_theme_
+                ? winrt::Windows::UI::Color{0xff, 0xf7, 0xf8, 0xfa}
+                : winrt::Windows::UI::Color{0xff, 0x0c, 0x0c, 0x0c};
+            grid_.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(background));
             try {
                 application_.as<winrt::Windows::UI::Xaml::Application>()
                     .Resources().MergedDictionaries().Append(
@@ -289,20 +432,33 @@ public:
             } catch (...) {
                 // The terminal still works with its compiled resources when WinUI theme resources are unavailable.
             }
-            source_.Content(grid_); Resize(rc);
+            source_.Content(grid_);
+            EnsureTranscriptOverlay();
+            Resize(rc);
             ShowWindow(hwnd_,SW_HIDE); return true;
         } catch (...) { return false; }
     }
-    bool Start(const std::wstring& command, const std::wstring& cwd, const std::wstring& title, HWND owner, HWND status,
+    bool Start(const std::wstring& project_id, const std::wstring& command,
+               const std::wstring& cwd, const std::wstring& title, HWND owner, HWND status,
                std::function<void(std::wstring_view)> output_observer = {}) {
+        if (project_id.empty()) {
+            last_error_ = L"project id is empty";
+            return false;
+        }
+        if (HasSession(project_id)) return Activate(project_id);
         std::wstring stage = L"prepare";
         auto set_stage = [&](const wchar_t* value) {
             stage = value;
             if (status) SetWindowTextW(status, (L"正在初始化原生终端: " + stage).c_str());
         };
         try {
-            Stop();
             using namespace winrt::Microsoft::Terminal;
+            auto session = std::make_unique<TerminalSession>();
+            std::wstring normalized_command = command;
+            std::transform(normalized_command.begin(), normalized_command.end(),
+                           normalized_command.begin(),
+                           [](wchar_t value) { return std::towlower(value); });
+            session->is_codex = normalized_command.find(L"codex") != std::wstring::npos;
             set_stage(L"activate TerminalSettings");
             auto settings_activation = LocalActivationFactory<winrt::Windows::Foundation::IActivationFactory>(
                 L"Microsoft.Terminal.Settings.Model.dll",
@@ -321,38 +477,7 @@ public:
             // default foreground. Apply Windows Terminal's Campbell palette so
             // Codex's normal, dim, and bright text retain their intended visual
             // hierarchy instead of most text being rendered as bright white.
-            auto scheme_activation = LocalActivationFactory<winrt::Windows::Foundation::IActivationFactory>(
-                L"Microsoft.Terminal.Settings.Model.dll",
-                L"Microsoft.Terminal.Settings.Model.ColorScheme");
-            auto scheme = scheme_activation.ActivateInstance<Settings::Model::ColorScheme>();
-            using TerminalColor = Core::Color;
-            scheme.Name(L"AI CLI Campbell");
-            scheme.Foreground(TerminalColor{0xcc, 0xcc, 0xcc, 0xff});
-            scheme.Background(TerminalColor{0x0c, 0x0c, 0x0c, 0xff});
-            scheme.CursorColor(TerminalColor{0xff, 0xff, 0xff, 0xff});
-            scheme.SelectionBackground(TerminalColor{0x26, 0x4f, 0x78, 0xff});
-            constexpr std::array<TerminalColor, 16> campbell{
-                TerminalColor{0x0c, 0x0c, 0x0c, 0xff},
-                TerminalColor{0xc5, 0x0f, 0x1f, 0xff},
-                TerminalColor{0x13, 0xa1, 0x0e, 0xff},
-                TerminalColor{0xc1, 0x9c, 0x00, 0xff},
-                TerminalColor{0x00, 0x37, 0xda, 0xff},
-                TerminalColor{0x88, 0x17, 0x98, 0xff},
-                TerminalColor{0x3a, 0x96, 0xdd, 0xff},
-                TerminalColor{0xcc, 0xcc, 0xcc, 0xff},
-                TerminalColor{0x76, 0x76, 0x76, 0xff},
-                TerminalColor{0xe7, 0x48, 0x56, 0xff},
-                TerminalColor{0x16, 0xc6, 0x0c, 0xff},
-                TerminalColor{0xf9, 0xf1, 0xa5, 0xff},
-                TerminalColor{0x3b, 0x78, 0xff, 0xff},
-                TerminalColor{0xb4, 0x00, 0x9e, 0xff},
-                TerminalColor{0x61, 0xd6, 0xd6, 0xff},
-                TerminalColor{0xf2, 0xf2, 0xf2, 0xff},
-            };
-            for (uint8_t index = 0; index < campbell.size(); ++index) {
-                scheme.SetColorTableEntry(index, campbell[index]);
-            }
-            default_settings.ApplyColorScheme(scheme);
+            ApplyPalette(default_settings, light_theme_);
             // Preserve SGR 2 exactly. Automatic contrast adjustment can lift
             // faint text back toward the normal foreground in some hosts.
             default_settings.AdjustIndistinguishableColors(Core::AdjustTextMode::Never);
@@ -364,37 +489,51 @@ public:
                 L"Microsoft.Terminal.Settings.Model.dll",
                 L"Microsoft.Terminal.Settings.Model.TerminalSettingsCreateResult");
             auto settings_result = settings_result_factory.CreateInstance(default_settings);
-            auto control_settings = settings_result.DefaultSettings();
-            auto unfocused_settings = settings_result.UnfocusedSettings();
+            session->control_settings = settings_result.DefaultSettings();
+            session->unfocused_settings = settings_result.UnfocusedSettings();
 
-            // Do not activate TerminalConnection.dll here.  That DLL is a
-            // private Windows Terminal implementation detail and its ABI and
-            // dependency graph vary between installed builds.  The bridge
-            // below implements the public ITerminalConnection contract and
-            // owns a system ConPTY, while TermControl remains responsible for
-            // native rendering, keyboard handling, selection and scrolling.
+            // TerminalConnection.dll has repeatedly crashed inside its private
+            // implementation on this supported Windows build. Keep TermControl
+            // for native rendering/input, but always use the stable system
+            // CreatePseudoConsole bridge for process transport.
             set_stage(L"create ConPTY connection");
-            auto bridge = winrt::make<aicli::terminal::ConPtyConnectionBridge>(cwd, command);
-            connection_ = winrt::make<aicli::terminal::AnsiStyleConnection>(bridge, output_observer);
-            official_connection_ = false;
+            TerminalConnection::ITerminalConnection terminal_connection =
+                winrt::make<aicli::terminal::ConPtyConnectionBridge>(cwd, command);
+            auto combined_observer =
+                [this, project_id, is_codex = session->is_codex, output_observer]
+                (std::wstring_view output) {
+                    if (is_codex) ObserveTranscriptOutput(project_id, output);
+                    if (output_observer) output_observer(output);
+                };
+            session->style_connection = winrt::make_self<aicli::terminal::AnsiStyleConnection>(
+                terminal_connection, light_theme_, std::move(combined_observer));
+            session->connection = session->style_connection.as<
+                winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection>();
             set_stage(L"create TermControl");
             auto control_factory = LocalActivationFactory<Control::ITermControlFactory>(
                 L"Microsoft.Terminal.Control.dll",
                 L"Microsoft.Terminal.Control.TermControl");
-            control_ = control_factory.CreateInstance2(control_settings, unfocused_settings, connection_);
+            session->control = control_factory.CreateInstance2(
+                session->control_settings, session->unfocused_settings, session->connection);
             set_stage(L"attach TermControl");
-            control_.OwningHwnd(reinterpret_cast<uint64_t>(owner));
-            control_.HorizontalAlignment(winrt::Windows::UI::Xaml::HorizontalAlignment::Stretch);
-            control_.VerticalAlignment(winrt::Windows::UI::Xaml::VerticalAlignment::Stretch);
-            grid_.Children().Append(control_);
+            // TermControl derives the TSF/IME candidate-window position from
+            // OwningHwnd's screen rectangle plus the cursor's XAML-local
+            // coordinates.  Our XAML root begins at the terminal island (not
+            // at the main window origin), so using the main HWND loses the
+            // island's left/top offset and places IME UI over the sidebar.
+            session->control.OwningHwnd(reinterpret_cast<uint64_t>(hwnd_ ? hwnd_ : owner));
+            session->control.HorizontalAlignment(winrt::Windows::UI::Xaml::HorizontalAlignment::Stretch);
+            session->control.VerticalAlignment(winrt::Windows::UI::Xaml::VerticalAlignment::Stretch);
+            session->control.Visibility(winrt::Windows::UI::Xaml::Visibility::Collapsed);
+            grid_.Children().Append(session->control);
+            sessions_.emplace(project_id, std::move(session));
+            Activate(project_id);
             ShowWindow(hwnd_, SW_SHOW);
             SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
             grid_.UpdateLayout();
-            control_.UpdateLayout();
-            visible_ = false;
+            if (auto* active = ActiveSession()) active->control.UpdateLayout();
             SetVisible(true);
-            control_.Focus(winrt::Windows::UI::Xaml::FocusState::Programmatic);
             last_error_.clear();
             return true;
         } catch (const winrt::hresult_error& error) {
@@ -405,37 +544,130 @@ public:
             last_error_ += L" ";
             last_error_ += error.message().c_str();
             OutputDebugStringW((L"AI CLI TermControl: " + last_error_ + L"\n").c_str());
-            Stop();
+            Stop(project_id);
             return false;
         } catch (...) {
             last_error_ = stage + L": unknown error";
-            Stop();
+            Stop(project_id);
             return false;
         }
     }
-    void Stop() {
-        SetVisible(false);
+    bool HasSession(std::wstring_view project_id) const {
+        return sessions_.find(std::wstring(project_id)) != sessions_.end();
+    }
+    bool Activate(std::wstring_view project_id) {
+        auto* next = FindSession(project_id);
+        if (!next) return false;
+        const std::wstring next_id{project_id};
+        if (active_project_id_ != next_id) {
+            if (auto* current = ActiveSession()) {
+                try {
+                    if (visible_) current->control.WindowVisibilityChanged(false);
+                    current->control.Visibility(winrt::Windows::UI::Xaml::Visibility::Collapsed);
+                    SetTranscriptChromeVisibility(*current, false);
+                } catch (...) {}
+            }
+            active_project_id_ = next_id;
+            try {
+                next->control.Visibility(winrt::Windows::UI::Xaml::Visibility::Visible);
+                if (visible_) next->control.WindowVisibilityChanged(true);
+                UpdateTranscriptChrome(*next);
+            } catch (...) {}
+        }
         try {
-            if (connection_) connection_.Close();
-            if (grid_) grid_.Children().Clear();
+            next->control.Focus(winrt::Windows::UI::Xaml::FocusState::Programmatic);
+            EnsureNativeScrollbar(next);
         } catch (...) {}
-        control_ = nullptr;
-        connection_ = nullptr;
-        official_connection_ = false;
+        return true;
+    }
+    void Stop(std::wstring_view project_id) {
+        const std::wstring id{project_id};
+        auto found = sessions_.find(id);
+        if (found == sessions_.end()) return;
+        const bool was_active = active_project_id_ == id;
+        auto& session = *found->second;
+        try {
+            if (was_active && visible_) session.control.WindowVisibilityChanged(false);
+            if (grid_ && session.control) {
+                uint32_t index{};
+                auto children = grid_.Children();
+                if (children.IndexOf(session.control, index)) children.RemoveAt(index);
+            }
+            if (session.connection) session.connection.Close();
+        } catch (...) {}
+        sessions_.erase(found);
+        if (was_active) {
+            active_project_id_.clear();
+            SetVisible(false);
+        }
+    }
+    void StopAll() {
+        SetVisible(false);
+        for (auto& [_, session] : sessions_) {
+            try { if (session->connection) session->connection.Close(); } catch (...) {}
+        }
+        try { if (grid_) grid_.Children().Clear(); } catch (...) {}
+        sessions_.clear();
+        active_project_id_.clear();
         visible_ = false;
         if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
     }
     void SetVisible(bool visible) {
         if (!hwnd_) return;
         try {
-            if (control_ && visible_ != visible) {
-                control_.WindowVisibilityChanged(visible);
-                visible_ = visible;
+            if (auto* active = ActiveSession(); active && visible_ != visible) {
+                active->control.WindowVisibilityChanged(visible);
             }
+            visible_ = visible;
             ShowWindow(hwnd_, visible ? SW_SHOW : SW_HIDE);
-            if (visible) EnsureNativeScrollbar();
+            if (overlay_) ShowWindow(overlay_, visible ? SW_SHOW : SW_HIDE);
+            if (auto* active = ActiveSession()) {
+                if (visible) {
+                    EnsureNativeScrollbar(active);
+                    UpdateTranscriptChrome(*active);
+                } else {
+                    SetTranscriptChromeVisibility(*active, false);
+                }
+            }
         } catch (...) {
             ShowWindow(hwnd_, visible ? SW_SHOW : SW_HIDE);
+            if (overlay_) ShowWindow(overlay_, visible ? SW_SHOW : SW_HIDE);
+        }
+    }
+    void SetTheme(bool light) {
+        light_theme_ = light;
+        try {
+            if (grid_) {
+                const auto background = light
+                    ? winrt::Windows::UI::Color{0xff, 0xf7, 0xf8, 0xfa}
+                    : winrt::Windows::UI::Color{0xff, 0x0c, 0x0c, 0x0c};
+                grid_.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(background));
+            }
+            for (auto& [_, session] : sessions_) {
+                if (session->style_connection) session->style_connection->SetLightTheme(light);
+                if (!session->control || !session->control_settings) continue;
+                ApplyPalette(session->control_settings, light);
+                if (session->unfocused_settings) ApplyPalette(session->unfocused_settings, light);
+                session->control.UpdateControlSettings(
+                    session->control_settings, session->unfocused_settings);
+                // Codex paints its composer into terminal cells. Existing
+                // cells keep their old true-color background until the TUI
+                // receives a resize and redraws, so briefly change one column
+                // while the settings modal has the terminal hidden.
+                const double width = session->control.Width();
+                if (width > 24.0) {
+                    session->control.Width(width - 12.0);
+                    session->control.UpdateLayout();
+                    grid_.UpdateLayout();
+                    session->control.Width(width);
+                }
+                session->control.UpdateLayout();
+            }
+            if (grid_) grid_.UpdateLayout();
+            UpdateTranscriptOverlayRegion();
+            if (overlay_) InvalidateRect(overlay_, nullptr, FALSE);
+        } catch (...) {
+            OutputDebugStringW(L"AI CLI TermControl: live theme update failed\n");
         }
     }
     void Resize(RECT rc) {
@@ -448,44 +680,105 @@ public:
         try {
             SetWindowPos(hwnd_, nullptr, rc.left, rc.top, width, height,
                          SWP_NOZORDER | SWP_NOACTIVATE);
+            if (overlay_) {
+                RECT island_screen{};
+                GetWindowRect(hwnd_, &island_screen);
+                SetWindowPos(overlay_, HWND_TOP,
+                             island_screen.left, island_screen.top, width, height,
+                             SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                if (!visible_) ShowWindow(overlay_, SW_HIDE);
+            }
             if (grid_) {
                 const UINT dpi = GetDpiForWindow(parent_);
                 const double scale = dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0;
                 grid_.Width(width / scale);
                 grid_.Height(height / scale);
-                if (control_) {
-                    control_.Width(width / scale);
-                    control_.Height(height / scale);
-                    control_.UpdateLayout();
+                for (auto& [_, session] : sessions_) {
+                    if (!session->control) continue;
+                    session->control.Width(width / scale);
+                    session->control.Height(height / scale);
+                    session->control.UpdateLayout();
                 }
                 grid_.UpdateLayout();
                 EnsureNativeScrollbar();
             }
+            if (overlay_) InvalidateRect(overlay_, nullptr, FALSE);
+            UpdateTranscriptOverlayRegion();
         } catch (...) {
             OutputDebugStringW(L"AI CLI TermControl: ignored invalid resize during window transition\n");
         }
     }
     HWND Window() const { return hwnd_; }
-    bool Active() const { return control_ != nullptr; }
+    bool Active() const { return ActiveSession() != nullptr; }
+    bool Active(std::wstring_view project_id) const { return HasSession(project_id); }
+    std::wstring ReadEntireBuffer(std::wstring_view project_id = {}) const {
+        const auto* session = project_id.empty() ? ActiveSession() : FindSession(project_id);
+        if (!session || !session->control) return {};
+        try {
+            const auto value = session->control.ReadEntireBuffer();
+            return {value.c_str(), value.size()};
+        } catch (...) {
+            return {};
+        }
+    }
     bool WriteInput(const std::wstring& value) {
-        if(!connection_||value.empty())return false;
+        return WriteInput(active_project_id_, value);
+    }
+    bool WriteInput(std::wstring_view project_id, const std::wstring& value) {
+        auto* session = FindSession(project_id);
+        if(!session||!session->connection||value.empty())return false;
         try{
             const auto* first=reinterpret_cast<const char16_t*>(value.data());
-            connection_.WriteInput(winrt::array_view<const char16_t>{first,static_cast<uint32_t>(value.size())});
+            session->connection.WriteInput(winrt::array_view<const char16_t>{first,static_cast<uint32_t>(value.size())});
             return true;
         }catch(...){return false;}
     }
-    bool HandleMouseWheel(WPARAM wparam, LPARAM lparam, bool horizontal = false) {
-        if (!control_ || !visible_ || !hwnd_) return false;
+    bool HandleMouseWheel(
+        WPARAM wparam,
+        LPARAM lparam,
+        bool horizontal = false,
+        bool pointer_message = false) {
+        auto* session = ActiveSession();
+        if (!session || !session->control || !visible_ || !hwnd_) return false;
         const auto delta = static_cast<int32_t>(GET_WHEEL_DELTA_WPARAM(wparam));
         if (delta == 0) return false;
         try {
             POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            RECT terminal_rect{};
+            if (!GetWindowRect(hwnd_, &terminal_rect) || !PtInRect(&terminal_rect, point)) return false;
             ScreenToClient(hwnd_, &point);
             const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
             const float scale = dpi ? static_cast<float>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0f;
-            const auto keys = GET_KEYSTATE_WPARAM(wparam);
-            control_.as<winrt::Microsoft::Terminal::Control::IMouseWheelListener>().OnMouseWheel(
+            const auto keys = pointer_message ? 0 : GET_KEYSTATE_WPARAM(wparam);
+
+            if (!horizontal && session->is_codex) {
+                if (!session->transcript_mode && delta > 0) {
+                    EnterTranscript(*session);
+                    SendTranscriptInput(*session, L"\x1b[A\x1b[A\x1b[A");
+                    return true;
+                }
+                if (session->transcript_mode) {
+                    if (delta < 0 && session->transcript_percent >= 100) {
+                        LeaveTranscript(*session);
+                        return true;
+                    }
+                    const int steps = std::max(1, std::abs(delta) / WHEEL_DELTA) * 3;
+                    std::wstring input;
+                    const std::wstring_view sequence = delta > 0 ? L"\x1b[A" : L"\x1b[B";
+                    input.reserve(sequence.size() * static_cast<size_t>(steps));
+                    for (int index = 0; index < steps; ++index) input.append(sequence);
+                    SendTranscriptInput(*session, input);
+                    return true;
+                }
+            }
+
+            // Route every wheel gesture through TermControl's native listener,
+            // exactly as Windows Terminal does. TermControl owns scrollback,
+            // touchpad accumulation, Ctrl+wheel zoom and TUI mouse handling;
+            // the host must not try to reproduce those rules with BufferHeight
+            // and ScrollViewport or inject pager/navigation keys into Codex.
+            session->control.as<
+                winrt::Microsoft::Terminal::Control::IMouseWheelListener>().OnMouseWheel(
                 winrt::Windows::Foundation::Point{
                     static_cast<float>(point.x) / scale,
                     static_cast<float>(point.y) / scale},
@@ -501,23 +794,510 @@ public:
             return false;
         }
     }
+    void HandleTranscriptCaptureChanged() noexcept {
+        transcript_dragging_ = false;
+        transcript_drag_offset_ = 0.0;
+    }
+    bool OverlayTranscriptHit(POINT point) const noexcept {
+        const auto* session = ActiveSession();
+        if (!session || !session->is_codex || !session->transcript_mode || !visible_ || !overlay_) {
+            return false;
+        }
+        RECT client{};
+        GetClientRect(overlay_, &client);
+        const int width = client.right - client.left;
+        const int height = client.bottom - client.top;
+        if (width <= 0 || height <= 0) return false;
+        int row = 18;
+        try {
+            const auto dimensions = session->control.CharacterDimensions();
+            if (dimensions.Height >= 8.0f && dimensions.Height <= 64.0f) {
+                const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
+                row = std::max(8, static_cast<int>(std::ceil(
+                    dimensions.Height * (dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0))));
+            }
+        } catch (...) {}
+        const int top = row * 3;
+        const int bottom = row * 5 + 2;
+        const int track_left = width - 18;
+        return point.x >= track_left && point.x <= width &&
+               point.y >= top && point.y <= height - bottom;
+    }
+    bool HandleTranscriptOverlayMouse(UINT message, LPARAM lparam) {
+        auto* session = ActiveSession();
+        if (!session || !session->is_codex || !session->transcript_mode || !visible_ || !overlay_) {
+            return false;
+        }
+        RECT client{};
+        GetClientRect(overlay_, &client);
+        const int width = client.right - client.left;
+        const int height = client.bottom - client.top;
+        if (width <= 0 || height <= 0) return false;
+        int row = 18;
+        try {
+            const auto dimensions = session->control.CharacterDimensions();
+            if (dimensions.Height >= 8.0f && dimensions.Height <= 64.0f) {
+                const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
+                row = std::max(8, static_cast<int>(std::ceil(
+                    dimensions.Height * (dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0))));
+            }
+        } catch (...) {}
+        const double top = static_cast<double>(row * 3);
+        const double bottom = static_cast<double>(row * 5 + 2);
+        const double track_left = static_cast<double>(width - 18);
+        const double track_height = std::max(1.0, static_cast<double>(height) - top - bottom);
+        const double thumb_height = std::clamp(track_height * 0.18, 32.0, 92.0);
+        const double travel = std::max(1.0, track_height - thumb_height);
+        const double y = static_cast<double>(GET_Y_LPARAM(lparam));
+        const double x = static_cast<double>(GET_X_LPARAM(lparam));
+        if (!transcript_dragging_ &&
+            (x < track_left || x > width || y < top || y > top + track_height)) {
+            return false;
+        }
+        auto update_position = [&](double pointer_y, double offset) {
+            const double position = std::clamp(pointer_y - top - offset, 0.0, travel);
+            SetTranscriptPercent(
+                *session,
+                static_cast<int>(std::lround(position * 100.0 / travel)));
+        };
+        if (message == WM_LBUTTONDOWN) {
+            const double current_top = travel * session->transcript_percent / 100.0;
+            const bool on_thumb = y >= top + current_top && y <= top + current_top + thumb_height;
+            transcript_dragging_ = true;
+            transcript_drag_offset_ = on_thumb ? y - (top + current_top) : thumb_height / 2.0;
+            SetCapture(overlay_);
+            update_position(y, transcript_drag_offset_);
+            InvalidateRect(overlay_, nullptr, FALSE);
+            return true;
+        }
+        if (message == WM_MOUSEMOVE && transcript_dragging_) {
+            update_position(y, transcript_drag_offset_);
+            InvalidateRect(overlay_, nullptr, FALSE);
+            return true;
+        }
+        if (message == WM_LBUTTONUP && transcript_dragging_) {
+            transcript_dragging_ = false;
+            ReleaseCapture();
+            update_position(y, transcript_drag_offset_);
+            transcript_drag_offset_ = 0.0;
+            InvalidateRect(overlay_, nullptr, FALSE);
+            return true;
+        }
+        return transcript_dragging_;
+    }
+    void PaintTranscriptOverlay(HDC dc) noexcept {
+        auto* session = ActiveSession();
+        if (!session || !session->is_codex || !session->transcript_mode || !visible_) return;
+        RECT client{};
+        GetClientRect(overlay_, &client);
+        const int width = client.right - client.left;
+        const int height = client.bottom - client.top;
+        if (width <= 0 || height <= 0) return;
+        int row = 18;
+        try {
+            const auto dimensions = session->control.CharacterDimensions();
+            if (dimensions.Height >= 8.0f && dimensions.Height <= 64.0f) {
+                const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
+                row = std::max(8, static_cast<int>(std::ceil(
+                    dimensions.Height * (dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0))));
+            }
+        } catch (...) {}
+        const int top = row * 3;
+        const int bottom = row * 5 + 2;
+        const COLORREF background = light_theme_ ? RGB(247, 248, 250) : RGB(12, 12, 12);
+        HBRUSH cover = CreateSolidBrush(background);
+        RECT top_rect{0, 0, width, std::min(height, top)};
+        RECT bottom_rect{0, std::max(0, height - bottom), width, height};
+        FillRect(dc, &top_rect, cover);
+        FillRect(dc, &bottom_rect, cover);
+        RECT scrollbar_cover{std::max(0, width - 20), top,
+                             width, std::max(top, height - bottom)};
+        FillRect(dc, &scrollbar_cover, cover);
+        DeleteObject(cover);
+
+        const int track_left = width - 12;
+        const int track_top = top + 2;
+        const int track_bottom = std::max(track_top + 1, height - bottom - 2);
+        HBRUSH track = CreateSolidBrush(light_theme_ ? RGB(224, 228, 236) : RGB(37, 43, 53));
+        RECT track_rect{track_left + 3, track_top, track_left + 7, track_bottom};
+        FillRect(dc, &track_rect, track);
+        DeleteObject(track);
+
+        const int track_height = track_bottom - track_top;
+        const int thumb_height = std::clamp(static_cast<int>(std::lround(track_height * 0.18)), 32, 92);
+        const int travel = std::max(0, track_height - thumb_height);
+        const int thumb_top = track_top + static_cast<int>(std::lround(
+            travel * static_cast<double>(std::clamp(session->transcript_percent, 0, 100)) / 100.0));
+        HBRUSH thumb = CreateSolidBrush(RGB(123, 134, 152));
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(123, 134, 152));
+        const auto old_brush = SelectObject(dc, thumb);
+        const auto old_pen = SelectObject(dc, pen);
+        RoundRect(dc, track_left, thumb_top, track_left + 8, thumb_top + thumb_height, 5, 5);
+        SelectObject(dc, old_pen);
+        SelectObject(dc, old_brush);
+        DeleteObject(pen);
+        DeleteObject(thumb);
+    }
+    void UpdateTranscriptOverlayRegion() noexcept {
+        if (!overlay_) return;
+        auto* session = ActiveSession();
+        if (!session || !session->is_codex || !session->transcript_mode || !visible_) {
+            SetWindowRgn(overlay_, nullptr, TRUE);
+            return;
+        }
+        RECT client{};
+        GetClientRect(overlay_, &client);
+        const int width = client.right - client.left;
+        const int height = client.bottom - client.top;
+        if (width <= 0 || height <= 0) return;
+        int row = 18;
+        try {
+            const auto dimensions = session->control.CharacterDimensions();
+            if (dimensions.Height >= 8.0f && dimensions.Height <= 64.0f) {
+                const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
+                row = std::max(8, static_cast<int>(std::ceil(
+                    dimensions.Height * (dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0))));
+            }
+        } catch (...) {}
+        const int top = std::clamp(row * 3, 0, height);
+        const int bottom = std::clamp(row * 5 + 2, 0, height);
+        HRGN region = CreateRectRgn(0, 0, 0, 0);
+        HRGN piece = CreateRectRgn(0, 0, width, top);
+        CombineRgn(region, region, piece, RGN_OR);
+        DeleteObject(piece);
+        piece = CreateRectRgn(0, std::max(0, height - bottom), width, height);
+        CombineRgn(region, region, piece, RGN_OR);
+        DeleteObject(piece);
+        piece = CreateRectRgn(std::max(0, width - 20), top,
+                              width, std::max(top, height - bottom));
+        CombineRgn(region, region, piece, RGN_OR);
+        DeleteObject(piece);
+        SetWindowRgn(overlay_, region, TRUE);
+    }
+    void EnsureTranscriptOverlay() {
+        if (overlay_ || !parent_) return;
+        WNDCLASSW wc{};
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpfnWndProc = TranscriptOverlayProc;
+        wc.lpszClassName = kTranscriptOverlayClassName;
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        RegisterClassW(&wc);
+        overlay_ = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            kTranscriptOverlayClassName,
+            L"",
+            WS_POPUP,
+            0, 0, 0, 0, parent_, nullptr, wc.hInstance, this);
+        if (!overlay_) winrt::throw_last_error();
+        ShowWindow(overlay_, SW_HIDE);
+    }
     void OnIslandDestroyed(HWND window) noexcept {
         if (hwnd_ == window) hwnd_ = nullptr;
     }
+    void UpdateNativeScrollbarHover() {
+        auto* session = ActiveSession();
+        if (!session || !hwnd_) return;
+        EnsureNativeScrollbar(session);
+        if (!session->native_scrollbar) return;
+        POINT cursor{};
+        RECT terminal_rect{};
+        if (!GetCursorPos(&cursor) || !GetWindowRect(hwnd_, &terminal_rect)) return;
+        const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
+        const double scale = dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0;
+        const int scrollbar_width = std::max(
+            16, static_cast<int>(std::ceil(session->native_scrollbar.ActualWidth() * scale)));
+        const bool expanded = PtInRect(&terminal_rect, cursor) &&
+                              cursor.x >= terminal_rect.right - scrollbar_width;
+        SetNativeScrollbarVisual(*session, expanded);
+    }
+    void CollapseNativeScrollbar() {
+        if (auto* session = ActiveSession()) SetNativeScrollbarVisual(*session, false);
+    }
+    void ApplyTranscriptState(const TranscriptStateMessage& message) {
+        auto* session = FindSession(message.project_id);
+        if (!session || !session->is_codex) return;
+        // The bridge may expose alternate-screen sequences while Codex is
+        // repainting.  Those sequences are not a reliable indication of the
+        // Codex transcript toggle, so the host-owned state is changed only by
+        // EnterTranscript/LeaveTranscript.
+        if (message.percent >= 0)
+            session->transcript_percent = std::clamp(message.percent, 0, 100);
+        if (active_project_id_ == message.project_id) UpdateTranscriptChrome(*session);
+    }
     const std::wstring& LastError() const { return last_error_; }
 private:
-    void EnsureNativeScrollbar() {
-        if (!control_) return;
+    struct TerminalSession {
+        winrt::Microsoft::Terminal::Control::TermControl control{nullptr};
+        winrt::Microsoft::Terminal::Settings::Model::TerminalSettings control_settings{nullptr};
+        winrt::Microsoft::Terminal::Settings::Model::TerminalSettings unfocused_settings{nullptr};
+        winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection connection{nullptr};
+        winrt::com_ptr<aicli::terminal::AnsiStyleConnection> style_connection;
+        winrt::Windows::UI::Xaml::Controls::Primitives::ScrollBar native_scrollbar{nullptr};
+        bool is_codex{};
+        bool transcript_mode{};
+        int transcript_percent{100};
+        bool scrollbar_visual_initialized{};
+        bool scrollbar_expanded{};
+        bool scrollbar_loaded_handler_attached{};
+    };
+
+    TerminalSession* FindSession(std::wstring_view project_id) {
+        const auto found = sessions_.find(std::wstring(project_id));
+        return found == sessions_.end() ? nullptr : found->second.get();
+    }
+    const TerminalSession* FindSession(std::wstring_view project_id) const {
+        const auto found = sessions_.find(std::wstring(project_id));
+        return found == sessions_.end() ? nullptr : found->second.get();
+    }
+    TerminalSession* ActiveSession() { return FindSession(active_project_id_); }
+    const TerminalSession* ActiveSession() const { return FindSession(active_project_id_); }
+
+    void ObserveTranscriptOutput(std::wstring_view project_id, std::wstring_view output) const {
+        int percent = -1;
+        size_t position = 0;
+        while ((position = output.find(L'%', position)) != std::wstring_view::npos) {
+            size_t begin = position;
+            while (begin > 0 && std::iswdigit(output[begin - 1])) --begin;
+            if (begin < position && position - begin <= 3) {
+                int parsed = 0;
+                for (size_t index = begin; index < position; ++index)
+                    parsed = parsed * 10 + (output[index] - L'0');
+                if (parsed >= 0 && parsed <= 100) percent = parsed;
+            }
+            ++position;
+        }
+        if (percent < 0) return;
+
+        auto* message = new (std::nothrow) TranscriptStateMessage{
+            std::wstring(project_id), -1, percent};
+        const HWND target = parent_;
+        if (!message || !target || !IsWindow(target) ||
+            !PostMessageW(target, WM_TRANSCRIPT_STATE, 0,
+                          reinterpret_cast<LPARAM>(message))) {
+            delete message;
+        }
+    }
+
+    static bool SendTranscriptInput(TerminalSession& session, std::wstring_view value) {
+        if (!session.connection || value.empty()) return false;
         try {
-            const auto element = control_.as<winrt::Windows::UI::Xaml::FrameworkElement>()
-                                     .FindName(L"ScrollBar");
-            if (const auto scrollbar = element.try_as<
-                    winrt::Windows::UI::Xaml::Controls::Primitives::ScrollBar>()) {
+            const auto* first = reinterpret_cast<const char16_t*>(value.data());
+            session.connection.WriteInput(winrt::array_view<const char16_t>{
+                first, static_cast<uint32_t>(value.size())});
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    void EnterTranscript(TerminalSession& session) {
+        if (session.transcript_mode) return;
+        const wchar_t toggle = 0x14;
+        if (!SendTranscriptInput(session, std::wstring_view{&toggle, 1})) return;
+        session.transcript_mode = true;
+        session.transcript_percent = 100;
+        UpdateTranscriptChrome(session);
+    }
+
+    void LeaveTranscript(TerminalSession& session) {
+        if (!session.transcript_mode) return;
+        const wchar_t toggle = 0x14;
+        SendTranscriptInput(session, std::wstring_view{&toggle, 1});
+        session.transcript_mode = false;
+        UpdateTranscriptChrome(session);
+    }
+
+    void SetTranscriptPercent(TerminalSession& session, int target) {
+        if (!session.transcript_mode) return;
+        target = std::clamp(target, 0, 100);
+        const int difference = target - session.transcript_percent;
+        if (difference == 0) return;
+
+        std::wstring input;
+        if (target <= 1) {
+            input = L"\x1b[H";
+        } else if (target >= 99) {
+            input = L"\x1b[F";
+        } else {
+            const int pages = std::clamp((std::abs(difference) + 7) / 8, 1, 16);
+            const std::wstring_view page = difference < 0 ? L"\x1b[5~" : L"\x1b[6~";
+            for (int index = 0; index < pages; ++index) input.append(page);
+        }
+        if (!input.empty()) SendTranscriptInput(session, input);
+        session.transcript_percent = target;
+        UpdateTranscriptChrome(session);
+    }
+
+    void SetTranscriptChromeVisibility(TerminalSession& session, bool visible) {
+        using winrt::Windows::UI::Xaml::Visibility;
+        if (session.native_scrollbar) {
+            // Keep the native scrollbar in the visual tree so TermControl's
+            // measured column count remains stable.  It is transparent only
+            // while our Codex transcript overlay is active.
+            session.native_scrollbar.Visibility(Visibility::Visible);
+            session.native_scrollbar.Opacity(visible ? 0.0 : 1.0);
+            session.native_scrollbar.IsHitTestVisible(!visible);
+        }
+        if (overlay_ && ActiveSession() == &session) {
+            UpdateTranscriptOverlayRegion();
+            ShowWindow(overlay_, visible ? SW_SHOW : SW_HIDE);
+            if (visible) SetWindowPos(overlay_, HWND_TOP, 0, 0, 0, 0,
+                                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            InvalidateRect(overlay_, nullptr, FALSE);
+        }
+    }
+
+    void UpdateTranscriptChrome(TerminalSession& session) {
+        const bool show = session.transcript_mode && visible_ &&
+                          ActiveSession() == &session;
+        if (!show) {
+            SetTranscriptChromeVisibility(session, false);
+            return;
+        }
+        SetTranscriptChromeVisibility(session, true);
+        UpdateTranscriptOverlayRegion();
+        if (overlay_) InvalidateRect(overlay_, nullptr, FALSE);
+    }
+
+    static void ApplyPalette(
+        const winrt::Microsoft::Terminal::Settings::Model::TerminalSettings& settings,
+        bool light) {
+        using namespace winrt::Microsoft::Terminal;
+        auto scheme_activation = LocalActivationFactory<winrt::Windows::Foundation::IActivationFactory>(
+            L"Microsoft.Terminal.Settings.Model.dll",
+            L"Microsoft.Terminal.Settings.Model.ColorScheme");
+        auto scheme = scheme_activation.ActivateInstance<Settings::Model::ColorScheme>();
+        using TerminalColor = Core::Color;
+        scheme.Name(light ? L"AI CLI Light" : L"AI CLI Campbell");
+        scheme.Foreground(light ? TerminalColor{0x24, 0x2a, 0x33, 0xff}
+                                : TerminalColor{0xcc, 0xcc, 0xcc, 0xff});
+        scheme.Background(light ? TerminalColor{0xf7, 0xf8, 0xfa, 0xff}
+                                : TerminalColor{0x0c, 0x0c, 0x0c, 0xff});
+        scheme.CursorColor(light ? TerminalColor{0x1c, 0x22, 0x2b, 0xff}
+                                 : TerminalColor{0xff, 0xff, 0xff, 0xff});
+        scheme.SelectionBackground(light ? TerminalColor{0xbf, 0xd8, 0xf4, 0xff}
+                                         : TerminalColor{0x26, 0x4f, 0x78, 0xff});
+        std::array<TerminalColor, 16> campbell{
+            TerminalColor{0x0c, 0x0c, 0x0c, 0xff},
+            TerminalColor{0xc5, 0x0f, 0x1f, 0xff},
+            TerminalColor{0x13, 0xa1, 0x0e, 0xff},
+            TerminalColor{0xc1, 0x9c, 0x00, 0xff},
+            TerminalColor{0x00, 0x37, 0xda, 0xff},
+            TerminalColor{0x88, 0x17, 0x98, 0xff},
+            TerminalColor{0x3a, 0x96, 0xdd, 0xff},
+            TerminalColor{0xcc, 0xcc, 0xcc, 0xff},
+            TerminalColor{0x76, 0x76, 0x76, 0xff},
+            TerminalColor{0xe7, 0x48, 0x56, 0xff},
+            TerminalColor{0x16, 0xc6, 0x0c, 0xff},
+            TerminalColor{0xf9, 0xf1, 0xa5, 0xff},
+            TerminalColor{0x3b, 0x78, 0xff, 0xff},
+            TerminalColor{0xb4, 0x00, 0x9e, 0xff},
+            TerminalColor{0x61, 0xd6, 0xd6, 0xff},
+            TerminalColor{0xf2, 0xf2, 0xf2, 0xff},
+        };
+        if (light) {
+            // Codex uses ANSI black as the composer/background surface.  A
+            // literal Campbell black leaves a black input block inside the
+            // light application theme, so map that surface to a restrained
+            // light gray while keeping bright-black available for muted text.
+            campbell[0] = TerminalColor{0xe8, 0xeb, 0xef, 0xff};
+            campbell[7] = TerminalColor{0x35, 0x3b, 0x45, 0xff};
+            campbell[8] = TerminalColor{0x6d, 0x76, 0x83, 0xff};
+            campbell[15] = TerminalColor{0x18, 0x1d, 0x25, 0xff};
+        }
+        for (uint8_t index = 0; index < campbell.size(); ++index) {
+            scheme.SetColorTableEntry(index, campbell[index]);
+        }
+        settings.ApplyColorScheme(scheme);
+        settings.AdjustIndistinguishableColors(Core::AdjustTextMode::Never);
+    }
+
+    static void SetNativeScrollbarVisual(TerminalSession& session, bool expanded) noexcept {
+        if (session.transcript_mode || !session.native_scrollbar ||
+            (session.scrollbar_visual_initialized && session.scrollbar_expanded == expanded)) {
+            return;
+        }
+        try {
+            // TermControl ships the exact Windows Terminal scrollbar template.
+            // The XAML Island does not reliably drive its pointer visual state,
+            // so select the same built-in states ourselves: a thin idle thumb
+            // and the full native track/thumb while the pointer is over it.
+            session.native_scrollbar.ApplyTemplate();
+            const bool mouse_indicator =
+                winrt::Windows::UI::Xaml::VisualStateManager::GoToState(
+                    session.native_scrollbar, L"MouseIndicator", false);
+            const bool conscious_state =
+                winrt::Windows::UI::Xaml::VisualStateManager::GoToState(
+                    session.native_scrollbar,
+                    expanded ? L"Expanded" : L"CollapsedWithoutAnimation",
+                    expanded);
+            if (mouse_indicator && conscious_state) {
+                session.scrollbar_visual_initialized = true;
+                session.scrollbar_expanded = expanded;
+            }
+        } catch (...) {
+        }
+    }
+
+    static void ApplyLoadedNativeScrollbarVisual(
+        const winrt::Windows::UI::Xaml::Controls::Primitives::ScrollBar& scrollbar) noexcept {
+        if (!scrollbar) return;
+        try {
+            scrollbar.Visibility(winrt::Windows::UI::Xaml::Visibility::Visible);
+            scrollbar.IndicatorMode(
+                winrt::Windows::UI::Xaml::Controls::Primitives::ScrollingIndicatorMode::MouseIndicator);
+            scrollbar.IsHitTestVisible(true);
+            scrollbar.Opacity(1.0);
+            scrollbar.ApplyTemplate();
+            winrt::Windows::UI::Xaml::VisualStateManager::GoToState(
+                scrollbar, L"MouseIndicator", false);
+            winrt::Windows::UI::Xaml::VisualStateManager::GoToState(
+                scrollbar, L"CollapsedWithoutAnimation", false);
+        } catch (...) {
+        }
+    }
+
+    void EnsureNativeScrollbar(TerminalSession* session = nullptr) {
+        if (!session) session = ActiveSession();
+        if (!session || !session->control) return;
+        try {
+            session->control.ApplyTemplate();
+            if (!session->native_scrollbar) {
+                const auto element = session->control.as<winrt::Windows::UI::Xaml::FrameworkElement>()
+                                         .FindName(L"ScrollBar");
+                session->native_scrollbar = element.try_as<
+                    winrt::Windows::UI::Xaml::Controls::Primitives::ScrollBar>();
+            }
+            const auto scrollbar = session->native_scrollbar;
+            if (scrollbar) {
+                // Keep Windows Terminal's own visual-state manager intact:
+                // a thin indicator while idle and the wider thumb/track on
+                // pointer hover, exactly like the standalone terminal.
                 scrollbar.Visibility(winrt::Windows::UI::Xaml::Visibility::Visible);
                 scrollbar.IndicatorMode(
                     winrt::Windows::UI::Xaml::Controls::Primitives::ScrollingIndicatorMode::MouseIndicator);
-                scrollbar.IsHitTestVisible(true);
-                scrollbar.Opacity(1.0);
+                scrollbar.IsHitTestVisible(!session->transcript_mode);
+                scrollbar.Opacity(session->transcript_mode ? 0.0 : 1.0);
+                if (!session->scrollbar_loaded_handler_attached) {
+                    session->scrollbar_loaded_handler_attached = true;
+                    const auto weak_scrollbar = winrt::make_weak(scrollbar);
+                    scrollbar.Loaded([weak_scrollbar](
+                        const auto&, const winrt::Windows::UI::Xaml::RoutedEventArgs&) noexcept {
+                        if (const auto loaded = weak_scrollbar.get()) {
+                            ApplyLoadedNativeScrollbarVisual(loaded);
+                        }
+                    });
+                    (void)scrollbar.Dispatcher().RunAsync(
+                        winrt::Windows::UI::Core::CoreDispatcherPriority::Low,
+                        [weak_scrollbar]() noexcept {
+                            if (const auto loaded = weak_scrollbar.get()) {
+                                ApplyLoadedNativeScrollbarVisual(loaded);
+                            }
+                        });
+                }
+                if (!session->scrollbar_visual_initialized) {
+                    SetNativeScrollbarVisual(*session, false);
+                }
             }
         } catch (...) {
         }
@@ -527,14 +1307,64 @@ private:
     winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager manager_{nullptr};
     winrt::Windows::UI::Xaml::Hosting::DesktopWindowXamlSource source_{nullptr};
     winrt::Windows::UI::Xaml::Controls::Grid grid_{nullptr};
-    winrt::Microsoft::Terminal::Control::TermControl control_{nullptr};
-    winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection connection_{nullptr};
-    bool official_connection_{};
+    std::unordered_map<std::wstring, std::unique_ptr<TerminalSession>> sessions_;
+    std::wstring active_project_id_;
     bool visible_{};
+    bool light_theme_{};
     std::wstring last_error_;
     HWND parent_{};
     HWND hwnd_{};
+    HWND overlay_{};
+    bool transcript_dragging_{};
+    double transcript_drag_offset_{};
 };
+
+LRESULT CALLBACK TranscriptOverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+    auto* adapter = reinterpret_cast<XamlIslandAdapter*>(GetWindowLongPtrW(
+        hwnd, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
+        adapter = reinterpret_cast<XamlIslandAdapter*>(create ? create->lpCreateParams : nullptr);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(adapter));
+    }
+    if (!adapter) return DefWindowProcW(hwnd, message, wparam, lparam);
+    switch (message) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_NCHITTEST: {
+        POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        ScreenToClient(hwnd, &point);
+        return adapter->OverlayTranscriptHit(point) ? HTCLIENT : HTTRANSPARENT;
+    }
+    case WM_MOUSEWHEEL:
+        if (adapter->HandleMouseWheel(wparam, lparam)) return 0;
+        break;
+    case WM_MOUSEHWHEEL:
+        if (adapter->HandleMouseWheel(wparam, lparam, true)) return 0;
+        break;
+    case WM_LBUTTONDOWN:
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONUP:
+        if (adapter->HandleTranscriptOverlayMouse(message, lparam)) return 0;
+        break;
+    case WM_CAPTURECHANGED:
+        adapter->HandleTranscriptCaptureChanged();
+        break;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT paint{};
+        const HDC dc = BeginPaint(hwnd, &paint);
+        adapter->PaintTranscriptOverlay(dc);
+        EndPaint(hwnd, &paint);
+        return 0;
+    }
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        break;
+    }
+    return DefWindowProcW(hwnd, message, wparam, lparam);
+}
 
 LRESULT CALLBACK XamlIslandSubclassProc(
     HWND hwnd,
@@ -545,8 +1375,16 @@ LRESULT CALLBACK XamlIslandSubclassProc(
     DWORD_PTR reference_data) {
     auto* adapter = reinterpret_cast<XamlIslandAdapter*>(reference_data);
     if (adapter) {
+        if (message == WM_MOUSEMOVE) {
+            TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
+            TrackMouseEvent(&tracking);
+            adapter->UpdateNativeScrollbarHover();
+        }
+        if (message == WM_MOUSELEAVE) adapter->CollapseNativeScrollbar();
         if (message == WM_MOUSEWHEEL && adapter->HandleMouseWheel(wparam, lparam)) return 0;
         if (message == WM_MOUSEHWHEEL && adapter->HandleMouseWheel(wparam, lparam, true)) return 0;
+        if (message == WM_POINTERWHEEL && adapter->HandleMouseWheel(wparam, lparam, false, true)) return 0;
+        if (message == WM_POINTERHWHEEL && adapter->HandleMouseWheel(wparam, lparam, true, true)) return 0;
         if (message == WM_NCDESTROY) {
             adapter->OnIslandDestroyed(hwnd);
             RemoveWindowSubclass(hwnd, XamlIslandSubclassProc, subclass_id);
@@ -571,9 +1409,8 @@ std::string g_conversations_cache;
 std::wstring g_group_name=L"默认分组";
 std::wstring g_last_project_id;
 std::wstring g_startup_project_id;
-bool g_session_running=false; int g_running_project=-1; int g_paused_project=-1;
 COLORREF bg=RGB(12,14,18), panel=RGB(18,21,27), elevated=RGB(25,29,37), border=RGB(45,51,62), fg=RGB(238,241,247), muted=RGB(139,148,162), accent=RGB(83,156,255), accent2=RGB(42,108,214);
-HBRUSH g_edit_brush{},g_list_brush{},g_bg_brush{};bool g_light_theme{};
+HBRUSH g_edit_brush{},g_list_brush{},g_bg_brush{};bool g_light_theme{};bool g_window_active=true;
 HWND g_project_dialog{}, g_d_name{}, g_d_type{}, g_d_group{}, g_d_folder{}, g_d_folder_browse{}, g_d_command{}; bool g_project_dialog_ok{}; bool g_project_dialog_edit{}; Project g_project_draft{};
 HWND g_binding_dialog{},g_binding_refresh{},g_binding_close{},g_binding_approve{},g_binding_reject{};
 aicli::agent::PairingInfo g_binding_info{};
@@ -581,6 +1418,22 @@ std::optional<qrcodegen::QrCode> g_binding_qr;
 RECT g_binding_panel{};
 HBITMAP g_project_snapshot{}; SIZE g_project_snapshot_size{}; RECT g_project_panel{};
 RECT g_d_name_rect{}, g_d_type_rect{}, g_d_group_rect{}, g_d_folder_rect{}, g_d_command_rect{};
+enum class GitRepositoryState { Unavailable, NotInitialized, NoCommits, HasCommits };
+GitRepositoryState g_git_repository_state=GitRepositoryState::Unavailable;
+std::wstring g_git_repository_root;
+std::mutex g_terminal_snapshot_mutex;
+std::vector<std::wstring> g_pending_terminal_snapshot_projects;
+std::unordered_map<std::wstring,std::wstring> g_last_terminal_snapshots;
+std::atomic_bool g_terminal_snapshot_dirty{};
+std::atomic_bool g_terminal_snapshot_message_pending{};
+bool g_terminal_snapshot_timer_active{};
+int g_project_drag_source=-1;
+int g_project_drag_insert=-1;
+int g_project_hover_row=-1;
+bool g_project_dragging{};
+UINT g_project_drag_message{};
+HWND g_project_drag_preview{};
+POINT g_project_drag_hotspot{};
 
 enum { ID_D_NAME=2001, ID_D_TYPE=2002, ID_D_GROUP=2003, ID_D_FOLDER=2004, ID_D_COMMAND=2005, ID_D_OK=2006, ID_D_CANCEL=2007, ID_D_BROWSE=2008 };
 enum { ID_BIND_REFRESH=2101,ID_BIND_CLOSE=2102,ID_BIND_APPROVE=2103,ID_BIND_REJECT=2104 };
@@ -590,10 +1443,37 @@ void DrawModernButton(const DRAWITEMSTRUCT* item);
 LRESULT CALLBACK ButtonProc(HWND h,UINT m,WPARAM w,LPARAM l);
 void Layout();
 void UpdateDeviceHeader();
+void UpdateHeaderTelemetry();
 void RefreshConversationsCache();
 void ApplyStoredTheme(){const auto theme=g_store.GetSetting(L"theme",L"dark");g_light_theme=theme==L"light";if(g_light_theme){bg=RGB(246,248,251);panel=RGB(255,255,255);elevated=RGB(239,243,248);border=RGB(215,221,230);fg=RGB(28,34,43);muted=RGB(101,111,125);accent=RGB(46,118,211);accent2=RGB(39,102,190);}else{bg=RGB(12,14,18);panel=RGB(18,21,27);elevated=RGB(25,29,37);border=RGB(45,51,62);fg=RGB(238,241,247);muted=RGB(139,148,162);accent=RGB(83,156,255);accent2=RGB(42,108,214);}if(g_edit_brush)DeleteObject(g_edit_brush);if(g_list_brush)DeleteObject(g_list_brush);if(g_bg_brush)DeleteObject(g_bg_brush);g_edit_brush=CreateSolidBrush(elevated);g_list_brush=CreateSolidBrush(panel);g_bg_brush=CreateSolidBrush(bg);}
+COLORREF TitleBarBackground(){return g_window_active?panel:(g_light_theme?RGB(232,234,238):RGB(61,64,70));}
+COLORREF TitleBarText(){return g_window_active?fg:(g_light_theme?RGB(92,98,108):RGB(214,217,223));}
+COLORREF TitleBarMuted(){return g_window_active?muted:(g_light_theme?RGB(132,137,146):RGB(174,179,188));}
+void ApplyLiveTheme(){
+    ApplyStoredTheme();
+    g_island.SetTheme(g_light_theme);
+    if(!g_hwnd)return;
+    BOOL dark=g_light_theme?FALSE:TRUE;
+    DwmSetWindowAttribute(g_hwnd,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));
+    COLORREF caption_color=panel,border_color=border;
+    DwmSetWindowAttribute(g_hwnd,DWMWA_CAPTION_COLOR,&caption_color,sizeof(caption_color));
+    DwmSetWindowAttribute(g_hwnd,DWMWA_BORDER_COLOR,&border_color,sizeof(border_color));
+    MARGINS margins{0,0,kCustomTitleBarHeight,0};
+    DwmExtendFrameIntoClientArea(g_hwnd,&margins);
+    SetWindowPos(g_hwnd,nullptr,0,0,0,0,
+                 SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);
+    // The settings surface is an in-window modal that paints a captured
+    // snapshot of the workspace. Redrawing every underlying child while that
+    // modal is open can lift owner-drawn title-bar/sidebar buttons above the
+    // snapshot and mix the old/new palettes. Defer the workspace repaint until
+    // the modal has closed.
+    if(FindWindowExW(g_hwnd,nullptr,L"AicliManagementDialog",nullptr))return;
+    RedrawWindow(g_hwnd,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME|RDW_ALLCHILDREN|RDW_UPDATENOW);
+    Layout();
+}
 void EnableButtonHover(HWND button){WNDPROC old=(WNDPROC)SetWindowLongPtrW(button,GWLP_WNDPROC,(LONG_PTR)ButtonProc);if(!g_button_proc)g_button_proc=old;}
 constexpr UINT_PTR kProjectEditSubclassId=0xA1C12;
+constexpr UINT_PTR kProjectListSubclassId=0xA1C13;
 LRESULT CALLBACK ProjectEditSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){if((m==WM_KEYDOWN||m==WM_CHAR)&&(w==VK_RETURN||w==L'\n'))return 0;if(m==WM_NCDESTROY)RemoveWindowSubclass(h,ProjectEditSubclassProc,kProjectEditSubclassId);return DefSubclassProc(h,m,w,l);}
 void CenterProjectEditText(HWND control){
     if(!control)return;RECT client{};GetClientRect(control,&client);HDC dc=GetDC(control);if(!dc)return;
@@ -608,7 +1488,66 @@ std::wstring WideText(std::string_view value){if(value.empty())return{};const in
 std::wstring StripTerminalSequences(std::wstring_view value){std::wstring result;result.reserve(value.size());enum class State{Text,Escape,Csi,Osc,OscEscape};State state=State::Text;for(const wchar_t ch:value){switch(state){case State::Text:if(ch==L'\x1b')state=State::Escape;else if(ch==L'\r'||ch==L'\n'||ch==L'\t'||ch>=L' ')result.push_back(ch);break;case State::Escape:if(ch==L'[')state=State::Csi;else if(ch==L']')state=State::Osc;else state=State::Text;break;case State::Csi:if(ch>=0x40&&ch<=0x7e)state=State::Text;break;case State::Osc:if(ch==L'\a')state=State::Text;else if(ch==L'\x1b')state=State::OscEscape;break;case State::OscEscape:state=ch==L'\\'?State::Text:State::Osc;break;}}return result;}
 size_t WorkingSetMegabytes(){PROCESS_MEMORY_COUNTERS_EX counters{};counters.cb=sizeof(counters);return GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),sizeof(counters))?static_cast<size_t>(counters.WorkingSetSize/(1024ull*1024ull)):0;}
 void RecordAndBroadcastEvent(const std::wstring& project_id,const std::wstring& event_type,const nlohmann::json& payload){if(project_id.empty())return;const std::string payload_json=payload.dump(-1,' ',false,nlohmann::json::error_handler_t::replace);const auto id=g_store.AppendEvent(project_id,event_type,payload_json);nlohmann::json event{{"id",id},{"eventId",id},{"conversationId",Utf8Text(project_id)},{"event_type",Utf8Text(event_type)},{"type",Utf8Text(event_type)},{"payload",payload}};g_remote_agent.BroadcastEvent(project_id,event.dump(-1,' ',false,nlohmann::json::error_handler_t::replace));}
-void RecordTerminalOutput(const std::wstring& project_id,std::wstring_view output){const auto clean=StripTerminalSequences(output);if(clean.empty())return;RecordAndBroadcastEvent(project_id,L"terminal.output",nlohmann::json{{"text",Utf8Text(clean)}});}
+std::wstring NormalizeTerminalSnapshot(std::wstring value){
+    std::wstring normalized;normalized.reserve(value.size());
+    for(size_t i=0;i<value.size();++i){
+        const wchar_t ch=value[i];
+        if(ch==L'\r'){
+            if(i+1<value.size()&&value[i+1]==L'\n')++i;
+            normalized.push_back(L'\n');
+        }else normalized.push_back(ch);
+    }
+    size_t line_start=0;
+    for(size_t i=0;i<=normalized.size();++i){
+        if(i==normalized.size()||normalized[i]==L'\n'){
+            size_t end=i;
+            while(end>line_start&&(normalized[end-1]==L' '||normalized[end-1]==L'\t'))--end;
+            if(end<i)normalized.erase(end,i-end);
+            i=end;line_start=i+1;
+        }
+    }
+    while(!normalized.empty()&&(normalized.back()==L'\n'||normalized.back()==L' '||normalized.back()==L'\t'))normalized.pop_back();
+    constexpr size_t max_chars=32*1024;
+    constexpr size_t max_lines=300;
+    size_t start=normalized.size()>max_chars?normalized.size()-max_chars:0;
+    size_t lines=0;
+    for(size_t i=normalized.size();i>start;--i){
+        if(normalized[i-1]==L'\n'&&++lines>=max_lines){start=i;break;}
+    }
+    if(start>0){
+        const auto next=normalized.find(L'\n',start);
+        start=next==std::wstring::npos?normalized.size():next+1;
+        normalized.erase(0,start);
+    }
+    return normalized;
+}
+void QueueTerminalSnapshot(const std::wstring& project_id){
+    if(project_id.empty()||!g_hwnd)return;
+    {
+        std::scoped_lock lock(g_terminal_snapshot_mutex);
+        if(std::find(g_pending_terminal_snapshot_projects.begin(),g_pending_terminal_snapshot_projects.end(),project_id)==g_pending_terminal_snapshot_projects.end())
+            g_pending_terminal_snapshot_projects.push_back(project_id);
+    }
+    g_terminal_snapshot_dirty=true;
+    if(!g_terminal_snapshot_message_pending.exchange(true))PostMessageW(g_hwnd,WM_TERMINAL_DIRTY,0,0);
+}
+void PublishTerminalSnapshots(){
+    std::vector<std::wstring> project_ids;
+    {std::scoped_lock lock(g_terminal_snapshot_mutex);project_ids.swap(g_pending_terminal_snapshot_projects);}
+    for(const auto& project_id:project_ids){
+        auto snapshot=NormalizeTerminalSnapshot(g_island.ReadEntireBuffer(project_id));
+        if(snapshot.empty())continue;
+        const auto previous=g_last_terminal_snapshots.find(project_id);
+        if(previous!=g_last_terminal_snapshots.end()&&previous->second==snapshot)continue;
+        g_last_terminal_snapshots[project_id]=snapshot;
+        g_store.SaveTerminalSnapshot(project_id,snapshot);
+        nlohmann::json event{{"conversationId",Utf8Text(project_id)},
+                             {"event_type","terminal.snapshot"},
+                             {"type","terminal.snapshot"},
+                             {"payload",{{"text",Utf8Text(snapshot)},{"replace",true}}}};
+        g_remote_agent.BroadcastEvent(project_id,event.dump(-1,' ',false,nlohmann::json::error_handler_t::replace));
+    }
+}
 void ApplyRoundedRegion(HWND h,int width,int height,int radius){if(!h||width<=0||height<=0)return;SetWindowRgn(h,CreateRoundRectRgn(0,0,width+1,height+1,radius,radius),TRUE);}
 void DrawRoundedOutline(HDC dc,RECT r,COLORREF color,int radius){HPEN p=CreatePen(PS_SOLID,1,color);auto oldp=SelectObject(dc,p);auto oldb=SelectObject(dc,GetStockObject(HOLLOW_BRUSH));RoundRect(dc,r.left,r.top,r.right,r.bottom,radius,radius);SelectObject(dc,oldp);SelectObject(dc,oldb);DeleteObject(p);}
 HWND MakeDialogControl(LPCWSTR cls,LPCWSTR text,DWORD style,int id,HWND parent,int x,int y,int w,int h){bool button=wcscmp(cls,L"BUTTON")==0;if(button)style|=BS_OWNERDRAW;HWND c=CreateWindowExW(0,cls,text,WS_CHILD|WS_VISIBLE|style,x,y,w,h,parent,(HMENU)(INT_PTR)id,GetModuleHandleW(nullptr),nullptr);SendMessageW(c,WM_SETFONT,(WPARAM)g_font,TRUE);if(button)EnableButtonHover(c);return c;}
@@ -617,7 +1556,7 @@ bool PickFolder(HWND owner,std::wstring& path);
 std::wstring DefaultProjectCommand(const std::wstring& type){
     const auto found=std::find_if(g_project_types.begin(),g_project_types.end(),[&](const ProjectType& value){return _wcsicmp(value.name.c_str(),type.c_str())==0;});
     if(found!=g_project_types.end())return found->default_command;
-    return type==L"Claude"?L"claude --dangerously-skip-permissions --continue":L"codex --yolo resume --last";
+    return type==L"Claude"?L"claude --dangerously-skip-permissions --continue":L"codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last";
 }
 void ReleaseProjectSnapshot(){if(g_project_snapshot){DeleteObject(g_project_snapshot);g_project_snapshot=nullptr;}g_project_snapshot_size={};}
 void CaptureProjectSnapshot(HWND owner){
@@ -793,12 +1732,59 @@ LRESULT CALLBACK BindingDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){switch(m){ca
 void ShowBindingDialog(HWND owner){if(!g_remote_agent.Online()){MessageBoxW(owner,L"HTTPS/WSS Agent 未启动，请先检查设置中的端口。",L"绑定手机",MB_OK|MB_ICONERROR);return;}static bool registered=false;if(!registered){WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpfnWndProc=BindingDialogProc;wc.lpszClassName=L"AicliBindingDialog";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hbrBackground=nullptr;RegisterClassW(&wc);registered=true;}CaptureProjectSnapshot(owner);g_island.SetVisible(false);RECT client{};GetClientRect(owner,&client);g_binding_dialog=CreateWindowExW(WS_EX_CONTROLPARENT,L"AicliBindingDialog",L"",WS_CHILD|WS_VISIBLE|WS_CLIPCHILDREN|WS_CLIPSIBLINGS,0,0,client.right,client.bottom,owner,nullptr,GetModuleHandleW(nullptr),nullptr);if(!g_binding_dialog){ReleaseProjectSnapshot();Layout();return;}SetWindowPos(g_binding_dialog,HWND_TOP,0,0,client.right,client.bottom,SWP_SHOWWINDOW);MSG msg{};while(IsWindow(g_binding_dialog)&&GetMessageW(&msg,nullptr,0,0)){TranslateMessage(&msg);DispatchMessageW(&msg);}g_binding_dialog=nullptr;ReleaseProjectSnapshot();SetForegroundWindow(owner);SetFocus(owner);Layout();}
 
 LRESULT CALLBACK ButtonProc(HWND h,UINT m,WPARAM w,LPARAM l){if(m==WM_MOUSEMOVE){if(g_hover_button!=h){HWND old=g_hover_button;g_hover_button=h;if(old)InvalidateRect(old,nullptr,TRUE);InvalidateRect(h,nullptr,TRUE);TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,h,0};TrackMouseEvent(&t);}}else if(m==WM_MOUSELEAVE){if(g_hover_button==h)g_hover_button=nullptr;InvalidateRect(h,nullptr,TRUE);}else if(m==WM_LBUTTONDOWN||m==WM_LBUTTONUP||m==WM_SETFOCUS||m==WM_KILLFOCUS){InvalidateRect(h,nullptr,TRUE);}return CallWindowProcW(g_button_proc,h,m,w,l);}
+void InvalidateProjectRow(HWND list,int row){
+    if(!list||row<0)return;
+    RECT item{};
+    if(SendMessageW(list,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))!=LB_ERR)
+        InvalidateRect(list,&item,FALSE);
+}
+LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
+                                         UINT_PTR,DWORD_PTR){
+    if(m==WM_MOUSEMOVE){
+        const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
+        const int next=HIWORD(hit)?-1:static_cast<int>(LOWORD(hit));
+        if(next!=g_project_hover_row){
+            const int previous=g_project_hover_row;
+            g_project_hover_row=next;
+            InvalidateProjectRow(h,previous);
+            InvalidateProjectRow(h,next);
+        }
+        TRACKMOUSEEVENT tracking{sizeof(tracking),TME_LEAVE,h,0};
+        TrackMouseEvent(&tracking);
+    }else if(m==WM_MOUSELEAVE){
+        const int previous=g_project_hover_row;
+        g_project_hover_row=-1;
+        InvalidateProjectRow(h,previous);
+    }else if(m==WM_SETCURSOR&&LOWORD(l)==HTCLIENT&&
+             aicli::ui::GetStyledInputText(g_search).empty()){
+        POINT point{};
+        GetCursorPos(&point);
+        ScreenToClient(h,&point);
+        const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,MAKELPARAM(point.x,point.y));
+        if(!HIWORD(hit)){
+            RECT item{};
+            const int row=static_cast<int>(LOWORD(hit));
+            if(SendMessageW(h,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))!=LB_ERR){
+                const RECT handle{item.left+3,item.top+3,item.left+31,item.bottom-3};
+                if(PtInRect(&handle,point)){
+                    SetCursor(LoadCursorW(nullptr,IDC_SIZEALL));
+                    return TRUE;
+                }
+            }
+        }
+    }else if(m==WM_NCDESTROY){
+        g_project_hover_row=-1;
+        RemoveWindowSubclass(h,ProjectListSubclassProc,kProjectListSubclassId);
+    }
+    return DefSubclassProc(h,m,w,l);
+}
 void DrawModernButton(const DRAWITEMSTRUCT* item){
     RECT r=item->rcItem;const bool down=(item->itemState&ODS_SELECTED)!=0;const bool disabled=(item->itemState&ODS_DISABLED)!=0;const bool hover=item->hwndItem==g_hover_button;const bool focused=GetFocus()==item->hwndItem;HWND parentWindow=GetParent(item->hwndItem);
     const bool projectDropDown=parentWindow==g_project_dialog&&(item->CtlID==ID_D_TYPE||item->CtlID==ID_D_GROUP);
     const bool projectButton=parentWindow==g_project_dialog;
     COLORREF under=projectButton?RGB(29,31,35):panel;
-    if(parentWindow==g_hwnd){POINT pos{};ClientToScreen(item->hwndItem,&pos);ScreenToClient(parentWindow,&pos);under=pos.y<52||pos.x<286?panel:bg;}
+    bool onMainTitleBar=false;
+    if(parentWindow==g_hwnd){POINT pos{};ClientToScreen(item->hwndItem,&pos);ScreenToClient(parentWindow,&pos);onMainTitleBar=pos.y<kCustomTitleBarHeight;under=onMainTitleBar?TitleBarBackground():(pos.x<286?panel:bg);}
     HBRUSH clear=CreateSolidBrush(under);FillRect(item->hDC,&r,clear);DeleteObject(clear);
     wchar_t text[256]{};GetWindowTextW(item->hwndItem,text,256);SetBkMode(item->hDC,TRANSPARENT);
     if(projectDropDown){
@@ -820,19 +1806,174 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         stroke=disabled?(g_light_theme?RGB(218,223,231):RGB(43,48,57)):(hover?(g_light_theme?RGB(164,181,205):RGB(78,104,142)):border);if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)stroke=hover?RGB(117,177,255):RGB(64,128,225);
     }
     HBRUSH brush=CreateSolidBrush(fill);HPEN pen=CreatePen(PS_SOLID,1,stroke);auto oldBrush=SelectObject(item->hDC,brush);auto oldPen=SelectObject(item->hDC,pen);RoundRect(item->hDC,r.left+1,r.top+1,r.right-1,r.bottom-1,9,9);SelectObject(item->hDC,oldBrush);SelectObject(item->hDC,oldPen);DeleteObject(brush);DeleteObject(pen);
-    const bool primary_button=item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT;SetTextColor(item->hDC,disabled?muted:((primary_button||(!g_light_theme&&hover))?RGB(255,255,255):fg));SelectObject(item->hDC,g_font);DrawTextW(item->hDC,text,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    const bool primary_button=item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT;COLORREF text_color=disabled?muted:((primary_button||(!g_light_theme&&hover))?RGB(255,255,255):fg);HFONT text_font=g_font;UINT text_format=DT_CENTER|DT_VCENTER|DT_SINGLELINE;if(onMainTitleBar&&!g_window_active&&!hover&&!down){text_color=TitleBarText();}SetTextColor(item->hDC,text_color);SelectObject(item->hDC,text_font);DrawTextW(item->hDC,text,-1,&r,text_format);
 }
 void DrawProjectItem(const DRAWITEMSTRUCT* item){
     if(item->itemID==(UINT)-1)return;
-    const int project_index=static_cast<int>(SendMessageW(item->hwndItem,LB_GETITEMDATA,item->itemID,0));
-    if(project_index<0||project_index>=static_cast<int>(g_projects.size()))return;
-    RECT row=item->rcItem;HBRUSH back=CreateSolidBrush(panel);FillRect(item->hDC,&row,back);DeleteObject(back);bool selected=(item->itemState&ODS_SELECTED)!=0;RECT r{row.left+3,row.top+4,row.right-4,row.bottom-4};COLORREF fill=selected?(g_light_theme?RGB(226,237,251):RGB(29,43,63)):(g_light_theme?RGB(250,251,253):RGB(22,25,32));COLORREF stroke=selected?(g_light_theme?RGB(112,158,217):RGB(58,106,171)):(g_light_theme?RGB(222,227,234):RGB(38,43,52));HBRUSH b=CreateSolidBrush(fill);HPEN p=CreatePen(PS_SOLID,1,stroke);auto oldb=SelectObject(item->hDC,b);auto oldp=SelectObject(item->hDC,p);RoundRect(item->hDC,r.left,r.top,r.right,r.bottom,10,10);SelectObject(item->hDC,oldb);SelectObject(item->hDC,oldp);DeleteObject(b);DeleteObject(p);SetBkMode(item->hDC,TRANSPARENT);SelectObject(item->hDC,g_font);SetTextColor(item->hDC,fg);wchar_t name[256]{};SendMessageW(item->hwndItem,LB_GETTEXT,item->itemID,(LPARAM)name);RECT title{r.left+24,r.top+11,r.right-12,r.top+34};DrawTextW(item->hDC,name,-1,&title,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS);const auto& project=g_projects[project_index];std::wstring sub=project.status==L"running"?L"运行中":(project.status==L"paused"?L"已暂停":L"就绪");sub+=L"   "+project.type+L"   /   "+project.group;SelectObject(item->hDC,g_font_small?g_font_small:g_font);SetTextColor(item->hDC,muted);RECT subRect{r.left+24,r.top+37,r.right-12,r.bottom-8};DrawTextW(item->hDC,sub.c_str(),-1,&subRect,DT_LEFT|DT_SINGLELINE|DT_END_ELLIPSIS);HBRUSH dot=CreateSolidBrush(selected?accent:(project.status==L"running"?RGB(71,187,132):muted));Ellipse(item->hDC,r.left+11,r.top+18,r.left+17,r.top+24);DeleteObject(dot);
+    const int projectIndex=static_cast<int>(
+        SendMessageW(item->hwndItem,LB_GETITEMDATA,item->itemID,0));
+    if(projectIndex<0||projectIndex>=static_cast<int>(g_projects.size()))return;
+
+    const auto& project=g_projects[projectIndex];
+    const bool selected=(item->itemState&ODS_SELECTED)!=0;
+    const bool hovered=static_cast<int>(item->itemID)==g_project_hover_row;
+    const bool sourceDragging=g_project_dragging&&
+        static_cast<int>(item->itemID)==g_project_drag_source;
+    RECT row=item->rcItem;
+    HBRUSH rowBackground=CreateSolidBrush(panel);
+    FillRect(item->hDC,&row,rowBackground);
+    DeleteObject(rowBackground);
+
+    RECT card{row.left+3,row.top+3,row.right-4,row.bottom-3};
+    COLORREF cardFill=g_light_theme?RGB(250,251,253):RGB(22,25,32);
+    COLORREF cardStroke=g_light_theme?RGB(222,227,234):RGB(38,43,52);
+    if(sourceDragging){
+        cardFill=panel;
+        cardStroke=g_light_theme?RGB(169,181,197):RGB(72,84,102);
+    }else if(selected){
+        cardFill=g_light_theme?RGB(238,245,254):RGB(25,37,54);
+        cardStroke=g_light_theme?RGB(119,163,218):RGB(61,102,157);
+    }else if(hovered){
+        cardFill=g_light_theme?RGB(243,247,252):RGB(29,34,43);
+        cardStroke=g_light_theme?RGB(193,207,224):RGB(55,65,79);
+    }
+    DrawSmoothRoundedRect(item->hDC,card,9.0f,cardFill,cardStroke,1.0f,sourceDragging);
+
+    COLORREF stateColor=g_light_theme?RGB(100,113,131):RGB(139,157,183);
+    enum class StateIcon{Idle,Running,Paused,Warning};
+    StateIcon stateIcon=StateIcon::Idle;
+    if(g_island.HasSession(project.id)){
+        stateIcon=StateIcon::Running;
+        stateColor=g_light_theme?RGB(28,139,91):RGB(73,203,145);
+    }else if(project.status==L"paused"){
+        stateIcon=StateIcon::Paused;
+        stateColor=g_light_theme?RGB(177,113,16):RGB(245,178,72);
+    }else if(project.status==L"cancelled"||project.status==L"error"){
+        // A stopped project is a recoverable state, so use a warm warning
+        // triangle instead of a red close/cancel glyph.
+        stateIcon=StateIcon::Warning;
+        stateColor=g_light_theme?RGB(190,132,26):RGB(244,187,72);
+    }
+    if(sourceDragging)stateColor=muted;
+
+    {
+        Gdiplus::Graphics graphics(item->hDC);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+        Gdiplus::Pen grip(SmoothColor(
+            hovered&&!sourceDragging
+                ?(g_light_theme?RGB(111,128,150):RGB(131,145,165))
+                :(g_light_theme?RGB(157,166,178):RGB(91,101,116))),1.25f);
+        grip.SetStartCap(Gdiplus::LineCapRound);
+        grip.SetEndCap(Gdiplus::LineCapRound);
+        const float gripCenter=(card.top+card.bottom)/2.0f;
+        for(float offset=-4.0f;offset<=4.0f;offset+=4.0f)
+            graphics.DrawLine(&grip,static_cast<float>(card.left+11),gripCenter+offset,
+                              static_cast<float>(card.left+20),gripCenter+offset);
+
+        const float iconSize=20.0f;
+        const float iconX=static_cast<float>(card.right)-iconSize-11.0f;
+        const float iconY=(card.top+card.bottom-iconSize)/2.0f;
+        Gdiplus::RectF iconBounds{iconX,iconY,iconSize,iconSize};
+        Gdiplus::SolidBrush halo(SmoothColor(stateColor,30));
+        graphics.FillEllipse(&halo,iconBounds);
+        Gdiplus::Pen iconPen(SmoothColor(stateColor),1.65f);
+        iconPen.SetStartCap(Gdiplus::LineCapRound);
+        iconPen.SetEndCap(Gdiplus::LineCapRound);
+        Gdiplus::SolidBrush iconBrush(SmoothColor(stateColor));
+        const float cx=iconX+iconSize/2.0f,cy=iconY+iconSize/2.0f;
+        if(stateIcon==StateIcon::Running){
+            graphics.DrawEllipse(&iconPen,iconX+2.0f,iconY+2.0f,iconSize-4.0f,iconSize-4.0f);
+            graphics.FillEllipse(&iconBrush,cx-3.0f,cy-3.0f,6.0f,6.0f);
+        }else if(stateIcon==StateIcon::Paused){
+            graphics.DrawLine(&iconPen,cx-2.5f,cy-4.0f,cx-2.5f,cy+4.0f);
+            graphics.DrawLine(&iconPen,cx+2.5f,cy-4.0f,cx+2.5f,cy+4.0f);
+        }else if(stateIcon==StateIcon::Warning){
+            Gdiplus::PointF triangle[3]{
+                {cx,iconY+3.0f},
+                {iconX+3.0f,iconY+iconSize-3.0f},
+                {iconX+iconSize-3.0f,iconY+iconSize-3.0f}};
+            graphics.DrawPolygon(&iconPen,triangle,3);
+            graphics.DrawLine(&iconPen,cx,cy-2.5f,cx,cy+1.5f);
+            graphics.FillEllipse(&iconBrush,cx-0.9f,cy+3.0f,1.8f,1.8f);
+        }else{
+            graphics.DrawEllipse(&iconPen,cx-4.0f,cy-4.0f,8.0f,8.0f);
+        }
+    }
+
+    SetBkMode(item->hDC,TRANSPARENT);
+    auto oldFont=SelectObject(item->hDC,g_font);
+    wchar_t name[256]{};
+    SendMessageW(item->hwndItem,LB_GETTEXT,item->itemID,(LPARAM)name);
+    SetTextColor(item->hDC,sourceDragging?muted:fg);
+    RECT title{card.left+29,card.top,card.right-39,card.bottom};
+    DrawTextW(item->hDC,name,-1,&title,
+              DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+    SelectObject(item->hDC,oldFont);
+
+    if(g_project_dragging){
+        const int count=static_cast<int>(SendMessageW(item->hwndItem,LB_GETCOUNT,0,0));
+        int markerY=-1;
+        if(g_project_drag_insert==static_cast<int>(item->itemID))markerY=row.top+2;
+        else if(g_project_drag_insert==count&&static_cast<int>(item->itemID)==count-1)
+            markerY=row.bottom-3;
+        if(markerY>=0){
+            Gdiplus::Graphics graphics(item->hDC);
+            graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            Gdiplus::Pen glow(SmoothColor(accent,70),4.0f);
+            Gdiplus::Pen marker(SmoothColor(accent),2.0f);
+            glow.SetStartCap(Gdiplus::LineCapRound);glow.SetEndCap(Gdiplus::LineCapRound);
+            marker.SetStartCap(Gdiplus::LineCapRound);marker.SetEndCap(Gdiplus::LineCapRound);
+            graphics.DrawLine(&glow,static_cast<float>(row.left+10),static_cast<float>(markerY),
+                              static_cast<float>(row.right-8),static_cast<float>(markerY));
+            graphics.DrawLine(&marker,static_cast<float>(row.left+10),static_cast<float>(markerY),
+                              static_cast<float>(row.right-8),static_cast<float>(markerY));
+            Gdiplus::SolidBrush markerDot(SmoothColor(accent));
+            graphics.FillEllipse(&markerDot,static_cast<float>(row.left+6),
+                                  static_cast<float>(markerY-3),6.0f,6.0f);
+        }
+    }
 }
 bool PickFolder(HWND owner,std::wstring& path){IFileDialog* dialog=nullptr;if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))||!dialog)return false;DWORD options=0;dialog->GetOptions(&options);dialog->SetOptions(options|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST);if(FAILED(dialog->Show(owner))){dialog->Release();return false;}IShellItem* item=nullptr;bool ok=SUCCEEDED(dialog->GetResult(&item));if(ok){PWSTR value=nullptr;ok=SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&value));if(ok){path=value;CoTaskMemFree(value);}item->Release();}dialog->Release();return ok;}
 int SelectedProjectIndex(){
     const LRESULT row=SendMessageW(g_list,LB_GETCURSEL,0,0);
     if(row==LB_ERR||row<0||row>=static_cast<LRESULT>(g_visible_project_indices.size()))return -1;
     return g_visible_project_indices[static_cast<size_t>(row)];
+}
+std::string ReadGitLine(const std::filesystem::path& path){
+    std::ifstream stream(path,std::ios::binary);std::string line;if(stream)std::getline(stream,line);if(!line.empty()&&line.back()=='\r')line.pop_back();return line;
+}
+std::filesystem::path ResolveGitDirectory(const std::filesystem::path& project_folder){
+    std::error_code error;auto current=std::filesystem::weakly_canonical(project_folder,error);if(error||!std::filesystem::is_directory(current,error))return{};
+    for(;;){
+        const auto marker=current/L".git";
+        if(std::filesystem::is_directory(marker,error))return marker;
+        error.clear();
+        if(std::filesystem::is_regular_file(marker,error)){
+            const auto line=ReadGitLine(marker);constexpr std::string_view prefix="gitdir:";
+            if(line.rfind(prefix,0)==0){std::string value=line.substr(prefix.size());while(!value.empty()&&(value.front()==' '||value.front()=='\t'))value.erase(value.begin());std::filesystem::path gitdir(WideText(value));if(gitdir.is_relative())gitdir=current/gitdir;auto resolved=std::filesystem::weakly_canonical(gitdir,error);if(!error&&std::filesystem::is_directory(resolved,error))return resolved;}
+        }
+        const auto parent=current.parent_path();if(parent.empty()||parent==current)break;current=parent;error.clear();
+    }
+    return{};
+}
+std::filesystem::path ResolveGitCommonDirectory(const std::filesystem::path& git_directory){
+    const auto value=ReadGitLine(git_directory/L"commondir");if(value.empty())return git_directory;std::error_code error;std::filesystem::path common(WideText(value));if(common.is_relative())common=git_directory/common;auto resolved=std::filesystem::weakly_canonical(common,error);return error?git_directory:resolved;
+}
+bool IsGitObjectId(std::string_view value){
+    if(value.size()<7)return false;bool nonzero=false;for(char ch:value){const bool hex=(ch>='0'&&ch<='9')||(ch>='a'&&ch<='f')||(ch>='A'&&ch<='F');if(!hex)return false;if(ch!='0')nonzero=true;}return nonzero;
+}
+bool GitHasCommit(const std::filesystem::path& git_directory){
+    const auto head=ReadGitLine(git_directory/L"HEAD");if(head.empty())return false;constexpr std::string_view ref_prefix="ref: ";if(head.rfind(ref_prefix,0)!=0)return IsGitObjectId(head);
+    const std::string reference=head.substr(ref_prefix.size());const auto common=ResolveGitCommonDirectory(git_directory);for(const auto& root:{git_directory,common}){const auto value=ReadGitLine(root/std::filesystem::path(WideText(reference)));if(IsGitObjectId(value))return true;}
+    std::ifstream packed(common/L"packed-refs",std::ios::binary);std::string line;while(std::getline(packed,line)){if(line.empty()||line.front()=='#'||line.front()=='^')continue;if(!line.empty()&&line.back()=='\r')line.pop_back();const auto separator=line.find(' ');if(separator!=std::string::npos&&line.substr(separator+1)==reference&&IsGitObjectId(std::string_view(line).substr(0,separator)))return true;}return false;
+}
+void RefreshGitStatus(){
+    GitRepositoryState next=GitRepositoryState::Unavailable;std::wstring root;const int index=SelectedProjectIndex();if(index>=0&&index<(int)g_projects.size()&&!g_projects[index].folder.empty()){
+        std::error_code error;const std::filesystem::path folder(g_projects[index].folder);if(std::filesystem::is_directory(folder,error)){const auto git=ResolveGitDirectory(folder);if(git.empty())next=GitRepositoryState::NotInitialized;else{next=GitHasCommit(git)?GitRepositoryState::HasCommits:GitRepositoryState::NoCommits;const auto common=ResolveGitCommonDirectory(git);root=(common.filename()==L".git"?common.parent_path():git.parent_path()).wstring();}}
+    }
+    if(next!=g_git_repository_state||root!=g_git_repository_root){g_git_repository_state=next;g_git_repository_root=std::move(root);if(g_hwnd){RECT badge{10,0,276,0};RECT client{};GetClientRect(g_hwnd,&client);badge.top=client.bottom-94;badge.bottom=client.bottom-36;InvalidateRect(g_hwnd,&badge,FALSE);}}
 }
 void RefreshProjectDetails(){
     const int index=SelectedProjectIndex();
@@ -841,6 +1982,7 @@ void RefreshProjectDetails(){
         SetText(g_detail_folder,L"文件夹: 未设置");
         SetText(g_detail_command,L"启动命令: 未设置");
         SetText(g_detail_state,L"状态: 未运行");
+        RefreshGitStatus();
         return;
     }
     const auto& project=g_projects[index];
@@ -849,8 +1991,9 @@ void RefreshProjectDetails(){
     SetText(g_detail_title,project.name+L"   /   "+project.type);
     SetText(g_detail_folder,L"文件夹: "+(project.folder.empty()?L"未设置":project.folder));
     SetText(g_detail_command,L"启动命令: "+(project.command.empty()?L"未设置":project.command));
-    const wchar_t* state=(g_session_running&&index==g_running_project)?L"运行中":(index==g_paused_project?L"已暂停":L"未运行");
+    const wchar_t* state=g_island.HasSession(project.id)?L"运行中":(project.status==L"paused"?L"已暂停":L"未运行");
     SetText(g_detail_state,std::wstring(L"状态: ")+state);
+    RefreshGitStatus();
 }
 
 bool InitializePersistentState() {
@@ -866,6 +2009,12 @@ bool InitializePersistentState() {
         g_store.AddGroup(L"默认分组");g_groups=g_store.LoadGroups();
     }
     g_projects=g_store.LoadProjects();
+    for(auto& project:g_projects){
+        if(project.status==L"running"){
+            project.status=L"created";
+            g_store.UpdateProjectStatus(project.id,project.status);
+        }
+    }
     if(g_store.GetSetting(L"seeded_projects",L"0")!=L"1"&&g_projects.empty()){
         const auto cwd=std::filesystem::current_path().wstring();
         Project codex{};codex.name=L"默认 Codex 会话";codex.type=L"Codex";codex.group=L"默认分组";codex.folder=cwd;codex.command=DefaultProjectCommand(codex.type);g_store.SaveProject(codex);
@@ -878,6 +2027,9 @@ bool InitializePersistentState() {
     g_startup_project_id=g_last_project_id;
     ApplyStoredTheme();
     return true;
+}
+void UpdateGroupButton(){
+    if(!g_group)return;const auto count=std::count_if(g_projects.begin(),g_projects.end(),[](const Project& project){const std::wstring group=project.group.empty()?L"默认分组":project.group;return group==g_group_name;});SetText(g_group,g_group_name+L" ("+std::to_wstring(count)+L")  ▾");
 }
 void RefreshProjectList(){
     const int selected=SelectedProjectIndex();
@@ -898,14 +2050,263 @@ void RefreshProjectList(){
     SendMessageW(g_list,LB_SETCURSEL,row,0);
     RefreshProjectDetails();
     RefreshConversationsCache();
+    UpdateGroupButton();
+}
+void EndProjectDragPreview(){
+    if(g_project_drag_preview)DestroyWindow(g_project_drag_preview);
+    g_project_drag_preview=nullptr;
+    g_project_drag_hotspot={};
+}
+bool BeginProjectDragPreview(HWND list,int row,POINT cursor_screen){
+    RECT item{};
+    if(SendMessageW(list,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))==LB_ERR)return false;
+    const int project_index=static_cast<int>(SendMessageW(list,LB_GETITEMDATA,row,0));
+    if(project_index<0||project_index>=static_cast<int>(g_projects.size()))return false;
+
+    constexpr int shadow_margin=7;
+    const int card_width=std::max(1,static_cast<int>(item.right-item.left)-7);
+    const int card_height=std::max(1,static_cast<int>(item.bottom-item.top)-6);
+    const int width=card_width+shadow_margin*2;
+    const int height=card_height+shadow_margin*2+3;
+
+    BITMAPINFO bitmap_info{};
+    bitmap_info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    bitmap_info.bmiHeader.biWidth=width;
+    bitmap_info.bmiHeader.biHeight=-height;
+    bitmap_info.bmiHeader.biPlanes=1;
+    bitmap_info.bmiHeader.biBitCount=32;
+    bitmap_info.bmiHeader.biCompression=BI_RGB;
+    void* pixels{};
+    HDC screen=GetDC(nullptr);
+    HDC memory=screen?CreateCompatibleDC(screen):nullptr;
+    HBITMAP bitmap=memory?CreateDIBSection(memory,&bitmap_info,DIB_RGB_COLORS,&pixels,nullptr,0):nullptr;
+    if(!screen||!memory||!bitmap||!pixels){
+        if(bitmap)DeleteObject(bitmap);
+        if(memory)DeleteDC(memory);
+        if(screen)ReleaseDC(nullptr,screen);
+        return false;
+    }
+    std::memset(pixels,0,static_cast<size_t>(width)*height*4);
+    auto old_bitmap=SelectObject(memory,bitmap);
+
+    {
+        Gdiplus::Bitmap surface(width,height,width*4,PixelFormat32bppPARGB,
+                                static_cast<BYTE*>(pixels));
+        Gdiplus::Graphics graphics(&surface);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+
+        Gdiplus::RectF shadow_bounds{
+            static_cast<float>(shadow_margin),static_cast<float>(shadow_margin+4),
+            static_cast<float>(card_width),static_cast<float>(card_height)};
+        Gdiplus::GraphicsPath shadow_path;
+        AddRoundedPath(shadow_path,shadow_bounds,10.0f);
+        Gdiplus::SolidBrush shadow_brush(Gdiplus::Color(72,0,0,0));
+        graphics.FillPath(&shadow_brush,&shadow_path);
+
+        Gdiplus::RectF card_bounds{
+            static_cast<float>(shadow_margin)+0.5f,static_cast<float>(shadow_margin)+0.5f,
+            static_cast<float>(card_width)-1.0f,static_cast<float>(card_height)-1.0f};
+        Gdiplus::GraphicsPath card_path;
+        AddRoundedPath(card_path,card_bounds,9.5f);
+        const COLORREF card_fill=g_light_theme?RGB(246,249,253):RGB(28,34,43);
+        const COLORREF card_stroke=g_light_theme?RGB(124,166,220):RGB(72,116,177);
+        Gdiplus::SolidBrush card_brush(SmoothColor(card_fill,244));
+        Gdiplus::Pen card_pen(SmoothColor(card_stroke,245),1.25f);
+        graphics.FillPath(&card_brush,&card_path);
+        graphics.DrawPath(&card_pen,&card_path);
+
+        Gdiplus::Pen grip(SmoothColor(g_light_theme?RGB(107,123,145):RGB(151,164,184),230),1.4f);
+        grip.SetStartCap(Gdiplus::LineCapRound);
+        grip.SetEndCap(Gdiplus::LineCapRound);
+        const float grip_center=shadow_margin+card_height/2.0f;
+        for(float offset=-4.0f;offset<=4.0f;offset+=4.0f)
+            graphics.DrawLine(&grip,static_cast<float>(shadow_margin+11),grip_center+offset,
+                              static_cast<float>(shadow_margin+20),grip_center+offset);
+
+        const auto& project=g_projects[project_index];
+        Gdiplus::FontFamily family(L"Segoe UI");
+        Gdiplus::Font preview_font(&family,15.0f,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
+        Gdiplus::SolidBrush text_brush(SmoothColor(fg,245));
+        Gdiplus::StringFormat text_format;
+        text_format.SetAlignment(Gdiplus::StringAlignmentNear);
+        text_format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        text_format.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+        text_format.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+        Gdiplus::RectF text_bounds{
+            static_cast<float>(shadow_margin+29),static_cast<float>(shadow_margin),
+            static_cast<float>(std::max(1,card_width-69)),static_cast<float>(card_height)};
+        graphics.DrawString(project.name.c_str(),static_cast<INT>(project.name.size()),
+                            &preview_font,text_bounds,&text_format,&text_brush);
+
+        COLORREF state_color=g_light_theme?RGB(100,113,131):RGB(139,157,183);
+        enum class PreviewState{Idle,Running,Paused,Warning};
+        PreviewState state=PreviewState::Idle;
+        if(g_island.HasSession(project.id)){
+            state=PreviewState::Running;
+            state_color=g_light_theme?RGB(28,139,91):RGB(73,203,145);
+        }else if(project.status==L"paused"){
+            state=PreviewState::Paused;
+            state_color=g_light_theme?RGB(177,113,16):RGB(245,178,72);
+        }else if(project.status==L"cancelled"||project.status==L"error"){
+            state=PreviewState::Warning;
+            state_color=g_light_theme?RGB(190,132,26):RGB(244,187,72);
+        }
+        const float icon_size=20.0f;
+        const float icon_x=shadow_margin+card_width-icon_size-11.0f;
+        const float icon_y=shadow_margin+(card_height-icon_size)/2.0f;
+        const float cx=icon_x+icon_size/2.0f,cy=icon_y+icon_size/2.0f;
+        Gdiplus::SolidBrush halo(SmoothColor(state_color,34));
+        Gdiplus::SolidBrush icon_brush(SmoothColor(state_color,245));
+        Gdiplus::Pen icon_pen(SmoothColor(state_color,245),1.65f);
+        icon_pen.SetStartCap(Gdiplus::LineCapRound);
+        icon_pen.SetEndCap(Gdiplus::LineCapRound);
+        graphics.FillEllipse(&halo,icon_x,icon_y,icon_size,icon_size);
+        if(state==PreviewState::Running){
+            graphics.DrawEllipse(&icon_pen,icon_x+2.0f,icon_y+2.0f,icon_size-4.0f,icon_size-4.0f);
+            graphics.FillEllipse(&icon_brush,cx-3.0f,cy-3.0f,6.0f,6.0f);
+        }else if(state==PreviewState::Paused){
+            graphics.DrawLine(&icon_pen,cx-2.5f,cy-4.0f,cx-2.5f,cy+4.0f);
+            graphics.DrawLine(&icon_pen,cx+2.5f,cy-4.0f,cx+2.5f,cy+4.0f);
+        }else if(state==PreviewState::Warning){
+            Gdiplus::PointF triangle[3]{{cx,icon_y+3.0f},
+                {icon_x+3.0f,icon_y+icon_size-3.0f},
+                {icon_x+icon_size-3.0f,icon_y+icon_size-3.0f}};
+            graphics.DrawPolygon(&icon_pen,triangle,3);
+            graphics.DrawLine(&icon_pen,cx,cy-2.5f,cx,cy+1.5f);
+            graphics.FillEllipse(&icon_brush,cx-0.9f,cy+3.0f,1.8f,1.8f);
+        }else graphics.DrawEllipse(&icon_pen,cx-4.0f,cy-4.0f,8.0f,8.0f);
+    }
+
+    POINT card_origin{item.left+3,item.top+3};
+    ClientToScreen(list,&card_origin);
+    g_project_drag_hotspot={
+        std::clamp<int>(static_cast<int>(cursor_screen.x-card_origin.x)+shadow_margin,0,width-1),
+        std::clamp<int>(static_cast<int>(cursor_screen.y-card_origin.y)+shadow_margin,0,height-1)};
+    POINT destination{cursor_screen.x-g_project_drag_hotspot.x,
+                      cursor_screen.y-g_project_drag_hotspot.y};
+    SIZE size{width,height};
+    POINT source_origin{};
+    BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
+
+    EndProjectDragPreview();
+    g_project_drag_preview=CreateWindowExW(
+        WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE,
+        L"STATIC",L"",WS_POPUP,destination.x,destination.y,width,height,
+        g_hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
+    bool updated=g_project_drag_preview&&UpdateLayeredWindow(
+        g_project_drag_preview,screen,&destination,&size,memory,&source_origin,0,&blend,ULW_ALPHA);
+    if(updated)ShowWindow(g_project_drag_preview,SW_SHOWNOACTIVATE);
+
+    SelectObject(memory,old_bitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(nullptr,screen);
+    if(!updated){EndProjectDragPreview();return false;}
+    return true;
+}
+void MoveProjectDragPreview(POINT cursor_screen){
+    if(!g_project_drag_preview)return;
+    SetWindowPos(g_project_drag_preview,HWND_TOP,
+                 cursor_screen.x-g_project_drag_hotspot.x,
+                 cursor_screen.y-g_project_drag_hotspot.y,
+                 0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+}
+void RepaintProjectDragList(HWND list){
+    if(!list)return;
+    InvalidateRect(list,nullptr,FALSE);
+    UpdateWindow(list);
+}
+void ResetProjectDrag(HWND list){
+    const bool repaint=g_project_dragging||g_project_drag_insert>=0;
+    EndProjectDragPreview();
+    g_project_drag_source=-1;g_project_drag_insert=-1;g_project_dragging=false;
+    if(repaint&&list)InvalidateRect(list,nullptr,FALSE);
+}
+int ProjectDropSlot(HWND list,POINT point){
+    const int count=static_cast<int>(SendMessageW(list,LB_GETCOUNT,0,0));
+    if(count<=0)return 0;
+    RECT client{};GetClientRect(list,&client);
+    if(point.y<=client.top)return 0;
+    if(point.y>=client.bottom)return count;
+    const LRESULT hit=SendMessageW(list,LB_ITEMFROMPOINT,0,MAKELPARAM(point.x,point.y));
+    int row=static_cast<int>(LOWORD(hit));
+    if(row<0)return 0;if(row>=count)return count;
+    RECT item{};if(SendMessageW(list,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))==LB_ERR)return row;
+    return point.y<(item.top+item.bottom)/2?row:row+1;
+}
+void ReorderVisibleProjects(int source_row,int insert_slot){
+    const int count=static_cast<int>(g_visible_project_indices.size());
+    if(source_row<0||source_row>=count||insert_slot<0||insert_slot>count)return;
+    int destination=insert_slot;if(destination>source_row)--destination;
+    if(destination==source_row)return;
+
+    std::vector<std::wstring> ordered_ids;ordered_ids.reserve(g_visible_project_indices.size());
+    for(const int index:g_visible_project_indices){if(index>=0&&index<(int)g_projects.size())ordered_ids.push_back(g_projects[index].id);}
+    if(source_row>=static_cast<int>(ordered_ids.size()))return;
+    const std::wstring moving_id=ordered_ids[source_row];
+    ordered_ids.erase(ordered_ids.begin()+source_row);
+    destination=std::clamp(destination,0,static_cast<int>(ordered_ids.size()));
+    ordered_ids.insert(ordered_ids.begin()+destination,moving_id);
+
+    std::wstring error;
+    if(!g_store.ReorderProjects(g_group_name,ordered_ids,&error)){
+        MessageBoxW(g_hwnd,(L"无法保存项目顺序："+error).c_str(),L"项目排序",MB_OK|MB_ICONWARNING);
+        return;
+    }
+    g_projects=g_store.LoadProjects();
+    g_last_project_id=moving_id;SendMessageW(g_list,LB_SETCURSEL,static_cast<WPARAM>(LB_ERR),0);
+    RefreshProjectList();RefreshProjectDetails();Layout();SetText(g_status,L"项目顺序已保存");
+}
+LRESULT HandleProjectDragListMessage(HWND,LPARAM lparam){
+    auto* info=reinterpret_cast<DRAGLISTINFO*>(lparam);
+    if(!info||info->hWnd!=g_list)return 0;
+    switch(info->uNotification){
+    case DL_BEGINDRAG:{
+        ResetProjectDrag(g_list);
+        if(!aicli::ui::GetStyledInputText(g_search).empty())return FALSE;
+        const int row=LBItemFromPt(g_list,info->ptCursor,FALSE);
+        const int count=static_cast<int>(SendMessageW(g_list,LB_GETCOUNT,0,0));
+        if(row<0||row>=count)return FALSE;
+        POINT client_point=info->ptCursor;
+        ScreenToClient(g_list,&client_point);
+        RECT item{};
+        if(SendMessageW(g_list,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))==LB_ERR)
+            return FALSE;
+        const RECT drag_handle{item.left+3,item.top+3,item.left+31,item.bottom-3};
+        if(!PtInRect(&drag_handle,client_point))return FALSE;
+        BeginProjectDragPreview(g_list,row,info->ptCursor);
+        g_project_dragging=true;g_project_drag_source=row;g_project_drag_insert=row;
+        RepaintProjectDragList(g_list);return TRUE;
+    }
+    case DL_DRAGGING:{
+        if(!g_project_dragging)return DL_STOPCURSOR;
+        LBItemFromPt(g_list,info->ptCursor,TRUE);
+        MoveProjectDragPreview(info->ptCursor);
+        POINT client_point=info->ptCursor;ScreenToClient(g_list,&client_point);
+        const int slot=ProjectDropSlot(g_list,client_point);
+        if(slot!=g_project_drag_insert){g_project_drag_insert=slot;RepaintProjectDragList(g_list);}
+        return DL_MOVECURSOR;
+    }
+    case DL_DROPPED:{
+        if(!g_project_dragging)return 0;
+        POINT client_point=info->ptCursor;ScreenToClient(g_list,&client_point);
+        const int source=g_project_drag_source,slot=ProjectDropSlot(g_list,client_point);
+        ResetProjectDrag(g_list);ReorderVisibleProjects(source,slot);return 0;
+    }
+    case DL_CANCELDRAG:
+        ResetProjectDrag(g_list);return 0;
+    }
+    return 0;
 }
 void Layout(){
     if(!g_hwnd || IsIconic(g_hwnd))return;
     RECT r{}; if(!GetClientRect(g_hwnd,&r))return;
-    constexpr int top=kCustomTitleBarHeight, left=286, bottom=30;
+    constexpr int top=kCustomTitleBarHeight, left=286, bottom=kFooterHeight;
     if(r.right<=left+80 || r.bottom<=top+bottom+120)return;
-    MoveWindow(g_group,168,10,106,32,TRUE);
-    MoveWindow(g_group_add,278,10,34,32,TRUE);
+    MoveWindow(g_group,168,10,154,32,TRUE);
+    MoveWindow(g_group_add,326,10,34,32,TRUE);
     const int captionReserve=MulDiv(144,(int)GetDpiForWindow(g_hwnd),96);const int settingsX=std::max(860,(int)r.right-captionReserve-82);
     MoveWindow(g_bind,std::max(700,settingsX-220),10,96,32,TRUE);
     MoveWindow(g_devices,std::max(700,settingsX-116),10,106,32,TRUE);
@@ -915,12 +2316,21 @@ void Layout(){
     MoveWindow(g_sidebar_title,18,top+70,200,24,TRUE);
     MoveWindow(g_new_project,left-50,top+64,36,34,TRUE);
     SetWindowPos(g_new_project,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
-    MoveWindow(g_list,12,top+104,left-24,r.bottom-top-bottom-112,TRUE);
+    const int git_card_top=r.bottom-bottom-62;
+    MoveWindow(g_list,12,top+104,left-24,std::max(80,git_card_top-(top+104)-8),TRUE);
 
     MoveWindow(g_cli_tab,left+16,top+12,96,34,TRUE);
     MoveWindow(g_terminal_title,left+132,top+19,r.right-left-150,22,TRUE);
     RECT terminal{left+16,top+58,r.right-14,r.bottom-bottom-10};
-    const bool selectedRunning=g_session_running&&SelectedProjectIndex()==g_running_project;
+    const int selectedIndex=SelectedProjectIndex();
+    const bool selectedRunning=selectedIndex>=0&&selectedIndex<(int)g_projects.size()&&
+        g_island.HasSession(g_projects[selectedIndex].id);
+    if(selectedRunning){
+        const auto& selectedProject=g_projects[selectedIndex];
+        g_island.Activate(selectedProject.id);
+        SetText(g_terminal_title,selectedProject.name+L"   /   "+selectedProject.type);
+        SetText(g_status,L"原生终端已连接    |    "+selectedProject.type);
+    }
     const bool showingTerminal=selectedRunning;
     const bool showingNative=showingTerminal&&g_island.Active();
     ShowWindow(g_detail_title,showingTerminal?SW_HIDE:SW_SHOW);
@@ -938,7 +2348,8 @@ void Layout(){
     // The central surface is always the real Windows Terminal control.  Do
     // not create a second EDIT-based command line or a text-output fallback:
     // keyboard focus, shortcuts, selection and scrolling must stay native.
-    MoveWindow(g_status,14,r.bottom-bottom+6,r.right-28,20,TRUE);
+    MoveWindow(g_status,14,r.bottom-bottom+6,
+               std::max(160,static_cast<int>(r.right)-28-kFooterTelemetryWidth),20,TRUE);
     if(g_island.Window()){
         if(showingNative)g_island.Resize(terminal);
         const bool management_open=FindWindowExW(g_hwnd,nullptr,L"AicliManagementDialog",nullptr)!=nullptr;
@@ -963,20 +2374,14 @@ void DeleteProject(){
     const int index=SelectedProjectIndex();
     if(index<0||index>=(int)g_projects.size())return;
     const Project project=g_projects[index];
-    const bool deletingRunning=g_session_running&&g_running_project==index;
+    const bool deletingRunning=g_island.HasSession(project.id);
     std::wstring message=L"确定从 AI CLI 中删除项目“"+project.name+L"”吗？\n\n";
     if(deletingRunning)message+=L"该项目正在运行，删除后会同时结束当前终端会话。\n\n";
     message+=L"只会删除项目配置，不会删除项目文件夹或其中的任何文件。";
     if(MessageBoxW(g_hwnd,message.c_str(),L"删除项目",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)!=IDYES)return;
     if(deletingRunning){
-        g_island.Stop();
-        g_session_running=false;
-        g_running_project=-1;
-    }else if(g_running_project>index){
-        --g_running_project;
+        g_island.Stop(project.id);
     }
-    if(g_paused_project==index)g_paused_project=-1;
-    else if(g_paused_project>index)--g_paused_project;
     g_store.DeleteProject(project.id);
     g_projects.erase(g_projects.begin()+index);
     RefreshProjectList();
@@ -989,11 +2394,11 @@ void DrawContextMenuItem(const DRAWITEMSTRUCT* item){
     const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);
     if(!entry)return;
     RECT r=item->rcItem;
-    if(!entry->label[0]){HBRUSH background=CreateSolidBrush(RGB(34,36,40));FillRect(item->hDC,&r,background);DeleteObject(background);HPEN line=CreatePen(PS_SOLID,1,RGB(57,60,67));auto old=(HPEN)SelectObject(item->hDC,line);const int y=(r.top+r.bottom)/2;MoveToEx(item->hDC,r.left+8,y,nullptr);LineTo(item->hDC,r.right-8,y);SelectObject(item->hDC,old);DeleteObject(line);return;}
+    if(!entry->label[0]){HBRUSH background=CreateSolidBrush(g_light_theme?RGB(250,251,253):RGB(34,36,40));FillRect(item->hDC,&r,background);DeleteObject(background);HPEN line=CreatePen(PS_SOLID,1,g_light_theme?RGB(218,223,231):RGB(57,60,67));auto old=(HPEN)SelectObject(item->hDC,line);const int y=(r.top+r.bottom)/2;MoveToEx(item->hDC,r.left+8,y,nullptr);LineTo(item->hDC,r.right-8,y);SelectObject(item->hDC,old);DeleteObject(line);return;}
     const bool selected=(item->itemState&ODS_SELECTED)!=0;
     const bool disabled=(item->itemState&ODS_DISABLED)!=0;
-    HBRUSH fill=CreateSolidBrush(selected?RGB(55,62,73):RGB(34,36,40));FillRect(item->hDC,&r,fill);DeleteObject(fill);
-    SetBkMode(item->hDC,TRANSPARENT);SetTextColor(item->hDC,disabled?RGB(111,116,126):RGB(222,226,233));
+    HBRUSH fill=CreateSolidBrush(selected?(g_light_theme?RGB(226,237,251):RGB(55,62,73)):(g_light_theme?RGB(250,251,253):RGB(34,36,40)));FillRect(item->hDC,&r,fill);DeleteObject(fill);
+    SetBkMode(item->hDC,TRANSPARENT);SetTextColor(item->hDC,disabled?(g_light_theme?RGB(153,160,170):RGB(111,116,126)):(g_light_theme?RGB(38,44,54):RGB(222,226,233)));
     SelectObject(item->hDC,g_icon_font?g_icon_font:g_font);RECT icon{r.left+13,r.top+1,r.left+39,r.bottom-1};DrawTextW(item->hDC,entry->icon,-1,&icon,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
     SelectObject(item->hDC,g_font);RECT text{r.left+49,r.top+1,r.right-34,r.bottom-1};DrawTextW(item->hDC,entry->label,-1,&text,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
     if(entry->submenu){SelectObject(item->hDC,g_font_small);RECT arrow{r.right-28,r.top+1,r.right-10,r.bottom-1};DrawTextW(item->hDC,L">",-1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);}
@@ -1003,6 +2408,17 @@ void AppendContextEntry(HMENU menu,UINT flags,UINT_PTR id,const ContextMenuEntry
 void OpenProjectFolder(){const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;const auto& folder=g_projects[index].folder;if(folder.empty()){MessageBoxW(g_hwnd,L"当前项目还没有设置项目文件夹。",L"打开项目文件夹",MB_OK|MB_ICONINFORMATION);return;}if((INT_PTR)ShellExecuteW(g_hwnd,L"open",folder.c_str(),nullptr,nullptr,SW_SHOWNORMAL)<=32)MessageBoxW(g_hwnd,L"无法打开项目文件夹。",L"打开项目文件夹",MB_OK|MB_ICONWARNING);}
 void MoveSelectedProjectToGroup(const std::wstring& group){const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;g_projects[index].group=group;g_store.SaveProject(g_projects[index]);g_group_name=group;g_store.SetSetting(L"last_group",group);RefreshProjectList();SetText(g_status,L"项目已移动到 "+group);Layout();}
 void MoveSelectedProjectToDefaultGroup(){MoveSelectedProjectToGroup(L"默认分组");}
+void ShowGroupDropdown(){
+    g_groups=g_store.LoadGroups();g_projects=g_store.LoadProjects();if(g_groups.empty())return;
+    HMENU menu=CreatePopupMenu();if(!menu)return;HBRUSH brush=CreateSolidBrush(g_light_theme?RGB(250,251,253):RGB(34,36,40));ConfigureContextMenu(menu,brush);
+    std::vector<std::wstring> labels;labels.reserve(g_groups.size());for(const auto& group:g_groups){const auto count=std::count_if(g_projects.begin(),g_projects.end(),[&](const Project& project){const std::wstring value=project.group.empty()?L"默认分组":project.group;return value==group.name;});labels.push_back(group.name+L" ("+std::to_wstring(count)+L")");}
+    std::vector<ContextMenuEntry> entries;entries.reserve(g_groups.size());for(size_t i=0;i<g_groups.size();++i){entries.push_back({g_groups[i].name==g_group_name?L"\xE73E":L"\xE8B7",labels[i].c_str(),false});AppendContextEntry(menu,MF_ENABLED,ID_GROUP_SELECT_BASE+static_cast<UINT>(i),entries.back());}
+    RECT button{};GetWindowRect(g_group,&button);const UINT command=TrackPopupMenuEx(menu,TPM_RETURNCMD|TPM_LEFTALIGN|TPM_TOPALIGN|TPM_NONOTIFY,button.left,button.bottom,g_hwnd,nullptr);DestroyMenu(menu);DeleteObject(brush);
+    if(command>=ID_GROUP_SELECT_BASE&&command<ID_GROUP_SELECT_BASE+g_groups.size()){g_group_name=g_groups[command-ID_GROUP_SELECT_BASE].name;g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();RefreshProjectDetails();Layout();}
+}
+void CreateGroupFromHeader(){
+    std::wstring name;if(!aicli::ui::ShowGroupNameDialog(g_hwnd,L"添加分组",L"创建后会立即切换到这个分组。",L"",g_light_theme,name))return;std::wstring error;if(!g_store.AddGroup(name,&error)){MessageBoxW(g_hwnd,error.c_str(),L"添加分组",MB_OK|MB_ICONWARNING);return;}g_groups=g_store.LoadGroups();g_group_name=name;g_store.SetSetting(L"last_group",name);RefreshProjectList();RefreshProjectDetails();Layout();SetText(g_status,L"已创建分组 "+name);
+}
 void ShowProjectContextMenu(HWND owner,LPARAM position){
     int index=SelectedProjectIndex();
     POINT screen{};
@@ -1025,11 +2441,11 @@ void ShowProjectContextMenu(HWND owner,LPARAM position){
         RefreshProjectDetails();
         Layout();
     }
-    const bool running=g_session_running&&index==g_running_project;
-    const bool paused=index==g_paused_project;
+    const bool running=g_island.HasSession(g_projects[index].id);
+    const bool paused=g_projects[index].status==L"paused";
     HMENU menu=CreatePopupMenu(),groups=CreatePopupMenu();
     if(!menu||!groups){if(menu)DestroyMenu(menu);if(groups)DestroyMenu(groups);return;}
-    HBRUSH menuBrush=CreateSolidBrush(RGB(34,36,40));ConfigureContextMenu(menu,menuBrush);ConfigureContextMenu(groups,menuBrush);
+    HBRUSH menuBrush=CreateSolidBrush(g_light_theme?RGB(250,251,253):RGB(34,36,40));ConfigureContextMenu(menu,menuBrush);ConfigureContextMenu(groups,menuBrush);
     ContextMenuEntry open{L"\xE8B7",L"打开项目文件夹",false};
     ContextMenuEntry details{L"\xE946",L"项目详情",false};
     ContextMenuEntry move{L"\xE8AB",L"移动到分组",true};
@@ -1059,36 +2475,72 @@ void ShowProjectContextMenu(HWND owner,LPARAM position){
 }
 bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const std::wstring& title,const std::wstring& sessionAgent,const std::wstring& project_id){
     SetText(g_terminal_title,title+L"   /   "+sessionAgent);
-    // Start() owns the current ConPTY through the TerminalControl bridge.
-    // Stop the previous native terminal before creating the next one.
-    g_island.Stop();
-    if(g_island.Start(cmd,cwd,title,g_hwnd,g_status,[project_id](std::wstring_view output){RecordTerminalOutput(project_id,output);})){
-        g_session_running=true;
-        SetText(g_status,L"原生终端已连接    |    "+sessionAgent+L"    |    Agent 在线");
+    if(g_island.Start(project_id,cmd,cwd,title,g_hwnd,g_status,
+                      [project_id](std::wstring_view){QueueTerminalSnapshot(project_id);})){
+        SetText(g_status,L"原生终端已连接    |    "+sessionAgent);
         Layout();
         return true;
     }
-    g_session_running=false;
     const std::wstring error=g_island.LastError().empty()?L"无法创建原生终端控件":g_island.LastError();
     SetText(g_detail_state,L"状态: 启动失败");
     SetText(g_status,L"原生终端启动失败: "+error);
     Layout(); return false;
 }
-void StartSession(){const int i=SelectedProjectIndex();if(i<0||i>=(int)g_projects.size())return;const auto& project=g_projects[i];const std::wstring sessionAgent=project.type;const std::wstring cmd=project.command.empty()?DefaultProjectCommand(sessionAgent):project.command;if(StartCommandSession(cmd,project.folder,project.name,sessionAgent,project.id)){g_running_project=i;g_paused_project=-1;g_projects[i].status=L"running";g_store.UpdateProjectStatus(project.id,L"running");RecordAndBroadcastEvent(project.id,L"conversation.running",nlohmann::json{{"status","running"}});RefreshProjectDetails();RefreshProjectList();Layout();}}
+void StartSession(bool restart=false){
+    const int i=SelectedProjectIndex();if(i<0||i>=(int)g_projects.size())return;
+    auto& project=g_projects[i];
+    if(g_island.HasSession(project.id)){
+        if(!restart){g_island.Activate(project.id);SetText(g_terminal_title,project.name+L"   /   "+project.type);Layout();return;}
+        g_island.Stop(project.id);
+    }
+    const std::wstring sessionAgent=project.type;
+    const std::wstring cmd=project.command.empty()?DefaultProjectCommand(sessionAgent):project.command;
+    if(StartCommandSession(cmd,project.folder,project.name,sessionAgent,project.id)){
+        project.status=L"running";
+        g_store.UpdateProjectStatus(project.id,L"running");
+        RecordAndBroadcastEvent(project.id,L"conversation.running",nlohmann::json{{"status","running"}});
+        RefreshProjectDetails();RefreshProjectList();Layout();
+    }
+}
 int ProjectIndexById(const std::wstring& project_id){for(size_t i=0;i<g_projects.size();++i)if(g_projects[i].id==project_id)return static_cast<int>(i);return -1;}
 bool SelectProjectById(const std::wstring& project_id){const int index=ProjectIndexById(project_id);if(index<0)return false;g_group_name=g_projects[index].group.empty()?L"默认分组":g_projects[index].group;SetText(g_group,g_group_name);g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();for(size_t row=0;row<g_visible_project_indices.size();++row)if(g_visible_project_indices[row]==index){SendMessageW(g_list,LB_SETCURSEL,row,0);RefreshProjectDetails();Layout();return true;}return false;}
 void RefreshConversationsCache(){nlohmann::json items=nlohmann::json::array();for(const auto& project:g_projects){std::string provider=Utf8Text(project.type);std::transform(provider.begin(),provider.end(),provider.begin(),[](unsigned char ch){return static_cast<char>(std::tolower(ch));});items.push_back({{"id",Utf8Text(project.id)},{"name",Utf8Text(project.name)},{"provider",provider},{"type",Utf8Text(project.type)},{"group",Utf8Text(project.group)},{"folder",Utf8Text(project.folder)},{"command",Utf8Text(project.command)},{"status",Utf8Text(project.status)}});}std::scoped_lock lock(g_conversations_mutex);g_conversations_cache=nlohmann::json{{"items",items}}.dump();}
 std::string ConversationsJson(){std::scoped_lock lock(g_conversations_mutex);return g_conversations_cache.empty()?"{\"items\":[]}":g_conversations_cache;}
-std::string EventsJson(const std::wstring& project_id,std::int64_t after){nlohmann::json items=nlohmann::json::array();for(const auto& event:g_store.LoadEvents(project_id,after,1000)){nlohmann::json payload;try{payload=nlohmann::json::parse(event.payload_json);}catch(...){payload={{"text",event.payload_json}};}items.push_back({{"id",event.id},{"eventId",event.id},{"conversationId",Utf8Text(event.project_id)},{"event_type",Utf8Text(event.event_type)},{"type",Utf8Text(event.event_type)},{"payload",payload},{"createdAt",event.created_at}});}return nlohmann::json{{"items",items}}.dump();}
+std::string EventsJson(const std::wstring& project_id,std::int64_t after){nlohmann::json items=nlohmann::json::array();const auto snapshot=g_store.LoadTerminalSnapshot(project_id);if(snapshot){items.push_back({{"conversationId",Utf8Text(project_id)},{"event_type","terminal.snapshot"},{"type","terminal.snapshot"},{"payload",{{"text",Utf8Text(*snapshot)},{"replace",true}}}});}for(const auto& event:g_store.LoadEvents(project_id,after,1000,!snapshot.has_value())){nlohmann::json payload;try{payload=nlohmann::json::parse(event.payload_json);}catch(...){payload={{"text",event.payload_json}};}items.push_back({{"id",event.id},{"eventId",event.id},{"conversationId",Utf8Text(event.project_id)},{"event_type",Utf8Text(event.event_type)},{"type",Utf8Text(event.event_type)},{"payload",payload},{"createdAt",event.created_at}});}return nlohmann::json{{"items",items}}.dump();}
 void UpdateDeviceHeader(){if(!g_devices)return;const auto count=g_store.LoadDevices().size();SetText(g_devices,L"已绑定 "+std::to_wstring(count)+L" 台");InvalidateRect(g_hwnd,nullptr,FALSE);}
+void UpdateHeaderTelemetry(){
+    if(!g_hwnd)return;
+    RECT client{};
+    GetClientRect(g_hwnd,&client);
+    RECT footer{0,std::max(0,static_cast<int>(client.bottom)-kFooterHeight),client.right,client.bottom};
+    InvalidateRect(g_hwnd,&footer,FALSE);
+}
 void ConfigureRemoteAgent(){
     g_remote_agent.SetConversationsCallback([]{return ConversationsJson();});
     g_remote_agent.SetEventsCallback([](const std::wstring& project,std::int64_t after){return EventsJson(project,after);});
-    g_remote_agent.SetInputCallback([](const std::wstring& project,const std::wstring& phone,const std::wstring& input,std::wstring* error){auto* message=new(std::nothrow) RemoteInputMessage{project,phone,input};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_REMOTE_INPUT,0,reinterpret_cast<LPARAM>(message))){delete message;if(error)*error=L"桌面窗口未就绪";return false;}return true;});
+    g_remote_agent.SetInputCallback([](const std::wstring& project,const std::wstring& phone,
+                                       const std::wstring& input,std::wstring* error){
+        auto request=std::make_shared<RemoteInputMessage>(project,phone,input);
+        if(!request->completed){if(error)*error=L"无法创建输入同步事件";return false;}
+        auto* envelope=new(std::nothrow) std::shared_ptr<RemoteInputMessage>(request);
+        if(!envelope||!g_hwnd||
+           !PostMessageW(g_hwnd,WM_REMOTE_INPUT,0,reinterpret_cast<LPARAM>(envelope))){
+            delete envelope;
+            if(error)*error=L"桌面窗口未就绪";
+            return false;
+        }
+        if(WaitForSingleObject(request->completed,30000)!=WAIT_OBJECT_0){
+            request->cancelled=true;
+            if(error)*error=L"电脑端处理输入超时";
+            return false;
+        }
+        if(!request->accepted&&error)*error=request->error.empty()?L"终端未接受输入":request->error;
+        return request->accepted;
+    });
     g_remote_agent.SetControlCallback([](const std::wstring& project,const std::wstring& phone,const std::wstring& action,std::wstring* error){auto* message=new(std::nothrow) RemoteControlMessage{project,phone,action};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_REMOTE_CONTROL,0,reinterpret_cast<LPARAM>(message))){delete message;if(error)*error=L"桌面窗口未就绪";return false;}return true;});
     g_remote_agent.SetPairingCallback([](const aicli::agent::PendingPairing& pairing){auto* message=new(std::nothrow) aicli::agent::PendingPairing(pairing);if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_PAIRING_PENDING,0,reinterpret_cast<LPARAM>(message)))delete message;});
     g_remote_agent.SetStatusCallback([](bool online,const std::wstring& text){auto* message=new(std::nothrow) AgentStatusMessage{online,text};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_AGENT_STATUS,0,reinterpret_cast<LPARAM>(message)))delete message;});
-    aicli::agent::AgentConfig config;config.bind_address=g_store.GetSetting(L"listen_address",L"0.0.0.0");config.port=g_store.GetSetting(L"listen_port",L"4280");config.local_address=g_store.GetSetting(L"local_address");config.remote_address=g_store.GetSetting(L"remote_address");config.data_directory=aicli::DefaultDataDirectory();std::wstring error;if(!g_remote_agent.Start(&g_store,config,&error))SetText(g_status,L"Agent 启动失败: "+error);else SetText(g_status,L"就绪    |    HTTPS/WSS Agent 在线");UpdateDeviceHeader();
+    aicli::agent::AgentConfig config;config.bind_address=g_store.GetSetting(L"listen_address",L"0.0.0.0");config.port=g_store.GetSetting(L"listen_port",L"4280");config.local_address=g_store.GetSetting(L"local_address");config.remote_address=g_store.GetSetting(L"remote_address");config.data_directory=aicli::DefaultDataDirectory();std::wstring error;if(!g_remote_agent.Start(&g_store,config,&error))SetText(g_status,L"Agent 启动失败: "+error);else SetText(g_status,L"就绪");UpdateDeviceHeader();
 }
 
 aicli::agent::AgentConfig CurrentAgentConfig() {
@@ -1107,7 +2559,7 @@ bool RestartAgent(const aicli::agent::AgentConfig& config, std::wstring* error) 
         if (g_status) SetText(g_status, L"Agent 启动失败: " + (error ? *error : L"未知错误"));
         return false;
     }
-    if (g_status) SetText(g_status, L"HTTPS/WSS Agent 在线");
+    if (g_status) SetText(g_status, L"Agent 服务已重启");
     UpdateDeviceHeader();
     return true;
 }
@@ -1137,18 +2589,13 @@ void OpenSettingsDialog() {
         g_hwnd, aicli::ui::ManagementMode::Settings, g_store, g_remote_agent,
         [](const aicli::agent::AgentConfig& config, std::wstring* error) {
             return RestartAgent(config, error);
-        });
-    if (result.accepted) {
-        ApplyStoredTheme();
-        BOOL dark = g_light_theme ? FALSE : TRUE;
-        DwmSetWindowAttribute(g_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-        COLORREF caption_color = panel;
-        COLORREF border_color = border;
-        DwmSetWindowAttribute(g_hwnd, DWMWA_CAPTION_COLOR, &caption_color, sizeof(caption_color));
-        DwmSetWindowAttribute(g_hwnd, DWMWA_BORDER_COLOR, &border_color, sizeof(border_color));
-        InvalidateRect(g_hwnd, nullptr, TRUE);
-        Layout();
-    }
+        },
+        [](bool) { ApplyLiveTheme(); });
+    (void)result;
+    // Theme selection is saved immediately, even when the dialog is closed
+    // without pressing another save button. Repaint the complete workspace
+    // only after the modal child has gone away.
+    ApplyLiveTheme();
 }
 
 void OpenGroupsDialog() {
@@ -1169,8 +2616,32 @@ void OpenDevicesDialog() {
 }
 
 void ExtendCustomTitleBar(HWND h){MARGINS margins{0,0,kCustomTitleBarHeight,0};DwmExtendFrameIntoClientArea(h,&margins);}
+void SetTitleBarActive(HWND h,bool active){
+    if(g_window_active==active)return;
+    g_window_active=active;
+    RECT header{0,0,0,kCustomTitleBarHeight};
+    GetClientRect(h,&header);
+    header.bottom=kCustomTitleBarHeight;
+    RedrawWindow(h,&header,nullptr,RDW_INVALIDATE|RDW_FRAME|RDW_ALLCHILDREN|RDW_UPDATENOW);
+}
 LRESULT HitTestCustomFrame(HWND h,LPARAM l){
     POINT screen{GET_X_LPARAM(l),GET_Y_LPARAM(l)};RECT window{};GetWindowRect(h,&window);const UINT dpi=GetDpiForWindow(h);const int frame=GetSystemMetricsForDpi(SM_CXSIZEFRAME,dpi)+GetSystemMetricsForDpi(SM_CXPADDEDBORDER,dpi);
+    RECT caption_bounds=window;
+    if(IsZoomed(h)){
+        HMONITOR monitor=MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST);
+        MONITORINFO info{sizeof(info)};
+        if(GetMonitorInfoW(monitor,&info))caption_bounds=info.rcWork;
+    }
+    const int caption_button_width=std::max(
+        GetSystemMetricsForDpi(SM_CXSIZE,dpi),MulDiv(46,static_cast<int>(dpi),96));
+    if(screen.y>=caption_bounds.top&&screen.y<caption_bounds.top+kCustomTitleBarHeight){
+        const int distance_from_right=caption_bounds.right-screen.x;
+        if(distance_from_right>0){
+            if(distance_from_right<=caption_button_width)return HTCLOSE;
+            if(distance_from_right<=caption_button_width*2)return HTMAXBUTTON;
+            if(distance_from_right<=caption_button_width*3)return HTMINBUTTON;
+        }
+    }
     if(!IsZoomed(h)){
         const bool left=screen.x>=window.left&&screen.x<window.left+frame,right=screen.x<window.right&&screen.x>=window.right-frame,top=screen.y>=window.top&&screen.y<window.top+frame,bottom=screen.y<window.bottom&&screen.y>=window.bottom-frame;
         if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;
@@ -1180,12 +2651,13 @@ LRESULT HitTestCustomFrame(HWND h,LPARAM l){
     return HTCLIENT;
 }
 LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
+    if(g_project_drag_message&&m==g_project_drag_message)return HandleProjectDragListMessage(h,l);
     LRESULT dwmResult=0;if(m!=WM_NCCALCSIZE&&DwmDefWindowProc(h,m,w,l,&dwmResult))return dwmResult;
     switch(m){
     case WM_CREATE:{g_hwnd=h; g_font=CreateFontW(-15,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_medium=CreateFontW(-17,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_small=CreateFontW(-13,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_modal_title=CreateFontW(-21,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_icon_font=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe MDL2 Assets");
-        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,106,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,278,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);g_cli_tab=CreateWindowW(L"BUTTON",L"AI 终端",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,302,72,100,30,h,(HMENU)(INT_PTR)ID_CLI_TAB,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings,g_cli_tab};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
+        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);g_cli_tab=CreateWindowW(L"BUTTON",L"AI 终端",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,302,72,100,30,h,(HMENU)(INT_PTR)ID_CLI_TAB,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings,g_cli_tab};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
         g_sidebar_title=CreateWindowW(L"STATIC",L"项目与会话",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_medium,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");
-        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font,TRUE);RefreshProjectList();
+        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font,TRUE);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);RefreshProjectList();
         g_detail_title=CreateWindowW(L"STATIC",L"选择一个项目",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         g_detail_folder=CreateWindowW(L"STATIC",L"文件夹: 未设置",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         g_detail_command=CreateWindowW(L"STATIC",L"启动命令: 未设置",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -1194,33 +2666,228 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         g_edit_project=CreateWindowW(L"BUTTON",L"编辑项目",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,0,0,0,0,h,(HMENU)(INT_PTR)ID_EDIT_PROJECT,GetModuleHandleW(nullptr),nullptr);
         HWND detailControls[]={g_detail_title,g_detail_folder,g_detail_command,g_detail_state,g_start_project,g_edit_project};for(HWND c:detailControls){SendMessageW(c,WM_SETFONT,(WPARAM)g_font,TRUE);if(c==g_start_project||c==g_edit_project)EnableButtonHover(c);}
         g_terminal_title=CreateWindowW(L"STATIC",L"选择一个项目开始",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_terminal_title,WM_SETFONT,(WPARAM)g_font,TRUE);g_status=CreateWindowW(L"STATIC",L"就绪    |    选择项目后查看启动信息",WS_CHILD|WS_VISIBLE,0,0,0,0,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_status,WM_SETFONT,(WPARAM)g_font_small,TRUE);
-        g_island.Attach(h,RECT{250,60,500,400});RefreshProjectDetails();ExtendCustomTitleBar(h);SetWindowPos(h,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);Layout();ConfigureRemoteAgent();SetTimer(h,1,2000,nullptr);PostMessageW(h,WM_RESTORE_LAST_SESSION,0,0);return 0;}
-    case WM_ACTIVATE:ExtendCustomTitleBar(h);break;
+        g_island.Attach(h,RECT{250,60,500,400});g_island.SetTheme(g_light_theme);RefreshProjectDetails();ExtendCustomTitleBar(h);SetWindowPos(h,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);Layout();ConfigureRemoteAgent();UpdateHeaderTelemetry();SetTimer(h,1,2000,nullptr);PostMessageW(h,WM_RESTORE_LAST_SESSION,0,0);return 0;}
+    case WM_ACTIVATE:SetTitleBarActive(h,LOWORD(w)!=WA_INACTIVE);ExtendCustomTitleBar(h);break;
+    case WM_ACTIVATEAPP:SetTitleBarActive(h,w!=FALSE);break;
     case WM_DWMCOMPOSITIONCHANGED:ExtendCustomTitleBar(h);return 0;
     case WM_NCCALCSIZE:if(w){auto* params=(NCCALCSIZE_PARAMS*)l;if(IsZoomed(h)){HMONITOR monitor=MonitorFromRect(&params->rgrc[0],MONITOR_DEFAULTTONEAREST);MONITORINFO info{sizeof(info)};if(GetMonitorInfoW(monitor,&info))params->rgrc[0]=info.rcWork;}return 0;}break;
     case WM_NCHITTEST:return HitTestCustomFrame(h,l);
-    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);item->itemWidth=218;item->itemHeight=entry&&!entry->label[0]?10:38;return TRUE;}if(item->CtlID==ID_PROJECT_LIST){item->itemHeight=72;return TRUE;}}break;
+    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);item->itemWidth=218;item->itemHeight=entry&&!entry->label[0]?10:38;return TRUE;}if(item->CtlID==ID_PROJECT_LIST){item->itemHeight=50;return TRUE;}}break;
     case WM_DRAWITEM:{auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){DrawContextMenuItem(item);return TRUE;}if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){DrawProjectItem(item);return TRUE;}}break;
     case WM_SIZE: if(w==SIZE_MINIMIZED){g_island.SetVisible(false);return 0;}if(g_project_dialog||g_binding_dialog||FindWindowExW(h,nullptr,L"AicliManagementDialog",nullptr)){RECT client{};GetClientRect(h,&client);if(g_project_dialog)MoveWindow(g_project_dialog,0,0,client.right,client.bottom,TRUE);if(g_binding_dialog)MoveWindow(g_binding_dialog,0,0,client.right,client.bottom,TRUE);if(HWND management=FindWindowExW(h,nullptr,L"AicliManagementDialog",nullptr))MoveWindow(management,0,0,client.right,client.bottom,TRUE);}Layout();return 0;
-    case WM_TIMER:if(w==1){RECT header{0,0,900,kCustomTitleBarHeight};InvalidateRect(h,&header,FALSE);return 0;}break;
+    case WM_TERMINAL_DIRTY:g_terminal_snapshot_message_pending=false;if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
+    case WM_TRANSCRIPT_STATE:{std::unique_ptr<TranscriptStateMessage> message(reinterpret_cast<TranscriptStateMessage*>(l));if(message)g_island.ApplyTranscriptState(*message);return 0;}
+    case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshot_dirty.exchange(false))PublishTerminalSnapshots();else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}break;
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;info->ptMinTrackSize.x=900;info->ptMinTrackSize.y=600;return 0;}
     case WM_MOUSEWHEEL: if(g_island.HandleMouseWheel(w,l))return 0; break;
     case WM_MOUSEHWHEEL: if(g_island.HandleMouseWheel(w,l,true))return 0; break;
+    case WM_POINTERWHEEL: if(g_island.HandleMouseWheel(w,l,false,true))return 0; break;
+    case WM_POINTERHWHEEL: if(g_island.HandleMouseWheel(w,l,true,true))return 0; break;
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;
     case WM_CTLCOLORSTATIC: {HDC dc=(HDC)w;HWND control=(HWND)l;const bool onPanel=control==g_sidebar_title||control==g_status;SetBkMode(dc,OPAQUE);SetTextColor(dc,fg);SetBkColor(dc,onPanel?panel:bg);return (LRESULT)(onPanel?g_list_brush:g_bg_brush);}
     case WM_CTLCOLOREDIT: {HDC dc=(HDC)w;SetTextColor(dc,fg);SetBkColor(dc,elevated);return (LRESULT)(g_edit_brush?g_edit_brush:GetStockObject(NULL_BRUSH));}
     case WM_CTLCOLORLISTBOX: {HDC dc=(HDC)w;SetTextColor(dc,fg);SetBkColor(dc,panel);return (LRESULT)(g_list_brush?g_list_brush:GetStockObject(NULL_BRUSH));}
-    case WM_COMMAND: if(LOWORD(w)==ID_CLOSE){DestroyWindow(h);return 0;}if(LOWORD(w)==ID_MINIMIZE){ShowWindow(h,SW_MINIMIZE);return 0;}if(LOWORD(w)==ID_SEARCH_PROJECTS&&HIWORD(w)==EN_CHANGE){RefreshProjectList();Layout();return 0;}if(LOWORD(w)==ID_PROJECT_LIST&&HIWORD(w)==LBN_SELCHANGE){RefreshProjectDetails();Layout();return 0;}if(LOWORD(w)==ID_PROJECT_LIST&&HIWORD(w)==LBN_DBLCLK){StartSession();return 0;} if(LOWORD(w)==ID_NEW_PROJECT){CreateProject();return 0;} if(LOWORD(w)==ID_START_PROJECT){StartSession();return 0;} if(LOWORD(w)==ID_EDIT_PROJECT){EditProject();return 0;} if(LOWORD(w)==ID_CTX_OPEN_FOLDER){OpenProjectFolder();return 0;} if(LOWORD(w)>=ID_CTX_MOVE_GROUP_BASE&&LOWORD(w)<ID_CTX_MOVE_GROUP_BASE+static_cast<int>(g_groups.size())){MoveSelectedProjectToGroup(g_groups[LOWORD(w)-ID_CTX_MOVE_GROUP_BASE].name);return 0;} if(LOWORD(w)==ID_CTX_MOVE_DEFAULT){MoveSelectedProjectToDefaultGroup();return 0;} if(LOWORD(w)==ID_CTX_RESTART){StartSession();return 0;} if(LOWORD(w)==ID_CTX_CANCEL||LOWORD(w)==ID_CTX_PAUSE){const int selected=SelectedProjectIndex();const bool pausing=LOWORD(w)==ID_CTX_PAUSE;g_island.Stop();g_session_running=false;g_running_project=-1;if(selected>=0&&selected<(int)g_projects.size()){g_projects[selected].status=pausing?L"paused":L"cancelled";g_store.UpdateProjectStatus(g_projects[selected].id,g_projects[selected].status);}g_paused_project=pausing?selected:-1;SetText(g_status,pausing?L"会话已暂停":L"会话已取消");RefreshProjectDetails();RefreshProjectList();Layout();return 0;} if(LOWORD(w)==ID_CTX_CONTINUE){StartSession();return 0;} if(LOWORD(w)==ID_CTX_EDIT){EditProject();return 0;} if(LOWORD(w)==ID_CTX_DELETE){DeleteProject();return 0;} if(LOWORD(w)==ID_BIND_PHONE){ShowBindingDialog(h);return 0;} if(LOWORD(w)==ID_DEVICES){g_island.SetVisible(false);OpenDevicesDialog();Layout();return 0;} if(LOWORD(w)==ID_SETTINGS){g_island.SetVisible(false);OpenSettingsDialog();ReloadPersistentModels();return 0;} if(LOWORD(w)==ID_GROUP_DEFAULT||LOWORD(w)==ID_GROUP_ADD){g_island.SetVisible(false);OpenGroupsDialog();return 0;} if(LOWORD(w)==ID_CLI_TAB){RefreshProjectDetails();Layout();return 0;} return 0;
+    case WM_COMMAND:{
+        const UINT id=LOWORD(w),notification=HIWORD(w);
+        if(id==ID_CLOSE){DestroyWindow(h);return 0;}
+        if(id==ID_MINIMIZE){ShowWindow(h,SW_MINIMIZE);return 0;}
+        if(id==ID_SEARCH_PROJECTS&&notification==EN_CHANGE){RefreshProjectList();Layout();return 0;}
+        if(id==ID_PROJECT_LIST&&notification==LBN_SELCHANGE){RefreshProjectDetails();Layout();return 0;}
+        if(id==ID_PROJECT_LIST&&notification==LBN_DBLCLK){StartSession();return 0;}
+        if(id==ID_NEW_PROJECT){CreateProject();return 0;}
+        if(id==ID_START_PROJECT){StartSession();return 0;}
+        if(id==ID_EDIT_PROJECT){EditProject();return 0;}
+        if(id==ID_CTX_OPEN_FOLDER){OpenProjectFolder();return 0;}
+        const UINT moveGroupEnd=static_cast<UINT>(ID_CTX_MOVE_GROUP_BASE)+static_cast<UINT>(g_groups.size());
+        if(id>=static_cast<UINT>(ID_CTX_MOVE_GROUP_BASE)&&id<moveGroupEnd){MoveSelectedProjectToGroup(g_groups[id-ID_CTX_MOVE_GROUP_BASE].name);return 0;}
+        if(id==ID_CTX_MOVE_DEFAULT){MoveSelectedProjectToDefaultGroup();return 0;}
+        if(id==ID_CTX_RESTART){StartSession(true);return 0;}
+        if(id==ID_CTX_CANCEL||id==ID_CTX_PAUSE){
+            const int selected=SelectedProjectIndex();const bool pausing=id==ID_CTX_PAUSE;
+            if(selected>=0&&selected<(int)g_projects.size()){
+                auto& project=g_projects[selected];
+                g_island.Stop(project.id);
+                project.status=pausing?L"paused":L"cancelled";
+                g_store.UpdateProjectStatus(project.id,project.status);
+            }
+            SetText(g_status,pausing?L"会话已暂停":L"会话已取消");
+            RefreshProjectDetails();RefreshProjectList();Layout();return 0;
+        }
+        if(id==ID_CTX_CONTINUE){StartSession();return 0;}
+        if(id==ID_CTX_EDIT){EditProject();return 0;}
+        if(id==ID_CTX_DELETE){DeleteProject();return 0;}
+        if(id==ID_BIND_PHONE){ShowBindingDialog(h);return 0;}
+        if(id==ID_DEVICES){g_island.SetVisible(false);OpenDevicesDialog();Layout();return 0;}
+        if(id==ID_SETTINGS){g_island.SetVisible(false);OpenSettingsDialog();ReloadPersistentModels();return 0;}
+        if(id==ID_GROUP_DEFAULT){ShowGroupDropdown();return 0;}
+        if(id==ID_GROUP_ADD){g_island.SetVisible(false);CreateGroupFromHeader();Layout();return 0;}
+        if(id==ID_CLI_TAB){RefreshProjectDetails();Layout();return 0;}
+        return 0;
+    }
     case WM_RESTORE_LAST_SESSION:if(!g_startup_project_id.empty()&&SelectProjectById(g_startup_project_id)){g_startup_project_id.clear();StartSession();}return 0;
-    case WM_REMOTE_INPUT:{std::unique_ptr<RemoteInputMessage> message(reinterpret_cast<RemoteInputMessage*>(l));if(!message)return 0;if(!SelectProjectById(message->project_id))return 0;if(!g_session_running||g_running_project!=SelectedProjectIndex())StartSession();if(g_session_running&&g_running_project==SelectedProjectIndex()&&g_island.WriteInput(message->input)){RecordAndBroadcastEvent(message->project_id,L"terminal.input",nlohmann::json{{"input",Utf8Text(message->input)},{"phoneId",Utf8Text(message->phone_id)}});}return 0;}
-    case WM_REMOTE_CONTROL:{std::unique_ptr<RemoteControlMessage> message(reinterpret_cast<RemoteControlMessage*>(l));if(!message||!SelectProjectById(message->project_id))return 0;const int selected=SelectedProjectIndex();if(message->action==L"restart"||message->action==L"continue"||message->action==L"start"){StartSession();}else if(message->action==L"pause"||message->action==L"cancel"){const bool pause=message->action==L"pause";g_island.Stop();g_session_running=false;g_running_project=-1;g_paused_project=pause?selected:-1;if(selected>=0&&selected<(int)g_projects.size()){g_projects[selected].status=pause?L"paused":L"cancelled";g_store.UpdateProjectStatus(g_projects[selected].id,g_projects[selected].status);RecordAndBroadcastEvent(g_projects[selected].id,pause?L"conversation.paused":L"conversation.cancelled",nlohmann::json{{"status",pause?"paused":"cancelled"}});}RefreshProjectList();RefreshProjectDetails();Layout();}else if(message->action==L"ctrl_c"){g_island.WriteInput(std::wstring(1,L'\x03'));}return 0;}
+    case WM_REMOTE_INPUT:{
+        std::unique_ptr<std::shared_ptr<RemoteInputMessage>> envelope(
+            reinterpret_cast<std::shared_ptr<RemoteInputMessage>*>(l));
+        if(!envelope||!*envelope)return 0;
+        const auto request=*envelope;
+        auto complete=[&](bool accepted,const std::wstring& error={}){
+            request->accepted=accepted;
+            request->error=error;
+            SetEvent(request->completed);
+        };
+        if(request->cancelled){complete(false,L"输入请求已超时");return 0;}
+        if(!SelectProjectById(request->project_id)){
+            complete(false,L"项目或会话不存在");
+            return 0;
+        }
+        if(!g_island.HasSession(request->project_id))StartSession();
+        if(request->cancelled){complete(false,L"输入请求已超时");return 0;}
+        if(!g_island.HasSession(request->project_id)){
+            complete(false,L"终端会话未就绪");
+            return 0;
+        }
+        std::wstring text=request->input;
+        while(!text.empty()&&(text.back()==L'\r'||text.back()==L'\n'))text.pop_back();
+        const bool typed=text.empty()||g_island.WriteInput(request->project_id,text);
+        const bool submitted=typed&&g_island.WriteInput(request->project_id,L"\r");
+        if(submitted){
+            RecordAndBroadcastEvent(request->project_id,L"terminal.input",
+                nlohmann::json{{"input",Utf8Text(text)},{"phoneId",Utf8Text(request->phone_id)}});
+            complete(true);
+        }else complete(false,L"终端输入失败");
+        return 0;
+    }
+    case WM_REMOTE_CONTROL:{
+        std::unique_ptr<RemoteControlMessage> message(reinterpret_cast<RemoteControlMessage*>(l));
+        if(!message||!SelectProjectById(message->project_id))return 0;
+        const int selected=SelectedProjectIndex();
+        if(message->action==L"restart")StartSession(true);
+        else if(message->action==L"continue"||message->action==L"start")StartSession();
+        else if(message->action==L"pause"||message->action==L"cancel"){
+            const bool pause=message->action==L"pause";
+            g_island.Stop(message->project_id);
+            if(selected>=0&&selected<(int)g_projects.size()){
+                g_projects[selected].status=pause?L"paused":L"cancelled";
+                g_store.UpdateProjectStatus(g_projects[selected].id,g_projects[selected].status);
+                RecordAndBroadcastEvent(g_projects[selected].id,pause?L"conversation.paused":L"conversation.cancelled",nlohmann::json{{"status",pause?"paused":"cancelled"}});
+            }
+            RefreshProjectList();RefreshProjectDetails();Layout();
+        }else if(message->action==L"ctrl_c")g_island.WriteInput(message->project_id,std::wstring(1,L'\x03'));
+        return 0;
+    }
     case WM_PAIRING_PENDING:{std::unique_ptr<aicli::agent::PendingPairing> pairing(reinterpret_cast<aicli::agent::PendingPairing*>(l));if(!pairing)return 0;g_pending_pairing=*pairing;if(g_binding_dialog){InvalidateRect(g_binding_dialog,nullptr,FALSE);}else if(pairing->submitted&&!pairing->authorized&&!pairing->rejected){const std::wstring text=L"手机名称："+pairing->device.name+L"\n型号："+pairing->device.model+L"\n设备 ID："+pairing->device.phone_id+L"\n\n确认后该手机可远程操作管理员终端。";const bool approve=MessageBoxW(h,text.c_str(),L"确认绑定手机",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES;std::wstring error;if(!g_remote_agent.ConfirmPairing(pairing->info.pairing_id,approve,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);}UpdateDeviceHeader();return 0;}
-    case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message)SetText(g_status,message->text);InvalidateRect(h,nullptr,FALSE);return 0;}
-    case WM_PAINT:{PAINTSTRUCT ps;HDC dc=BeginPaint(h,&ps);RECT r;GetClientRect(h,&r);HBRUSH b=CreateSolidBrush(bg);FillRect(dc,&r,b);DeleteObject(b);HBRUSH bar=CreateSolidBrush(panel);RECT top{0,0,r.right,52};FillRect(dc,&top,bar);RECT side{0,52,286,r.bottom-30};FillRect(dc,&side,bar);DeleteObject(bar);HPEN pen=CreatePen(PS_SOLID,1,border);auto old=(HPEN)SelectObject(dc,pen);MoveToEx(dc,285,52,nullptr);LineTo(dc,285,r.bottom-30);MoveToEx(dc,0,51,nullptr);LineTo(dc,r.right,51);MoveToEx(dc,0,r.bottom-30,nullptr);LineTo(dc,r.right,r.bottom-30);SelectObject(dc,old);DeleteObject(pen);const COLORREF searchBorder=GetFocus()==g_search?accent:border;DrawRoundedOutline(dc,RECT{14,68,272,108},searchBorder,10);RECT searchLine{22,105,264,GetFocus()==g_search?107:106};HBRUSH searchBrush=CreateSolidBrush(GetFocus()==g_search?accent:muted);FillRect(dc,&searchLine,searchBrush);DeleteObject(searchBrush);DrawRoundedOutline(dc,RECT{302,110,r.right-14,r.bottom-40},border,10);HBRUSH logo=CreateSolidBrush(accent2);HPEN logoPen=CreatePen(PS_SOLID,1,RGB(75,143,244));auto oldLogoB=SelectObject(dc,logo);auto oldLogoP=SelectObject(dc,logoPen);RoundRect(dc,14,10,46,42,9,9);SelectObject(dc,oldLogoB);SelectObject(dc,oldLogoP);DeleteObject(logo);DeleteObject(logoPen);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(255,255,255));SelectObject(dc,g_font_medium);TextOutW(dc,22,16,L">_",2);SetTextColor(dc,fg);TextOutW(dc,58,11,L"AI CLI",6);SelectObject(dc,g_font_small);SetTextColor(dc,g_remote_agent.Online()?RGB(83,203,146):RGB(225,101,112));const std::wstring agent_label=g_remote_agent.Online()?L"●  Agent 在线":L"○  Agent 离线";TextOutW(dc,334,20,agent_label.c_str(),static_cast<int>(agent_label.size()));SetTextColor(dc,muted);const std::wstring memory_label=L"内存 "+std::to_wstring(WorkingSetMegabytes())+L" MB";TextOutW(dc,448,20,memory_label.c_str(),static_cast<int>(memory_label.size()));const bool relay_configured=!g_store.GetSetting(L"remote_address").empty();const std::wstring relay_label=relay_configured?L"公网已配置":L"公网未配置";TextOutW(dc,558,20,relay_label.c_str(),static_cast<int>(relay_label.size()));EndPaint(h,&ps);return 0;}
-    case WM_DESTROY:g_remote_agent.Stop();g_island.Stop();ReleaseProjectSnapshot();if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message&&!message->online)SetText(g_status,message->text);UpdateHeaderTelemetry();return 0;}
+    case WM_PAINT:{
+        PAINTSTRUCT ps;
+        HDC dc=BeginPaint(h,&ps);
+        RECT r{};
+        GetClientRect(h,&r);
+
+        HBRUSH background=CreateSolidBrush(bg);
+        FillRect(dc,&r,background);
+        DeleteObject(background);
+
+        HBRUSH titleBar=CreateSolidBrush(TitleBarBackground());
+        RECT top{0,0,r.right,kCustomTitleBarHeight};
+        FillRect(dc,&top,titleBar);
+        DeleteObject(titleBar);
+
+        HBRUSH panelBrush=CreateSolidBrush(panel);
+        RECT side{0,kCustomTitleBarHeight,286,r.bottom-kFooterHeight};
+        RECT footer{0,r.bottom-kFooterHeight,r.right,r.bottom};
+        FillRect(dc,&side,panelBrush);
+        FillRect(dc,&footer,panelBrush);
+        DeleteObject(panelBrush);
+
+        HPEN pen=CreatePen(PS_SOLID,1,border);
+        auto oldPen=(HPEN)SelectObject(dc,pen);
+        MoveToEx(dc,285,kCustomTitleBarHeight,nullptr);
+        LineTo(dc,285,r.bottom-kFooterHeight);
+        MoveToEx(dc,0,kCustomTitleBarHeight-1,nullptr);
+        LineTo(dc,r.right,kCustomTitleBarHeight-1);
+        MoveToEx(dc,0,r.bottom-kFooterHeight,nullptr);
+        LineTo(dc,r.right,r.bottom-kFooterHeight);
+        SelectObject(dc,oldPen);
+        DeleteObject(pen);
+
+        const COLORREF searchBorder=GetFocus()==g_search?accent:border;
+        DrawRoundedOutline(dc,RECT{14,68,272,108},searchBorder,10);
+        RECT searchLine{22,105,264,GetFocus()==g_search?107:106};
+        HBRUSH searchBrush=CreateSolidBrush(GetFocus()==g_search?accent:muted);
+        FillRect(dc,&searchLine,searchBrush);
+        DeleteObject(searchBrush);
+        DrawRoundedOutline(dc,RECT{302,110,r.right-14,r.bottom-40},border,10);
+
+        HBRUSH logo=CreateSolidBrush(accent2);
+        HPEN logoPen=CreatePen(PS_SOLID,1,RGB(75,143,244));
+        auto oldLogoBrush=SelectObject(dc,logo);
+        auto oldLogoPen=SelectObject(dc,logoPen);
+        RoundRect(dc,14,10,46,42,9,9);
+        SelectObject(dc,oldLogoBrush);
+        SelectObject(dc,oldLogoPen);
+        DeleteObject(logo);
+        DeleteObject(logoPen);
+
+        SetBkMode(dc,TRANSPARENT);
+        SetTextColor(dc,RGB(255,255,255));
+        SelectObject(dc,g_font_medium);
+        TextOutW(dc,22,16,L">_",2);
+        SetTextColor(dc,TitleBarText());
+        TextOutW(dc,58,11,L"AI CLI",6);
+
+        RECT gitCard{10,r.bottom-kFooterHeight-62,276,r.bottom-kFooterHeight-8};
+        HBRUSH gitFill=CreateSolidBrush(elevated);
+        HPEN gitPen=CreatePen(PS_SOLID,1,border);
+        auto oldGitFill=SelectObject(dc,gitFill);
+        auto oldGitPen=SelectObject(dc,gitPen);
+        RoundRect(dc,gitCard.left,gitCard.top,gitCard.right,gitCard.bottom,12,12);
+        SelectObject(dc,oldGitFill);
+        SelectObject(dc,oldGitPen);
+        DeleteObject(gitFill);
+        DeleteObject(gitPen);
+
+        SelectObject(dc,g_font_small);
+        SetTextColor(dc,muted);
+        TextOutW(dc,24,gitCard.top+9,L"GIT",3);
+        std::wstring gitText;
+        COLORREF gitColor=muted;
+        if(g_git_repository_state==GitRepositoryState::HasCommits){
+            gitText=L"● 已初始化    ● 已提交";
+            gitColor=RGB(63,194,130);
+        }else if(g_git_repository_state==GitRepositoryState::NoCommits){
+            gitText=L"● 已初始化    ● 尚无提交";
+            gitColor=RGB(241,174,65);
+        }else if(g_git_repository_state==GitRepositoryState::NotInitialized){
+            gitText=L"○ 未初始化";
+            gitColor=RGB(226,91,105);
+        }else{
+            gitText=L"○ 未选择有效项目目录";
+        }
+        SetTextColor(dc,gitColor);
+        TextOutW(dc,24,gitCard.top+29,gitText.c_str(),static_cast<int>(gitText.size()));
+
+        const int telemetryLeft=std::max(14,static_cast<int>(r.right)-kFooterTelemetryWidth+8);
+        const int telemetryTop=r.bottom-kFooterHeight;
+        const std::wstring agentLabel=g_remote_agent.Online()?L"● Agent 在线":L"○ Agent 离线";
+        const std::wstring memoryLabel=L"内存 "+std::to_wstring(WorkingSetMegabytes())+L" MB";
+        const bool relayConfigured=!g_store.GetSetting(L"remote_address").empty();
+        const std::wstring relayLabel=relayConfigured?L"公网已配置":L"公网未配置";
+        RECT agentRect{telemetryLeft,telemetryTop,telemetryLeft+116,r.bottom};
+        RECT memoryRect{agentRect.right,telemetryTop,agentRect.right+108,r.bottom};
+        RECT relayRect{memoryRect.right,telemetryTop,r.right-10,r.bottom};
+        SetTextColor(dc,g_remote_agent.Online()?RGB(83,203,146):RGB(225,101,112));
+        DrawTextW(dc,agentLabel.c_str(),-1,&agentRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        SetTextColor(dc,muted);
+        DrawTextW(dc,memoryLabel.c_str(),-1,&memoryRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        DrawTextW(dc,relayLabel.c_str(),-1,&relayRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+
+        EndPaint(h,&ps);
+        return 0;
+    }
+    case WM_DESTROY:g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();ReleaseProjectSnapshot();if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}PostQuitMessage(0);return 0; }
     return DefWindowProcW(h,m,w,l);
 }
 }
 
-int WINAPI wWinMain(HINSTANCE inst,HINSTANCE, PWSTR, int show){winrt::init_apartment(winrt::apartment_type::single_threaded);const int activation=EnsurePackagedActivation();if(activation<0){MessageBoxW(nullptr,L"无法启动已注册的 AI CLI 桌面实例，请先完成包注册。",L"AI CLI",MB_OK|MB_ICONERROR);return 1;}if(activation==0)return 0;if(!InitializePersistentState()){winrt::uninit_apartment();return 1;}g_components.Initialize();INITCOMMONCONTROLSEX ic{sizeof(ic),ICC_STANDARD_CLASSES};InitCommonControlsEx(&ic);WNDCLASSW wc{};wc.hInstance=inst;wc.lpfnWndProc=WndProc;wc.lpszClassName=kClassName;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);RegisterClassW(&wc);constexpr DWORD windowStyle=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_CLIPCHILDREN;g_hwnd=CreateWindowExW(0,kClassName,L"\x200B",windowStyle,CW_USEDEFAULT,CW_USEDEFAULT,1280,800,nullptr,nullptr,inst,nullptr);BOOL dark=g_light_theme?FALSE:TRUE;DwmSetWindowAttribute(g_hwnd,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));COLORREF captionColor=panel,borderColor=border;DwmSetWindowAttribute(g_hwnd,DWMWA_CAPTION_COLOR,&captionColor,sizeof(captionColor));DwmSetWindowAttribute(g_hwnd,DWMWA_BORDER_COLOR,&borderColor,sizeof(borderColor));ShowWindow(g_hwnd,show);UpdateWindow(g_hwnd);MSG msg;while(GetMessageW(&msg,nullptr,0,0)){TranslateMessage(&msg);DispatchMessageW(&msg);}g_store.Close();winrt::uninit_apartment();return 0;}
+int WINAPI wWinMain(HINSTANCE inst,HINSTANCE, PWSTR, int show){GdiplusRuntime gdiplus;winrt::init_apartment(winrt::apartment_type::single_threaded);const int activation=EnsurePackagedActivation();if(activation<0){MessageBoxW(nullptr,L"无法启动已注册的 AI CLI 桌面实例，请先完成包注册。",L"AI CLI",MB_OK|MB_ICONERROR);return 1;}if(activation==0)return 0;if(!InitializePersistentState()){winrt::uninit_apartment();return 1;}g_components.Initialize();INITCOMMONCONTROLSEX ic{sizeof(ic),ICC_STANDARD_CLASSES};InitCommonControlsEx(&ic);WNDCLASSW wc{};wc.hInstance=inst;wc.lpfnWndProc=WndProc;wc.lpszClassName=kClassName;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);RegisterClassW(&wc);constexpr DWORD windowStyle=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_CLIPCHILDREN;g_hwnd=CreateWindowExW(0,kClassName,L"\x200B",windowStyle,CW_USEDEFAULT,CW_USEDEFAULT,1280,800,nullptr,nullptr,inst,nullptr);BOOL dark=g_light_theme?FALSE:TRUE;DwmSetWindowAttribute(g_hwnd,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));COLORREF captionColor=panel,borderColor=border;DwmSetWindowAttribute(g_hwnd,DWMWA_CAPTION_COLOR,&captionColor,sizeof(captionColor));DwmSetWindowAttribute(g_hwnd,DWMWA_BORDER_COLOR,&borderColor,sizeof(borderColor));ShowWindow(g_hwnd,show);UpdateWindow(g_hwnd);MSG msg;while(GetMessageW(&msg,nullptr,0,0)){const bool mouseWheel=msg.message==WM_MOUSEWHEEL||msg.message==WM_MOUSEHWHEEL;const bool pointerWheel=msg.message==WM_POINTERWHEEL||msg.message==WM_POINTERHWHEEL;if((mouseWheel||pointerWheel)&&g_island.HandleMouseWheel(msg.wParam,msg.lParam,msg.message==WM_MOUSEHWHEEL||msg.message==WM_POINTERHWHEEL,pointerWheel))continue;TranslateMessage(&msg);DispatchMessageW(&msg);}g_store.Close();winrt::uninit_apartment();return 0;}

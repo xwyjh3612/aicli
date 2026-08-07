@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 
@@ -173,6 +174,12 @@ CREATE TABLE IF NOT EXISTS events(
     payload_json TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS terminal_snapshots(
+    project_id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
 CREATE INDEX IF NOT EXISTS idx_events_project_id ON events(project_id, id);
 CREATE INDEX IF NOT EXISTS idx_device_requests_created ON device_requests(created_at);
 CREATE TABLE IF NOT EXISTS settings(
@@ -180,13 +187,67 @@ CREATE TABLE IF NOT EXISTS settings(
     value TEXT NOT NULL
 );
 )SQL";
-    return Execute(schema, error);
+    if (!Execute(schema, error)) return false;
+
+    bool has_sort_order = false;
+    if (auto columns = Prepare(db_, "PRAGMA table_info(projects);"); columns) {
+        while (sqlite3_step(columns.get()) == SQLITE_ROW) {
+            const auto* name = reinterpret_cast<const char*>(sqlite3_column_text(columns.get(), 1));
+            if (name && strcmp(name, "sort_order") == 0) {
+                has_sort_order = true;
+                break;
+            }
+        }
+    }
+    if (has_sort_order) return true;
+    if (!Execute("ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;", error)) {
+        return false;
+    }
+
+    // Preserve the list order users had before drag sorting existed.
+    auto projects = Prepare(db_,
+        "SELECT id,group_name FROM projects "
+        "ORDER BY group_name COLLATE NOCASE,updated_at DESC,created_at DESC,id;");
+    auto update = Prepare(db_, "UPDATE projects SET sort_order=? WHERE id=?;");
+    if (!projects || !update) {
+        if (error) *error = LastError();
+        return false;
+    }
+    std::wstring current_group;
+    std::int64_t order = 0;
+    while (sqlite3_step(projects.get()) == SQLITE_ROW) {
+        const auto group = ColumnText(projects.get(), 1);
+        if (group != current_group) {
+            current_group = group;
+            order = 0;
+        }
+        sqlite3_reset(update.get());
+        sqlite3_clear_bindings(update.get());
+        sqlite3_bind_int64(update.get(), 1, order++);
+        BindText(update.get(), 2, ColumnText(projects.get(), 0));
+        if (sqlite3_step(update.get()) != SQLITE_DONE) {
+            if (error) *error = LastError();
+            return false;
+        }
+    }
+    return true;
 }
 
 bool DataStore::SeedDefaults(std::wstring* error) {
     if (!Execute("INSERT OR IGNORE INTO project_types(name,default_command,builtin) VALUES"
-                 "('Codex','codex --yolo resume --last',1),"
+                 "('Codex','codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last',1),"
                  "('Claude','claude --dangerously-skip-permissions --continue',1);",
+                 error) ||
+        !Execute("UPDATE project_types "
+                 "SET default_command='codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last' "
+                 "WHERE builtin=1 AND name='Codex' "
+                 "AND default_command IN ('codex --yolo resume --last',"
+                 "'codex --yolo --no-alt-screen resume --last');",
+                 error) ||
+        !Execute("UPDATE projects "
+                 "SET command='codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last' "
+                 "WHERE type_name='Codex' AND command IN ('codex --yolo resume --last',"
+                 "'codex --yolo --no-alt-screen resume --last');",
                  error) ||
         !Execute("INSERT OR IGNORE INTO groups(name,builtin) VALUES('默认分组',1);", error) ||
         !Execute("INSERT OR IGNORE INTO settings(key,value) VALUES"
@@ -227,7 +288,9 @@ std::vector<Project> DataStore::LoadProjects() {
     std::scoped_lock lock(mutex_);
     std::vector<Project> result;
     if (!db_) return result;
-    auto statement = Prepare(db_, "SELECT id,name,type_name,group_name,folder,command,status FROM projects ORDER BY updated_at DESC;");
+    auto statement = Prepare(db_,
+        "SELECT id,name,type_name,group_name,folder,command,status,sort_order "
+        "FROM projects ORDER BY group_name COLLATE NOCASE,sort_order,id;");
     while (statement && sqlite3_step(statement.get()) == SQLITE_ROW) {
         Project project;
         project.id = ColumnText(statement.get(), 0);
@@ -237,6 +300,7 @@ std::vector<Project> DataStore::LoadProjects() {
         project.folder = ColumnText(statement.get(), 4);
         project.command = ColumnText(statement.get(), 5);
         project.status = ColumnText(statement.get(), 6);
+        project.sort_order = sqlite3_column_int64(statement.get(), 7);
         result.push_back(std::move(project));
     }
     return result;
@@ -249,14 +313,36 @@ bool DataStore::SaveProject(Project& project, std::wstring* error) {
         if (error) *error = L"项目字段不完整";
         return false;
     }
-    if (project.id.empty()) project.id = NewId();
+    const bool inserting = project.id.empty();
+    if (inserting) project.id = NewId();
     if (project.status.empty()) project.status = L"created";
+    bool moved_to_another_group = false;
+    if (!inserting) {
+        auto existing = Prepare(db_, "SELECT group_name FROM projects WHERE id=?;");
+        if (existing) {
+            BindText(existing.get(), 1, project.id);
+            moved_to_another_group = sqlite3_step(existing.get()) == SQLITE_ROW &&
+                ColumnText(existing.get(), 0) != project.group;
+        }
+    }
+    if (inserting || moved_to_another_group) {
+        auto order = Prepare(db_,
+            "SELECT COALESCE(MAX(sort_order)+1,0) FROM projects WHERE group_name=?;");
+        if (!order) {
+            if (error) *error = LastError();
+            return false;
+        }
+        BindText(order.get(), 1, project.group);
+        if (sqlite3_step(order.get()) == SQLITE_ROW) {
+            project.sort_order = sqlite3_column_int64(order.get(), 0);
+        }
+    }
     auto statement = Prepare(db_, R"SQL(
-INSERT INTO projects(id,name,type_name,group_name,folder,command,status,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?, ?,?)
+INSERT INTO projects(id,name,type_name,group_name,folder,command,status,sort_order,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?, ?,?)
 ON CONFLICT(id) DO UPDATE SET name=excluded.name,type_name=excluded.type_name,
 group_name=excluded.group_name,folder=excluded.folder,command=excluded.command,
-status=excluded.status,updated_at=excluded.updated_at;
+status=excluded.status,sort_order=excluded.sort_order,updated_at=excluded.updated_at;
 )SQL");
     if (!statement) {
         if (error) *error = LastError();
@@ -269,9 +355,10 @@ status=excluded.status,updated_at=excluded.updated_at;
     BindText(statement.get(), 5, project.folder);
     BindText(statement.get(), 6, project.command);
     BindText(statement.get(), 7, project.status);
+    sqlite3_bind_int64(statement.get(), 8, project.sort_order);
     const auto now = UnixSeconds();
-    sqlite3_bind_int64(statement.get(), 8, now);
     sqlite3_bind_int64(statement.get(), 9, now);
+    sqlite3_bind_int64(statement.get(), 10, now);
     if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
     if (error) *error = LastError();
     return false;
@@ -295,6 +382,40 @@ bool DataStore::UpdateProjectStatus(const std::wstring& project_id, const std::w
     sqlite3_bind_int64(statement.get(), 2, UnixSeconds());
     BindText(statement.get(), 3, project_id);
     return sqlite3_step(statement.get()) == SQLITE_DONE;
+}
+
+bool DataStore::ReorderProjects(const std::wstring& group_name,
+                                const std::vector<std::wstring>& project_ids,
+                                std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    if (!db_ || IsBlank(group_name) || project_ids.empty()) return false;
+    if (!Execute("BEGIN IMMEDIATE;", error)) return false;
+
+    bool success = true;
+    auto statement = Prepare(db_,
+        "UPDATE projects SET sort_order=? WHERE id=? AND group_name=?;");
+    if (!statement) {
+        success = false;
+    } else {
+        for (size_t index = 0; index < project_ids.size(); ++index) {
+            sqlite3_reset(statement.get());
+            sqlite3_clear_bindings(statement.get());
+            sqlite3_bind_int64(statement.get(), 1, static_cast<sqlite3_int64>(index));
+            BindText(statement.get(), 2, project_ids[index]);
+            BindText(statement.get(), 3, group_name);
+            if (sqlite3_step(statement.get()) != SQLITE_DONE ||
+                sqlite3_changes(db_) != 1) {
+                success = false;
+                break;
+            }
+        }
+    }
+    if (success) success = Execute("COMMIT;", error);
+    if (!success) {
+        Execute("ROLLBACK;", nullptr);
+        if (error && error->empty()) *error = LastError();
+    }
+    return success;
 }
 
 bool DataStore::AddProjectType(const std::wstring& name, const std::wstring& command,
@@ -321,10 +442,9 @@ bool DataStore::UpdateProjectType(std::int64_t id, const std::wstring& name,
     sqlite3_bind_int64(existing.get(), 1, id);
     if (sqlite3_step(existing.get()) != SQLITE_ROW) return false;
     const auto old_name = ColumnText(existing.get(), 0);
-    if (sqlite3_column_int(existing.get(), 1) != 0) {
-        if (error) *error = L"内置项目类型不能修改";
-        return false;
-    }
+    // Codex and Claude are seeded as built-in defaults, but remain editable.
+    // The builtin flag is intentionally retained so the defaults cannot be
+    // deleted accidentally while their name/command can be customized.
     if (IsBlank(name) || IsBlank(command)) {
         if (error) *error = L"类型名称和默认启动命令不能为空";
         return false;
@@ -615,10 +735,15 @@ std::int64_t DataStore::AppendEvent(const std::wstring& project_id,
 
 std::vector<EventRecord> DataStore::LoadEvents(const std::wstring& project_id,
                                                std::int64_t after_event_id,
-                                               int limit) {
+                                               int limit,
+                                               bool include_terminal_output) {
     std::scoped_lock lock(mutex_);
     std::vector<EventRecord> result;
-    auto statement = Prepare(db_, "SELECT id,project_id,event_type,payload_json,created_at FROM events WHERE project_id=? AND id>? ORDER BY id LIMIT ?;");
+    auto statement = Prepare(db_, include_terminal_output
+        ? "SELECT id,project_id,event_type,payload_json,created_at FROM events "
+          "WHERE project_id=? AND id>? ORDER BY id LIMIT ?;"
+        : "SELECT id,project_id,event_type,payload_json,created_at FROM events "
+          "WHERE project_id=? AND id>? AND event_type<>'terminal.output' ORDER BY id LIMIT ?;");
     if (!statement) return result;
     BindText(statement.get(), 1, project_id);
     sqlite3_bind_int64(statement.get(), 2, std::max<std::int64_t>(0, after_event_id));
@@ -631,6 +756,39 @@ std::vector<EventRecord> DataStore::LoadEvents(const std::wstring& project_id,
                           sqlite3_column_int64(statement.get(), 4)});
     }
     return result;
+}
+
+bool DataStore::SaveTerminalSnapshot(const std::wstring& project_id,
+                                     const std::wstring& text,
+                                     std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    if (!db_ || project_id.empty()) return false;
+    auto statement = Prepare(db_, R"SQL(
+INSERT INTO terminal_snapshots(project_id,text,updated_at) VALUES(?,?,?)
+ON CONFLICT(project_id) DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at;
+)SQL");
+    if (!statement) {
+        if (error) *error = LastError();
+        return false;
+    }
+    BindText(statement.get(), 1, project_id);
+    BindText(statement.get(), 2, text);
+    sqlite3_bind_int64(statement.get(), 3, UnixSeconds());
+    if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
+    if (error) *error = LastError();
+    return false;
+}
+
+std::optional<std::wstring> DataStore::LoadTerminalSnapshot(
+    const std::wstring& project_id) {
+    std::scoped_lock lock(mutex_);
+    if (!db_ || project_id.empty()) return std::nullopt;
+    auto statement = Prepare(db_,
+        "SELECT text FROM terminal_snapshots WHERE project_id=?;");
+    if (!statement) return std::nullopt;
+    BindText(statement.get(), 1, project_id);
+    if (sqlite3_step(statement.get()) != SQLITE_ROW) return std::nullopt;
+    return ColumnText(statement.get(), 0);
 }
 
 void DataStore::TrimEventsIfNeeded() {

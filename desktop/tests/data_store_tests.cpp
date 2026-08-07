@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <objbase.h>
+#include <winsqlite/winsqlite3.h>
 
 #include <algorithm>
 #include <chrono>
@@ -60,18 +61,30 @@ int wmain(int argc, wchar_t** argv) {
             return value.name == L"Claude";
         });
         ok &= Check(codex && codex->builtin &&
-                        codex->default_command == L"codex --yolo resume --last",
+                        codex->default_command == L"codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last",
                     L"Codex builtin type and command");
         ok &= Check(claude && claude->builtin &&
                         claude->default_command ==
                             L"claude --dangerously-skip-permissions --continue",
                     L"Claude builtin type and command");
         if (codex) {
+            const auto codex_id = codex->id;
             error.clear();
-            ok &= Check(!store.UpdateProjectType(codex->id, L"Codex X", L"codex", &error),
-                        L"builtin project type cannot be renamed");
+            ok &= Check(store.UpdateProjectType(codex_id, L"Codex X", L"codex custom", &error),
+                        (L"builtin project type can be customized: " + error).c_str());
+            types = store.LoadProjectTypes();
+            const auto* customized_codex = Find(types, [](const aicli::ProjectType& value) {
+                return value.name == L"Codex X";
+            });
+            ok &= Check(customized_codex && customized_codex->builtin &&
+                            customized_codex->default_command == L"codex custom",
+                        L"customized builtin type remains a protected preset");
             error.clear();
-            ok &= Check(!store.DeleteProjectType(codex->id, &error),
+            ok &= Check(store.UpdateProjectType(codex_id, L"Codex",
+                                                L"codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last", &error),
+                        (L"restore Codex preset after edit test: " + error).c_str());
+            error.clear();
+            ok &= Check(!store.DeleteProjectType(codex_id, &error),
                         L"builtin project type cannot be deleted");
         }
 
@@ -106,6 +119,37 @@ int wmain(int argc, wchar_t** argv) {
         ok &= Check(store.SaveProject(project, &error),
                     (L"save custom project: " + error).c_str());
         ok &= Check(!project.id.empty(), L"new project receives a stable id");
+
+        aicli::Project second_project;
+        second_project.name = L"第二个排序项目";
+        second_project.type = L"Gemini";
+        second_project.group = L"实验组";
+        second_project.folder = database.parent_path().wstring();
+        second_project.command = L"gemini --continue";
+        error.clear();
+        ok &= Check(store.SaveProject(second_project, &error),
+                    (L"save second project: " + error).c_str());
+        error.clear();
+        ok &= Check(store.ReorderProjects(L"实验组", {second_project.id, project.id}, &error),
+                    (L"persist project drag order: " + error).c_str());
+        auto ordered_projects = store.LoadProjects();
+        std::vector<std::wstring> experimental_ids;
+        for (const auto& value : ordered_projects) {
+            if (value.group == L"实验组") experimental_ids.push_back(value.id);
+        }
+        ok &= Check(experimental_ids.size() == 2 &&
+                        experimental_ids[0] == second_project.id &&
+                        experimental_ids[1] == project.id,
+                    L"projects load in persisted drag order");
+        ok &= Check(store.UpdateProjectStatus(second_project.id, L"running"),
+                    L"status update succeeds without changing drag order");
+        ordered_projects = store.LoadProjects();
+        experimental_ids.clear();
+        for (const auto& value : ordered_projects) {
+            if (value.group == L"实验组") experimental_ids.push_back(value.id);
+        }
+        ok &= Check(experimental_ids.size() == 2 && experimental_ids[0] == second_project.id,
+                    L"status update keeps persisted project order");
 
         types = store.LoadProjectTypes();
         const auto* gemini = Find(types, [](const aicli::ProjectType& value) {
@@ -180,7 +224,16 @@ int wmain(int argc, wchar_t** argv) {
         const auto events = store.LoadEvents(project.id, 0, 20);
         ok &= Check(!events.empty() && events.back().event_type == L"terminal.output",
                     L"terminal event history can be loaded");
+        error.clear();
+        ok &= Check(store.SaveTerminalSnapshot(project.id, L"current terminal screen", &error),
+                    (L"save terminal snapshot: " + error).c_str());
+        const auto snapshot = store.LoadTerminalSnapshot(project.id);
+        ok &= Check(snapshot && *snapshot == L"current terminal screen",
+                    L"latest terminal snapshot replaces repaint history");
 
+        error.clear();
+        ok &= Check(store.DeleteProject(second_project.id, &error),
+                    (L"delete second project: " + error).c_str());
         error.clear();
         ok &= Check(store.DeleteProject(project.id, &error),
                     (L"delete project: " + error).c_str());
@@ -196,11 +249,40 @@ int wmain(int argc, wchar_t** argv) {
         }
         store.Close();
     }
+
+    const auto legacy_database = database.parent_path() / L"legacy-project-order.db";
+    std::filesystem::remove(legacy_database, filesystem_error);
+    sqlite3* legacy_raw{};
+    if (sqlite3_open16(legacy_database.c_str(), &legacy_raw) == SQLITE_OK) {
+        const char* legacy_schema =
+            "CREATE TABLE projects(id TEXT PRIMARY KEY,name TEXT NOT NULL,type_name TEXT NOT NULL,"
+            "group_name TEXT NOT NULL,folder TEXT NOT NULL,command TEXT NOT NULL,status TEXT NOT NULL,"
+            "created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);"
+            "INSERT INTO projects VALUES('older','Older','Codex','默认分组','C:/','codex','created',1,10);"
+            "INSERT INTO projects VALUES('newer','Newer','Codex','默认分组','C:/','codex','created',2,20);";
+        ok &= Check(sqlite3_exec(legacy_raw, legacy_schema, nullptr, nullptr, nullptr) == SQLITE_OK,
+                    L"create legacy project schema");
+        sqlite3_close_v2(legacy_raw);
+        aicli::DataStore migrated_store;
+        std::wstring migration_error;
+        ok &= Check(migrated_store.Initialize(legacy_database.wstring(), &migration_error),
+                    (L"migrate legacy project order: " + migration_error).c_str());
+        const auto migrated_projects = migrated_store.LoadProjects();
+        ok &= Check(migrated_projects.size() == 2 && migrated_projects[0].id == L"newer" &&
+                        migrated_projects[1].id == L"older",
+                    L"legacy updated-time order is preserved during sort migration");
+        migrated_store.Close();
+    } else {
+        ok &= Check(false, L"open legacy migration database");
+    }
     CoUninitialize();
 
     std::filesystem::remove(database, filesystem_error);
     std::filesystem::remove(database.wstring() + L"-wal", filesystem_error);
     std::filesystem::remove(database.wstring() + L"-shm", filesystem_error);
+    std::filesystem::remove(legacy_database, filesystem_error);
+    std::filesystem::remove(legacy_database.wstring() + L"-wal", filesystem_error);
+    std::filesystem::remove(legacy_database.wstring() + L"-shm", filesystem_error);
 
     if (!ok) return 1;
     std::wcout << L"AI CLI data-store tests passed.\n";

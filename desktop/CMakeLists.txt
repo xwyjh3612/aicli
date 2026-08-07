@@ -56,6 +56,7 @@ target_include_directories(aicli_data_store_tests PRIVATE
 target_link_libraries(aicli PRIVATE
     user32
     gdi32
+    gdiplus
     kernel32
     ole32
     runtimeobject

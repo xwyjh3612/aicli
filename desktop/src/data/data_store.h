@@ -30,6 +30,9 @@ public:
     bool SaveProject(Project& project, std::wstring* error = nullptr);
     bool DeleteProject(const std::wstring& project_id, std::wstring* error = nullptr);
     bool UpdateProjectStatus(const std::wstring& project_id, const std::wstring& status);
+    bool ReorderProjects(const std::wstring& group_name,
+                         const std::vector<std::wstring>& project_ids,
+                         std::wstring* error = nullptr);
 
     bool AddProjectType(const std::wstring& name, const std::wstring& default_command,
                         std::wstring* error = nullptr);
@@ -62,7 +65,12 @@ public:
                              const std::string& payload_json);
     std::vector<EventRecord> LoadEvents(const std::wstring& project_id,
                                         std::int64_t after_event_id,
-                                        int limit = 1000);
+                                        int limit = 1000,
+                                        bool include_terminal_output = true);
+    bool SaveTerminalSnapshot(const std::wstring& project_id,
+                              const std::wstring& text,
+                              std::wstring* error = nullptr);
+    std::optional<std::wstring> LoadTerminalSnapshot(const std::wstring& project_id);
 
     const std::wstring& DatabasePath() const noexcept { return database_path_; }
 

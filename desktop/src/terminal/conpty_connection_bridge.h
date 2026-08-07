@@ -59,6 +59,7 @@ private:
     HANDLE process_{};
     std::thread reader_;
     std::mutex lifecycle_mutex_;
+    std::mutex input_mutex_;
     std::atomic<bool> closing_{false};
     std::atomic<winrt::Microsoft::Terminal::TerminalConnection::ConnectionState> state_{
         winrt::Microsoft::Terminal::TerminalConnection::ConnectionState::NotConnected};
