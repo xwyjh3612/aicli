@@ -1,6 +1,7 @@
 param(
     [string]$Output = 'C:\project\aitest\codex_tool\desktop\bin\Debug',
     [string]$TerminalPackage = 'C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe',
+    [string]$ConptyPackage = 'F:\deps\aicli\Microsoft.Windows.Console.ConPTY.1.24.260710001\package',
     [string]$WorkingRoot = 'F:\codex_tool-target\desktop\runtime-stage',
     [string]$Configuration = 'Debug',
     [string]$Platform = 'x64'
@@ -22,6 +23,9 @@ function Get-MakePriPath {
 if (!(Test-Path -LiteralPath $TerminalPackage)) {
     throw "Windows Terminal package not found: $TerminalPackage"
 }
+if (!(Test-Path -LiteralPath $ConptyPackage)) {
+    throw "Microsoft ConPTY package not found: $ConptyPackage"
+}
 
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
 $terminalFiles = @(
@@ -37,14 +41,21 @@ foreach ($file in $terminalFiles) {
     Copy-Item (Join-Path $TerminalPackage $file) $Output -Force
 }
 
-# The application supplies its own ITerminalConnection implementation backed
-# by ConPTY.  Never leave the private connection/proxy binaries from the
-# installed Windows Terminal package beside the app: loading one of them can
-# silently select an incompatible ABI path (or recreate the historical
-# 0xc0000142 startup crash).
+# The application supplies its own ITerminalConnection implementation. Never
+# leave Windows Terminal's private WinRT connection/proxy binaries beside the
+# app: loading one can recreate the historical startup crash. A root-level
+# OpenConsole.exe is legacy as well; the supported side-by-side host is staged
+# below in the architecture folder expected by Microsoft's conpty.dll.
 foreach ($legacy in @('TerminalConnection.dll', 'OpenConsoleProxy.dll', 'OpenConsole.exe')) {
     Remove-Item -LiteralPath (Join-Path $Output $legacy) -Force -ErrorAction SilentlyContinue
 }
+
+$conptyDll = Join-Path $ConptyPackage 'runtimes\win-x64\native\conpty.dll'
+$openConsole = Join-Path $ConptyPackage 'build\native\runtimes\x64\OpenConsole.exe'
+$openConsoleDir = Join-Path $Output 'x64'
+New-Item -ItemType Directory -Force -Path $openConsoleDir | Out-Null
+Copy-Item -LiteralPath $conptyDll -Destination (Join-Path $Output 'conpty.dll') -Force
+Copy-Item -LiteralPath $openConsole -Destination (Join-Path $openConsoleDir 'OpenConsole.exe') -Force
 
 # Terminal's DLL and compiled XAML must be from the exact same build. The
 # installed package keeps its 1.24 XBF files embedded in the package PRI, so
@@ -117,4 +128,5 @@ $openssl = 'F:\deps\aicli\openssl'
 Copy-Item (Join-Path $openssl 'libssl-4-x64.dll'), (Join-Path $openssl 'libcrypto-4-x64.dll') $Output -Force
 $controlHashes = Get-FileHash (Join-Path $controlResourceFull '*.xbf') -Algorithm SHA256
 Write-Host "Windows Terminal 1.24.11911.0 runtime staged to $Output"
+Write-Host "Microsoft ConPTY 1.24.260710001 runtime staged with x64 OpenConsole"
 $controlHashes | ForEach-Object { Write-Host "  $([IO.Path]::GetFileName($_.Path))  $($_.Hash)" }

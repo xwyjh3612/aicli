@@ -235,19 +235,21 @@ CREATE TABLE IF NOT EXISTS settings(
 
 bool DataStore::SeedDefaults(std::wstring* error) {
     if (!Execute("INSERT OR IGNORE INTO project_types(name,default_command,builtin) VALUES"
-                 "('Codex','codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last',1),"
+                 "('Codex','codex --yolo --no-alt-screen resume --last',1),"
                  "('Claude','claude --dangerously-skip-permissions --continue',1);",
                  error) ||
         !Execute("UPDATE project_types "
-                 "SET default_command='codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last' "
+                 "SET default_command='codex --yolo --no-alt-screen resume --last' "
                  "WHERE builtin=1 AND name='Codex' "
                  "AND default_command IN ('codex --yolo resume --last',"
-                 "'codex --yolo --no-alt-screen resume --last');",
+                 "'codex --yolo --no-alt-screen resume --last',"
+                 "'codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last');",
                  error) ||
         !Execute("UPDATE projects "
-                 "SET command='codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last' "
+                 "SET command='codex --yolo --no-alt-screen resume --last' "
                  "WHERE type_name='Codex' AND command IN ('codex --yolo resume --last',"
-                 "'codex --yolo --no-alt-screen resume --last');",
+                 "'codex --yolo --no-alt-screen resume --last',"
+                 "'codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last');",
                  error) ||
         !Execute("INSERT OR IGNORE INTO groups(name,builtin) VALUES('默认分组',1);", error) ||
         !Execute("INSERT OR IGNORE INTO settings(key,value) VALUES"

@@ -14,7 +14,7 @@ AI CLI 主要在 Windows 电脑上使用。电脑端负责创建项目、运行 
 - Android 使用 Java/XML，不使用 Kotlin；
 - 手机首次绑定只在电脑确认一次，断网、App 重启和电脑重启后不重复确认；
 - 手机输入必须进入电脑当前项目的同一个 ConPTY，不能只写入聊天记录；
-- Codex 默认使用 `codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last`，以内联模式最多回放 10,000 行到 Windows Terminal 原生滚动历史；滚轮和右侧滚动条只操作 TermControl 原生 scrollback，不自动打开 Codex Transcript，也不向终端注入方向键或 PgUp/PgDn；
+- Codex 默认使用 `codex --yolo --no-alt-screen resume --last`，使用官方稳定的内联 TUI 模式保留 Windows Terminal 原生滚动历史；滚轮和右侧滚动条只操作 TermControl 原生 scrollback，不自动打开 Codex Transcript，也不向终端注入方向键或 PgUp/PgDn；
 - Claude 默认使用 `claude --dangerously-skip-permissions --continue`；
 - 项目数据、设备授权和终端事件使用 SQLite 持久化；
 - 构建依赖、Gradle 缓存、Windows Terminal 源码和大体积运行环境放在 F 盘。
@@ -26,18 +26,19 @@ Windows 原生桌面窗口
     ├─ 项目、分组、设置、设备和绑定模态框
     ├─ Windows Terminal TermControl
     │      └─ 自建 ITerminalConnection
-    │             └─ Windows ConPTY
-    │                    └─ powershell.exe
-    │                           └─ Codex / Claude / 自定义 CLI
+    │             └─ Microsoft ConPTY 1.24 conpty.dll
+    │                    └─ 同版本 x64/OpenConsole.exe
+    │                           └─ powershell.exe
+    │                                  └─ Codex / Claude / 自定义 CLI
     ├─ SQLite DataStore
     └─ HTTPS/WSS Remote Agent
              ⇅ TLS + 签名请求
         Android Java App
 ```
 
-桌面端使用 C++20、Win32/XAML Island、Windows Terminal 1.24 控件、ConPTY、CivetWeb、OpenSSL 和系统 WinSQLite。Android 使用 Java 17、AndroidX、Material、OkHttp、Gson、ZXing 和 Android Keystore。
+桌面端使用 C++20、Win32/XAML Island、Windows Terminal 1.24 控件、同版本 Microsoft ConPTY、CivetWeb、OpenSSL 和系统 WinSQLite。Android 使用 Java 17、AndroidX、Material、OkHttp、Gson、ZXing 和 Android Keystore。
 
-`TerminalConnection.dll`、`OpenConsoleProxy.dll` 和 `OpenConsole.exe` 已从运行链路删除。桌面桥接层直接实现 Windows Terminal 需要的 `ITerminalConnection`，由系统 ConPTY 启动 PowerShell；Windows Terminal Control 只负责原生终端渲染和输入体验。
+`TerminalConnection.dll` 和 `OpenConsoleProxy.dll` 不进入运行链路。桌面桥接层直接实现 Windows Terminal 要求的 `ITerminalConnection`，但进程传输固定使用官方 `Microsoft.Windows.Console.ConPTY 1.24.260710001` 包中的 `conpty.dll` 和 `x64/OpenConsole.exe`；Windows Terminal Control 只负责原生终端渲染、输入和 scrollback。
 
 ## 3. 电脑端功能
 
@@ -110,7 +111,7 @@ C:\project\aitest\codex_tool\desktop\bin\Debug\aicli.exe
 内置默认命令：
 
 ```text
-Codex  : codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last
+Codex  : codex --yolo --no-alt-screen resume --last
 Claude : claude --dangerously-skip-permissions --continue
 ```
 
@@ -133,12 +134,25 @@ Claude : claude --dangerously-skip-permissions --continue
 
 ```text
 选择项目
-  → 创建系统 ConPTY
+  → 由官方 1.24 conpty.dll 创建 side-by-side OpenConsole
   → 启动 powershell.exe -NoLogo -NoExit
   → 设置 UTF-8 输入/输出
   → Set-Location 到项目目录
   → 在同一 PTY 中输入项目启动命令并回车
 ```
+
+#### ConPTY 兼容性约束
+
+以下结论已经通过实际缓冲区数据确认，后续不得再回退：
+
+- `TermControl`、`Microsoft.Terminal.Control.dll`、`conpty.dll` 和 `OpenConsole.exe` 必须保持 1.24 同代版本；当前固定为 Terminal `1.24.11911.0` 与 ConPTY NuGet `1.24.260710001`；
+- 运行目录必须同时包含 `conpty.dll` 和 `x64/OpenConsole.exe`；安装包也必须携带这两个文件；
+- 桥接层使用一根安全匿名全双工 overlapped 管道，同一个客户端句柄同时传给 ConPTY 输入和输出；启动子进程时设置 `STARTF_USESTDHANDLES`；
+- ConPTY 使用 grapheme 宽度测量，与 Windows Terminal 对中文、emoji 和组合字符的宽度模型保持一致；
+- 客户端进程挂接完成后调用 `ConptyReleasePseudoConsole`，关闭时调用 `ConptyClosePseudoConsole`；
+- 不使用 `TerminalConnection.dll`，因为其私有 WinRT 连接实现曾在当前系统上反复崩溃；
+- 不得改回系统 `CreatePseudoConsole`/`conhost.exe`。系统 ConPTY 可以正常处理普通 PowerShell 输出，但会把 Codex inline TUI 的 history insertion 转换成当前视口整屏重绘，造成 `BufferHeight == ViewHeight`、滚动条最大值为零；
+- 不得用 Transcript、覆盖层、假滚动条、PgUp/PgDn 注入或滚轮按键模拟掩盖 ConPTY 问题。
 
 终端支持：
 
@@ -440,6 +454,8 @@ F:\android\sdk\platform-tools\adb.exe -s 607faa8d reverse tcp:4280 tcp:4280
 - 桌面端 Debug 构建成功；
 - Android 主 APK 和 AndroidTest APK 构建成功；
 - 原生 TermControl、ConPTY、Codex 启动、键盘输入和滚动可用；
+- PowerShell 200 行原生缓冲验证为 `buffer=205 / view=33 / scrollbar_max=172`；
+- 默认 Codex 恢复会话在系统 `conhost.exe` 下为 `buffer=33 / view=33 / scrollbar_max=0`，改用匹配版本 `conpty.dll + OpenConsole.exe` 后为 `buffer=289 / view=33 / scrollbar_max=256`，确认聊天历史已经进入 TermControl 原生 scrollback；
 - Android 扫码、手机公钥提交和电脑一次确认成功；
 - 配对后销毁 Android 客户端并重新创建，仍可用 Keystore 私钥重新认证，不再次确认；
 - HTTPS 会话列表和 SQLite 历史事件成功；

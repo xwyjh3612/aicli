@@ -13,7 +13,6 @@ add_executable(aicli WIN32
     src/data/data_store.cpp
     "F:/deps/aicli/civetweb-1.16/src/civetweb.c"
     "F:/deps/aicli/qrcodegen/qrcodegen.cpp"
-    src/terminal/ansi_style_connection.cpp
     src/terminal/conpty_connection_bridge.cpp
     src/ui/styled_input.cpp
     src/ui/management_dialog.cpp
@@ -36,6 +35,7 @@ set_source_files_properties("F:/deps/aicli/civetweb-1.16/src/civetweb.c" PROPERT
 
 target_include_directories(aicli PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "F:/deps/aicli/Microsoft.Windows.Console.ConPTY.1.24.260710001/package/inc"
     "F:/deps/cppwinrt-2.0.230207.1/sdkplus"
     "F:/deps/cppwinrt-2.0.230207.1/sdk"
     "F:/deps/cppwinrt-2.0.230207.1"
@@ -66,10 +66,25 @@ target_link_libraries(aicli PRIVATE
     advapi32
     crypt32
     psapi
+    "F:/deps/aicli/Microsoft.Windows.Console.ConPTY.1.24.260710001/package/runtimes/win-x64/lib/uap10.0/conpty.lib"
     "$<$<CONFIG:Debug>:F:/deps/aicli/openssl/lib/VC/x64/MDd/libssl.lib>"
     "$<$<NOT:$<CONFIG:Debug>>:F:/deps/aicli/openssl/lib/VC/x64/MD/libssl.lib>"
     "$<$<CONFIG:Debug>:F:/deps/aicli/openssl/lib/VC/x64/MDd/libcrypto.lib>"
     "$<$<NOT:$<CONFIG:Debug>>:F:/deps/aicli/openssl/lib/VC/x64/MD/libcrypto.lib>"
+)
+
+# Use the same side-by-side ConPTY/OpenConsole build as Windows Terminal
+# 1.24. The x64 host is deliberately placed in the architecture subfolder
+# expected by Microsoft's conpty.dll package.
+add_custom_command(TARGET aicli POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "F:/deps/aicli/Microsoft.Windows.Console.ConPTY.1.24.260710001/package/runtimes/win-x64/native/conpty.dll"
+        "$<TARGET_FILE_DIR:aicli>/conpty.dll"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:aicli>/x64"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "F:/deps/aicli/Microsoft.Windows.Console.ConPTY.1.24.260710001/package/build/native/runtimes/x64/OpenConsole.exe"
+        "$<TARGET_FILE_DIR:aicli>/x64/OpenConsole.exe"
 )
 
 target_link_libraries(aicli_data_store_tests PRIVATE

@@ -6,7 +6,8 @@ The desktop application is the primary AI CLI workspace described in
 It is a native C++ Windows application with:
 
 - an embedded Windows Terminal `TermControl` hosted through a XAML Island;
-- an in-process `ITerminalConnection` implementation backed by system ConPTY;
+- an in-process `ITerminalConnection` implementation backed by the matching
+  Microsoft ConPTY 1.24 side-by-side runtime;
 - PowerShell as the hidden terminal host for Codex, Claude, and custom CLIs;
 - SQLite-backed projects, dynamic project types, groups, devices, settings, and events;
 - an HTTPS/WSS Agent used by the Java Android companion app;
@@ -14,7 +15,9 @@ It is a native C++ Windows application with:
   and immediate device revocation.
 
 No browser, WebView, Electron, independent `wt.exe`, `TerminalConnection.dll`,
-`OpenConsoleProxy.dll`, or `OpenConsole.exe` is used.
+or `OpenConsoleProxy.dll` is used. The app intentionally ships the official
+`conpty.dll` and architecture-specific `x64/OpenConsole.exe` from Microsoft
+ConPTY `1.24.260710001`.
 
 ## Build
 
@@ -50,14 +53,20 @@ protection, and event persistence.
 ## Terminal runtime
 
 `stage-runtime.ps1` stages the fixed Windows Terminal 1.24 control, settings
-model, WinUI 2 runtime, PRI, XBF, and WinMD files. It also removes obsolete
-private connection binaries so they cannot accidentally re-enter the startup
-path.
+model, WinUI 2 runtime, PRI, XBF, WinMD, matching `conpty.dll`, and
+`x64/OpenConsole.exe`. It also removes obsolete private connection binaries so
+they cannot accidentally re-enter the startup path.
 
-`src/terminal/conpty_connection_bridge.cpp` owns the system ConPTY and launches
-`powershell.exe -NoLogo -NoExit`. After the PTY connects, it sends UTF-8 setup,
-changes to the configured project directory, and submits the configured startup
-command through the same native terminal input channel.
+`src/terminal/conpty_connection_bridge.cpp` implements `ITerminalConnection`,
+uses a full-duplex overlapped pipe with the side-by-side ConPTY/OpenConsole host,
+and launches `powershell.exe -NoLogo -NoExit`. After the PTY connects, it sends
+UTF-8 setup, changes to the configured project directory, and submits the
+configured startup command through the same native terminal input channel.
+
+Do not replace this runtime with the system `CreatePseudoConsole`/`conhost.exe`.
+The system host handles ordinary PowerShell output but collapses Codex inline
+history insertion into viewport repainting, leaving TermControl with no native
+scrollback. The matching 1.24 OpenConsole runtime preserves Codex scrollback.
 
 ## Mobile Agent
 

@@ -1,6 +1,8 @@
 #include "conpty_connection_bridge.h"
 
+#include <conpty.h>
 #include <objbase.h>
+#include <winternl.h>
 #include <algorithm>
 #include <filesystem>
 #include <map>
@@ -8,6 +10,152 @@
 
 namespace aicli::terminal {
 namespace {
+
+class UniqueHandle {
+public:
+    UniqueHandle() = default;
+    explicit UniqueHandle(HANDLE value) noexcept : value_(value) {}
+    ~UniqueHandle() { reset(); }
+
+    UniqueHandle(const UniqueHandle&) = delete;
+    UniqueHandle& operator=(const UniqueHandle&) = delete;
+
+    UniqueHandle(UniqueHandle&& other) noexcept : value_(other.release()) {}
+    UniqueHandle& operator=(UniqueHandle&& other) noexcept {
+        if (this != &other) reset(other.release());
+        return *this;
+    }
+
+    HANDLE get() const noexcept { return value_; }
+    explicit operator bool() const noexcept {
+        return value_ && value_ != INVALID_HANDLE_VALUE;
+    }
+    HANDLE release() noexcept {
+        const HANDLE value = value_;
+        value_ = nullptr;
+        return value;
+    }
+    void reset(HANDLE value = nullptr) noexcept {
+        if (*this) CloseHandle(value_);
+        value_ = value;
+    }
+
+private:
+    HANDLE value_{};
+};
+
+struct DuplexPipe {
+    UniqueHandle server;
+    UniqueHandle client;
+};
+
+using NtCreateFileFunction = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER,
+    ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+using NtCreateNamedPipeFileFunction = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, ULONG, ULONG,
+    ULONG, ULONG, ULONG, ULONG, ULONG, ULONG, ULONG, PLARGE_INTEGER);
+
+constexpr ULONG kFilePipeByteStreamType = 0;
+constexpr ULONG kFilePipeByteStreamMode = 0;
+constexpr ULONG kFilePipeQueueOperation = 0;
+
+bool NtSucceeded(NTSTATUS status) noexcept {
+    return status >= 0;
+}
+
+UNICODE_STRING UnicodeString(std::wstring_view value) noexcept {
+    UNICODE_STRING result{};
+    result.Buffer = const_cast<PWSTR>(value.data());
+    result.Length = static_cast<USHORT>(value.size() * sizeof(wchar_t));
+    result.MaximumLength = result.Length;
+    return result;
+}
+
+// This is the same anonymous NPFS pipe topology used by Windows Terminal
+// 1.24's Utils::CreateOverlappedPipe(PIPE_ACCESS_DUPLEX). Using the native
+// API is intentional: CreatePipe cannot create a full-duplex overlapped
+// anonymous pipe, while a discoverable named pipe would require additional
+// ACL and anti-squatting machinery.
+bool CreateOverlappedDuplexPipe(DuplexPipe& result) noexcept {
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) return false;
+    const auto nt_create_file = reinterpret_cast<NtCreateFileFunction>(
+        GetProcAddress(ntdll, "NtCreateFile"));
+    const auto nt_create_named_pipe = reinterpret_cast<NtCreateNamedPipeFileFunction>(
+        GetProcAddress(ntdll, "NtCreateNamedPipeFile"));
+    if (!nt_create_file || !nt_create_named_pipe) return false;
+
+    IO_STATUS_BLOCK status_block{};
+    constexpr std::wstring_view pipe_path = L"\\Device\\NamedPipe\\";
+    auto path = UnicodeString(pipe_path);
+    OBJECT_ATTRIBUTES attributes{};
+    attributes.Length = sizeof(attributes);
+    attributes.ObjectName = &path;
+    attributes.Attributes = OBJ_CASE_INSENSITIVE;
+
+    HANDLE directory_handle = nullptr;
+    NTSTATUS status = nt_create_file(
+        &directory_handle,
+        SYNCHRONIZE | GENERIC_READ,
+        &attributes,
+        &status_block,
+        nullptr,
+        0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+        nullptr,
+        0);
+    UniqueHandle directory{directory_handle};
+    if (!NtSucceeded(status) || !directory) return false;
+
+    UNICODE_STRING empty_path{};
+    attributes.RootDirectory = directory.get();
+    attributes.ObjectName = &empty_path;
+    LARGE_INTEGER timeout{};
+    timeout.QuadPart = -10'0000'0000LL;
+
+    HANDLE server_handle = nullptr;
+    status = nt_create_named_pipe(
+        &server_handle,
+        SYNCHRONIZE | GENERIC_READ | GENERIC_WRITE,
+        &attributes,
+        &status_block,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_CREATE,
+        0,
+        kFilePipeByteStreamType,
+        kFilePipeByteStreamMode,
+        kFilePipeQueueOperation,
+        1,
+        128 * 1024,
+        128 * 1024,
+        &timeout);
+    UniqueHandle server{server_handle};
+    if (!NtSucceeded(status) || !server) return false;
+
+    attributes.RootDirectory = server.get();
+    HANDLE client_handle = nullptr;
+    status = nt_create_file(
+        &client_handle,
+        SYNCHRONIZE | GENERIC_READ | GENERIC_WRITE,
+        &attributes,
+        &status_block,
+        nullptr,
+        0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+        nullptr,
+        0);
+    UniqueHandle client{client_handle};
+    if (!NtSucceeded(status) || !client) return false;
+
+    result.server = std::move(server);
+    result.client = std::move(client);
+    return true;
+}
 
 std::wstring PowerShellLiteral(std::wstring value) {
     size_t position = 0;
@@ -64,11 +212,13 @@ std::vector<wchar_t> BuildTerminalEnvironment() {
 
     variables[L"WT_SESSION"] = GuidString(false);
     variables[L"WT_PROFILE_ID"] = GuidString(true);
-    // Advertise the ANSI and true-color capabilities implemented by
-    // TermControl.  Codex still owns its full-screen transcript navigation;
-    // host-side terminal scrollback is used only for ordinary shell output.
-    variables[L"TERM"] = L"xterm-256color";
-    variables[L"COLORTERM"] = L"truecolor";
+    // Match the environment exposed by Windows Terminal on Windows. Setting
+    // TERM/COLORTERM here makes terminal-detection libraries select a Unix
+    // xterm path, which changes how inline TUIs perform viewport reflow and
+    // can prevent completed Codex rows from reaching native scrollback.
+    variables.erase(L"TERM");
+    variables.erase(L"COLORTERM");
+    variables.erase(L"TERM_PROGRAM");
 
     size_t required = 1;
     for (const auto& [name, value] : variables) required += name.size() + value.size() + 2;
@@ -88,15 +238,21 @@ std::vector<wchar_t> BuildTerminalEnvironment() {
 
 ConPtyConnectionBridge::ConPtyConnectionBridge(
     std::wstring working_directory,
-    std::wstring startup_command) :
+    std::wstring startup_command,
+    std::function<void(std::wstring_view)> output_observer) :
     working_directory_(std::move(working_directory)),
-    startup_command_(std::move(startup_command)) {
+    startup_command_(std::move(startup_command)),
+    output_observer_(std::move(output_observer)) {
     wchar_t system_directory[MAX_PATH]{};
     const UINT length = GetSystemDirectoryW(system_directory, MAX_PATH);
     std::filesystem::path shell = length > 0 && length < MAX_PATH
         ? std::filesystem::path(system_directory) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe"
         : std::filesystem::path(L"powershell.exe");
     shell_command_line_ = L"\"" + shell.wstring() + L"\" -NoLogo -NoExit";
+    // Windows Terminal 1.24 uses grapheme-based width measurement by default.
+    // Keeping ConPTY and TermControl on the same model prevents cursor drift
+    // for CJK text, emoji and combining sequences.
+    pseudo_console_flags_ = PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES;
 }
 
 ConPtyConnectionBridge::~ConPtyConnectionBridge() {
@@ -111,6 +267,17 @@ void ConPtyConnectionBridge::Initialize(
     }
     if (const auto columns = settings.TryLookup(L"initialCols")) {
         columns_ = winrt::unbox_value_or<uint32_t>(columns, columns_);
+    }
+    if (const auto measurement = settings.TryLookup(L"textMeasurement")) {
+        const auto value = winrt::unbox_value_or<winrt::hstring>(measurement, L"graphemes");
+        pseudo_console_flags_ &= ~PSEUDOCONSOLE_GLYPH_WIDTH__MASK;
+        if (value == L"wcswidth") {
+            pseudo_console_flags_ |= PSEUDOCONSOLE_GLYPH_WIDTH_WCSWIDTH;
+        } else if (value == L"console") {
+            pseudo_console_flags_ |= PSEUDOCONSOLE_GLYPH_WIDTH_CONSOLE;
+        } else {
+            pseudo_console_flags_ |= PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES;
+        }
     }
 }
 
@@ -137,39 +304,21 @@ void ConPtyConnectionBridge::Start() {
 }
 
 bool ConPtyConnectionBridge::CreateProcessAttachedToConPty() {
-    SECURITY_ATTRIBUTES attributes{sizeof(attributes), nullptr, TRUE};
-    HANDLE input_read = nullptr;
-    HANDLE input_write = nullptr;
-    HANDLE output_read = nullptr;
-    HANDLE output_write = nullptr;
-
-    constexpr DWORD pipe_buffer_size = 128 * 1024;
-    if (!CreatePipe(&input_read, &input_write, &attributes, pipe_buffer_size)) return false;
-    if (!CreatePipe(&output_read, &output_write, &attributes, pipe_buffer_size)) {
-        CloseHandle(input_read);
-        CloseHandle(input_write);
-        return false;
-    }
-
-    SetHandleInformation(input_write, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(output_read, HANDLE_FLAG_INHERIT, 0);
+    DuplexPipe transport;
+    if (!CreateOverlappedDuplexPipe(transport)) return false;
 
     const COORD dimensions{
         static_cast<SHORT>(std::clamp<uint32_t>(columns_, 20, SHRT_MAX)),
         static_cast<SHORT>(std::clamp<uint32_t>(rows_, 5, SHRT_MAX))};
-    const HRESULT create_result = CreatePseudoConsole(
-        dimensions, input_read, output_write, 0, &pseudo_console_);
-    CloseHandle(input_read);
-    CloseHandle(output_write);
-    if (FAILED(create_result)) {
-        CloseHandle(input_write);
-        CloseHandle(output_read);
-        pseudo_console_ = nullptr;
-        return false;
-    }
-
-    input_ = input_write;
-    output_ = output_read;
+    HPCON created_pseudo_console = nullptr;
+    // Windows Terminal 1.24 passes the same full-duplex client handle for
+    // both directions. ConPTY owns its duplicated endpoints after this call;
+    // our server handle is the sole transport used by ReadLoop/WriteInput.
+    const HRESULT create_result = ConptyCreatePseudoConsole(
+        dimensions, transport.client.get(), transport.client.get(),
+        pseudo_console_flags_,
+        &created_pseudo_console);
+    if (FAILED(create_result)) return false;
 
     SIZE_T attribute_size = 0;
     InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_size);
@@ -179,14 +328,16 @@ bool ConPtyConnectionBridge::CreateProcessAttachedToConPty() {
         !InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_size) ||
         !UpdateProcThreadAttribute(attribute_list, 0,
                                    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                                   pseudo_console_, sizeof(pseudo_console_),
+                                   created_pseudo_console, sizeof(created_pseudo_console),
                                    nullptr, nullptr)) {
         if (attribute_list) HeapFree(GetProcessHeap(), 0, attribute_list);
+        ConptyClosePseudoConsole(created_pseudo_console);
         return false;
     }
 
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.lpAttributeList = attribute_list;
     PROCESS_INFORMATION process{};
     std::vector<wchar_t> command_line(shell_command_line_.begin(), shell_command_line_.end());
@@ -201,10 +352,25 @@ bool ConPtyConnectionBridge::CreateProcessAttachedToConPty() {
 
     DeleteProcThreadAttributeList(attribute_list);
     HeapFree(GetProcessHeap(), 0, attribute_list);
-    if (!created) return false;
+    if (!created) {
+        ConptyClosePseudoConsole(created_pseudo_console);
+        return false;
+    }
 
+    pseudo_console_ = created_pseudo_console;
+    pipe_ = transport.server.release();
     process_ = process.hProcess;
     CloseHandle(process.hThread);
+    if (FAILED(ConptyReleasePseudoConsole(pseudo_console_))) {
+        ConptyClosePseudoConsole(pseudo_console_);
+        pseudo_console_ = nullptr;
+        CloseHandle(pipe_);
+        pipe_ = nullptr;
+        TerminateProcess(process_, 1);
+        CloseHandle(process_);
+        process_ = nullptr;
+        return false;
+    }
     return true;
 }
 
@@ -222,17 +388,29 @@ std::wstring ConPtyConnectionBridge::BuildStartupInput() const {
 }
 
 void ConPtyConnectionBridge::WriteInput(winrt::array_view<const char16_t> data) {
-    if (!input_ || data.empty()) return;
+    if (data.empty()) return;
     const auto bytes = Utf8(std::wstring_view{
         reinterpret_cast<const wchar_t*>(data.data()), data.size()});
     std::scoped_lock lock(input_mutex_);
+    if (!pipe_ || closing_) return;
+    UniqueHandle event{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+    if (!event) return;
     size_t offset = 0;
-    while (offset < bytes.size() && input_ && !closing_) {
+    while (offset < bytes.size() && pipe_ && !closing_) {
+        OVERLAPPED overlapped{};
+        overlapped.hEvent = event.get();
+        ResetEvent(event.get());
         DWORD written = 0;
         const auto remaining = static_cast<DWORD>(std::min<size_t>(
             bytes.size() - offset, static_cast<size_t>(MAXDWORD)));
-        if (!WriteFile(input_, bytes.data() + offset, remaining, &written, nullptr) || written == 0)
-            break;
+        if (!WriteFile(pipe_, bytes.data() + offset, remaining, &written, &overlapped)) {
+            if (GetLastError() != ERROR_IO_PENDING ||
+                WaitForSingleObject(event.get(), INFINITE) != WAIT_OBJECT_0 ||
+                !GetOverlappedResult(pipe_, &overlapped, &written, FALSE)) {
+                break;
+            }
+        }
+        if (written == 0) break;
         offset += written;
     }
 }
@@ -244,7 +422,7 @@ void ConPtyConnectionBridge::Resize(uint32_t rows, uint32_t columns) {
     const COORD dimensions{
         static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
         static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
-    ResizePseudoConsole(pseudo_console_, dimensions);
+    ConptyResizePseudoConsole(pseudo_console_, dimensions);
 }
 
 void ConPtyConnectionBridge::ReadLoop() {
@@ -252,10 +430,22 @@ void ConPtyConnectionBridge::ReadLoop() {
     // the same batch size prevents one Codex TUI repaint from being presented
     // as many small frames with the cursor at several transient positions.
     char buffer[128 * 1024];
-    DWORD read = 0;
     std::string pending;
-    while (!closing_ && output_ &&
-           ReadFile(output_, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+    UniqueHandle event{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+    if (!event) return;
+    while (!closing_ && pipe_) {
+        OVERLAPPED overlapped{};
+        overlapped.hEvent = event.get();
+        ResetEvent(event.get());
+        DWORD read = 0;
+        if (!ReadFile(pipe_, buffer, sizeof(buffer), &read, &overlapped)) {
+            if (GetLastError() != ERROR_IO_PENDING ||
+                WaitForSingleObject(event.get(), INFINITE) != WAIT_OBJECT_0 ||
+                !GetOverlappedResult(pipe_, &overlapped, &read, FALSE)) {
+                break;
+            }
+        }
+        if (read == 0 || closing_) break;
         pending.append(buffer, read);
         size_t usable = pending.size();
         int count = 0;
@@ -295,26 +485,24 @@ void ConPtyConnectionBridge::Close() noexcept {
     SetState(winrt::Microsoft::Terminal::TerminalConnection::ConnectionState::Closing);
 
     if (pseudo_console_) {
-        ClosePseudoConsole(pseudo_console_);
+        ConptyClosePseudoConsole(pseudo_console_);
         pseudo_console_ = nullptr;
     }
-    if (input_) {
-        CloseHandle(input_);
-        input_ = nullptr;
-    }
+    if (pipe_) CancelIoEx(pipe_, nullptr);
     if (process_) {
         TerminateProcess(process_, 0);
-    }
-    if (output_) {
-        CloseHandle(output_);
-        output_ = nullptr;
     }
 
     lock.unlock();
     if (reader_.joinable() && reader_.get_id() != std::this_thread::get_id()) {
         reader_.join();
     }
+    std::scoped_lock input_lock(input_mutex_);
     lock.lock();
+    if (pipe_) {
+        CloseHandle(pipe_);
+        pipe_ = nullptr;
+    }
     if (process_) {
         CloseHandle(process_);
         process_ = nullptr;
@@ -326,6 +514,12 @@ void ConPtyConnectionBridge::EmitOutput(std::wstring_view output) noexcept {
     try {
         output_handlers_(winrt::hstring{output});
     } catch (...) {
+    }
+    if (output_observer_) {
+        try {
+            output_observer_(output);
+        } catch (...) {
+        }
     }
 }
 

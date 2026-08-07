@@ -7,6 +7,7 @@
 #include <appmodel.h>
 #include <roapi.h>
 #include <psapi.h>
+#include <wincrypt.h>
 #include <gdiplus.h>
 #include <string>
 #include <vector>
@@ -47,7 +48,6 @@
 #include "agent/remote_agent.h"
 #include "core/models.h"
 #include "data/data_store.h"
-#include "terminal/ansi_style_connection.h"
 #include "terminal/conpty_connection_bridge.h"
 #include "ui/styled_input.h"
 #include "ui/management_dialog.h"
@@ -66,7 +66,6 @@ constexpr UINT WM_PAIRING_PENDING = WM_APP + 22;
 constexpr UINT WM_AGENT_STATUS = WM_APP + 23;
 constexpr UINT WM_RESTORE_LAST_SESSION = WM_APP + 24;
 constexpr UINT WM_TERMINAL_DIRTY = WM_APP + 25;
-constexpr UINT WM_TRANSCRIPT_STATE = WM_APP + 26;
 constexpr int ID_PROJECT_LIST = 1001;
 constexpr int ID_NEW_PROJECT = 1004;
 constexpr int ID_SETTINGS = 1005;
@@ -91,7 +90,6 @@ constexpr int ID_GROUP_SELECT_BASE = 3500;
 constexpr int ID_MINIMIZE = 3010;
 constexpr int ID_CLOSE = 3011;
 constexpr wchar_t kClassName[] = L"AicliDesktopWindow";
-constexpr wchar_t kTranscriptOverlayClassName[] = L"AicliTranscriptOverlay";
 constexpr UINT_PTR kXamlIslandSubclassId = 0xA1C11;
 constexpr UINT_PTR kTerminalSnapshotTimerId = 2;
 constexpr int kCustomTitleBarHeight = 52;
@@ -157,13 +155,8 @@ struct RemoteInputMessage {
 };
 struct RemoteControlMessage { std::wstring project_id, phone_id, action; };
 struct AgentStatusMessage { bool online{}; std::wstring text; };
-struct TranscriptStateMessage {
-    std::wstring project_id;
-    int open{-1};
-    int percent{-1};
-};
 
-int EnsurePackagedActivation() {
+int EnsurePackagedActivation(const wchar_t* arguments) {
     UINT32 length = 0;
     const LONG result = GetCurrentPackageFullName(&length, nullptr);
     if (result != APPMODEL_ERROR_NO_PACKAGE) return 1;
@@ -171,7 +164,11 @@ int EnsurePackagedActivation() {
     if (FAILED(CoCreateInstance(CLSID_ApplicationActivationManager, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(&manager))) || !manager) return -1;
     DWORD process_id = 0;
-    const HRESULT activated = manager->ActivateApplication(kApplicationUserModelId, nullptr, AO_NONE, &process_id);
+    const HRESULT activated = manager->ActivateApplication(
+        kApplicationUserModelId,
+        arguments && *arguments ? arguments : nullptr,
+        AO_NONE,
+        &process_id);
     manager->Release();
     return SUCCEEDED(activated) ? 0 : -1;
 }
@@ -386,11 +383,6 @@ private:
 };
 
 class XamlIslandAdapter;
-LRESULT CALLBACK TranscriptOverlayProc(
-    HWND hwnd,
-    UINT message,
-    WPARAM wparam,
-    LPARAM lparam);
 LRESULT CALLBACK XamlIslandSubclassProc(
     HWND hwnd,
     UINT message,
@@ -401,9 +393,6 @@ LRESULT CALLBACK XamlIslandSubclassProc(
 
 class XamlIslandAdapter {
 public:
-    ~XamlIslandAdapter() {
-        if (overlay_) DestroyWindow(overlay_);
-    }
     bool Attach(HWND parent, RECT rc) {
         try {
             parent_ = parent;
@@ -433,7 +422,6 @@ public:
                 // The terminal still works with its compiled resources when WinUI theme resources are unavailable.
             }
             source_.Content(grid_);
-            EnsureTranscriptOverlay();
             Resize(rc);
             ShowWindow(hwnd_,SW_HIDE); return true;
         } catch (...) { return false; }
@@ -454,11 +442,6 @@ public:
         try {
             using namespace winrt::Microsoft::Terminal;
             auto session = std::make_unique<TerminalSession>();
-            std::wstring normalized_command = command;
-            std::transform(normalized_command.begin(), normalized_command.end(),
-                           normalized_command.begin(),
-                           [](wchar_t value) { return std::towlower(value); });
-            session->is_codex = normalized_command.find(L"codex") != std::wstring::npos;
             set_stage(L"activate TerminalSettings");
             auto settings_activation = LocalActivationFactory<winrt::Windows::Foundation::IActivationFactory>(
                 L"Microsoft.Terminal.Settings.Model.dll",
@@ -493,22 +476,15 @@ public:
             session->unfocused_settings = settings_result.UnfocusedSettings();
 
             // TerminalConnection.dll has repeatedly crashed inside its private
-            // implementation on this supported Windows build. Keep TermControl
-            // for native rendering/input, but always use the stable system
-            // CreatePseudoConsole bridge for process transport.
+            // WinRT implementation on this Windows build. Keep TermControl for
+            // native rendering/input, but use our ITerminalConnection bridge
+            // with the matching official side-by-side conpty/OpenConsole host.
             set_stage(L"create ConPTY connection");
-            TerminalConnection::ITerminalConnection terminal_connection =
-                winrt::make<aicli::terminal::ConPtyConnectionBridge>(cwd, command);
-            auto combined_observer =
-                [this, project_id, is_codex = session->is_codex, output_observer]
-                (std::wstring_view output) {
-                    if (is_codex) ObserveTranscriptOutput(project_id, output);
-                    if (output_observer) output_observer(output);
-                };
-            session->style_connection = winrt::make_self<aicli::terminal::AnsiStyleConnection>(
-                terminal_connection, light_theme_, std::move(combined_observer));
-            session->connection = session->style_connection.as<
-                winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection>();
+            // Feed the ConPTY stream directly into TermControl. Inserting or
+            // rewriting SGR/VT sequences here changes Codex's inline-TUI
+            // behavior and makes this host differ from Windows Terminal.
+            session->connection = winrt::make<aicli::terminal::ConPtyConnectionBridge>(
+                cwd, command, std::move(output_observer));
             set_stage(L"create TermControl");
             auto control_factory = LocalActivationFactory<Control::ITermControlFactory>(
                 L"Microsoft.Terminal.Control.dll",
@@ -564,14 +540,12 @@ public:
                 try {
                     if (visible_) current->control.WindowVisibilityChanged(false);
                     current->control.Visibility(winrt::Windows::UI::Xaml::Visibility::Collapsed);
-                    SetTranscriptChromeVisibility(*current, false);
                 } catch (...) {}
             }
             active_project_id_ = next_id;
             try {
                 next->control.Visibility(winrt::Windows::UI::Xaml::Visibility::Visible);
                 if (visible_) next->control.WindowVisibilityChanged(true);
-                UpdateTranscriptChrome(*next);
             } catch (...) {}
         }
         try {
@@ -620,18 +594,13 @@ public:
             }
             visible_ = visible;
             ShowWindow(hwnd_, visible ? SW_SHOW : SW_HIDE);
-            if (overlay_) ShowWindow(overlay_, visible ? SW_SHOW : SW_HIDE);
             if (auto* active = ActiveSession()) {
                 if (visible) {
                     EnsureNativeScrollbar(active);
-                    UpdateTranscriptChrome(*active);
-                } else {
-                    SetTranscriptChromeVisibility(*active, false);
                 }
             }
         } catch (...) {
             ShowWindow(hwnd_, visible ? SW_SHOW : SW_HIDE);
-            if (overlay_) ShowWindow(overlay_, visible ? SW_SHOW : SW_HIDE);
         }
     }
     void SetTheme(bool light) {
@@ -644,7 +613,6 @@ public:
                 grid_.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(background));
             }
             for (auto& [_, session] : sessions_) {
-                if (session->style_connection) session->style_connection->SetLightTheme(light);
                 if (!session->control || !session->control_settings) continue;
                 ApplyPalette(session->control_settings, light);
                 if (session->unfocused_settings) ApplyPalette(session->unfocused_settings, light);
@@ -664,8 +632,6 @@ public:
                 session->control.UpdateLayout();
             }
             if (grid_) grid_.UpdateLayout();
-            UpdateTranscriptOverlayRegion();
-            if (overlay_) InvalidateRect(overlay_, nullptr, FALSE);
         } catch (...) {
             OutputDebugStringW(L"AI CLI TermControl: live theme update failed\n");
         }
@@ -680,14 +646,6 @@ public:
         try {
             SetWindowPos(hwnd_, nullptr, rc.left, rc.top, width, height,
                          SWP_NOZORDER | SWP_NOACTIVATE);
-            if (overlay_) {
-                RECT island_screen{};
-                GetWindowRect(hwnd_, &island_screen);
-                SetWindowPos(overlay_, HWND_TOP,
-                             island_screen.left, island_screen.top, width, height,
-                             SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                if (!visible_) ShowWindow(overlay_, SW_HIDE);
-            }
             if (grid_) {
                 const UINT dpi = GetDpiForWindow(parent_);
                 const double scale = dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0;
@@ -702,8 +660,6 @@ public:
                 grid_.UpdateLayout();
                 EnsureNativeScrollbar();
             }
-            if (overlay_) InvalidateRect(overlay_, nullptr, FALSE);
-            UpdateTranscriptOverlayRegion();
         } catch (...) {
             OutputDebugStringW(L"AI CLI TermControl: ignored invalid resize during window transition\n");
         }
@@ -733,264 +689,6 @@ public:
             return true;
         }catch(...){return false;}
     }
-    bool HandleMouseWheel(
-        WPARAM wparam,
-        LPARAM lparam,
-        bool horizontal = false,
-        bool pointer_message = false) {
-        auto* session = ActiveSession();
-        if (!session || !session->control || !visible_ || !hwnd_) return false;
-        const auto delta = static_cast<int32_t>(GET_WHEEL_DELTA_WPARAM(wparam));
-        if (delta == 0) return false;
-        try {
-            POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-            RECT terminal_rect{};
-            if (!GetWindowRect(hwnd_, &terminal_rect) || !PtInRect(&terminal_rect, point)) return false;
-            ScreenToClient(hwnd_, &point);
-            const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
-            const float scale = dpi ? static_cast<float>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0f;
-            const auto keys = pointer_message ? 0 : GET_KEYSTATE_WPARAM(wparam);
-
-            if (!horizontal && session->is_codex) {
-                if (!session->transcript_mode && delta > 0) {
-                    EnterTranscript(*session);
-                    SendTranscriptInput(*session, L"\x1b[A\x1b[A\x1b[A");
-                    return true;
-                }
-                if (session->transcript_mode) {
-                    if (delta < 0 && session->transcript_percent >= 100) {
-                        LeaveTranscript(*session);
-                        return true;
-                    }
-                    const int steps = std::max(1, std::abs(delta) / WHEEL_DELTA) * 3;
-                    std::wstring input;
-                    const std::wstring_view sequence = delta > 0 ? L"\x1b[A" : L"\x1b[B";
-                    input.reserve(sequence.size() * static_cast<size_t>(steps));
-                    for (int index = 0; index < steps; ++index) input.append(sequence);
-                    SendTranscriptInput(*session, input);
-                    return true;
-                }
-            }
-
-            // Route every wheel gesture through TermControl's native listener,
-            // exactly as Windows Terminal does. TermControl owns scrollback,
-            // touchpad accumulation, Ctrl+wheel zoom and TUI mouse handling;
-            // the host must not try to reproduce those rules with BufferHeight
-            // and ScrollViewport or inject pager/navigation keys into Codex.
-            session->control.as<
-                winrt::Microsoft::Terminal::Control::IMouseWheelListener>().OnMouseWheel(
-                winrt::Windows::Foundation::Point{
-                    static_cast<float>(point.x) / scale,
-                    static_cast<float>(point.y) / scale},
-                winrt::Microsoft::Terminal::Core::Point{
-                    horizontal ? delta : 0,
-                    horizontal ? 0 : delta},
-                (keys & MK_LBUTTON) != 0,
-                (keys & MK_MBUTTON) != 0,
-                (keys & MK_RBUTTON) != 0);
-            EnsureNativeScrollbar();
-            return true;
-        } catch (...) {
-            return false;
-        }
-    }
-    void HandleTranscriptCaptureChanged() noexcept {
-        transcript_dragging_ = false;
-        transcript_drag_offset_ = 0.0;
-    }
-    bool OverlayTranscriptHit(POINT point) const noexcept {
-        const auto* session = ActiveSession();
-        if (!session || !session->is_codex || !session->transcript_mode || !visible_ || !overlay_) {
-            return false;
-        }
-        RECT client{};
-        GetClientRect(overlay_, &client);
-        const int width = client.right - client.left;
-        const int height = client.bottom - client.top;
-        if (width <= 0 || height <= 0) return false;
-        int row = 18;
-        try {
-            const auto dimensions = session->control.CharacterDimensions();
-            if (dimensions.Height >= 8.0f && dimensions.Height <= 64.0f) {
-                const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
-                row = std::max(8, static_cast<int>(std::ceil(
-                    dimensions.Height * (dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0))));
-            }
-        } catch (...) {}
-        const int top = row * 3;
-        const int bottom = row * 5 + 2;
-        const int track_left = width - 18;
-        return point.x >= track_left && point.x <= width &&
-               point.y >= top && point.y <= height - bottom;
-    }
-    bool HandleTranscriptOverlayMouse(UINT message, LPARAM lparam) {
-        auto* session = ActiveSession();
-        if (!session || !session->is_codex || !session->transcript_mode || !visible_ || !overlay_) {
-            return false;
-        }
-        RECT client{};
-        GetClientRect(overlay_, &client);
-        const int width = client.right - client.left;
-        const int height = client.bottom - client.top;
-        if (width <= 0 || height <= 0) return false;
-        int row = 18;
-        try {
-            const auto dimensions = session->control.CharacterDimensions();
-            if (dimensions.Height >= 8.0f && dimensions.Height <= 64.0f) {
-                const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
-                row = std::max(8, static_cast<int>(std::ceil(
-                    dimensions.Height * (dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0))));
-            }
-        } catch (...) {}
-        const double top = static_cast<double>(row * 3);
-        const double bottom = static_cast<double>(row * 5 + 2);
-        const double track_left = static_cast<double>(width - 18);
-        const double track_height = std::max(1.0, static_cast<double>(height) - top - bottom);
-        const double thumb_height = std::clamp(track_height * 0.18, 32.0, 92.0);
-        const double travel = std::max(1.0, track_height - thumb_height);
-        const double y = static_cast<double>(GET_Y_LPARAM(lparam));
-        const double x = static_cast<double>(GET_X_LPARAM(lparam));
-        if (!transcript_dragging_ &&
-            (x < track_left || x > width || y < top || y > top + track_height)) {
-            return false;
-        }
-        auto update_position = [&](double pointer_y, double offset) {
-            const double position = std::clamp(pointer_y - top - offset, 0.0, travel);
-            SetTranscriptPercent(
-                *session,
-                static_cast<int>(std::lround(position * 100.0 / travel)));
-        };
-        if (message == WM_LBUTTONDOWN) {
-            const double current_top = travel * session->transcript_percent / 100.0;
-            const bool on_thumb = y >= top + current_top && y <= top + current_top + thumb_height;
-            transcript_dragging_ = true;
-            transcript_drag_offset_ = on_thumb ? y - (top + current_top) : thumb_height / 2.0;
-            SetCapture(overlay_);
-            update_position(y, transcript_drag_offset_);
-            InvalidateRect(overlay_, nullptr, FALSE);
-            return true;
-        }
-        if (message == WM_MOUSEMOVE && transcript_dragging_) {
-            update_position(y, transcript_drag_offset_);
-            InvalidateRect(overlay_, nullptr, FALSE);
-            return true;
-        }
-        if (message == WM_LBUTTONUP && transcript_dragging_) {
-            transcript_dragging_ = false;
-            ReleaseCapture();
-            update_position(y, transcript_drag_offset_);
-            transcript_drag_offset_ = 0.0;
-            InvalidateRect(overlay_, nullptr, FALSE);
-            return true;
-        }
-        return transcript_dragging_;
-    }
-    void PaintTranscriptOverlay(HDC dc) noexcept {
-        auto* session = ActiveSession();
-        if (!session || !session->is_codex || !session->transcript_mode || !visible_) return;
-        RECT client{};
-        GetClientRect(overlay_, &client);
-        const int width = client.right - client.left;
-        const int height = client.bottom - client.top;
-        if (width <= 0 || height <= 0) return;
-        int row = 18;
-        try {
-            const auto dimensions = session->control.CharacterDimensions();
-            if (dimensions.Height >= 8.0f && dimensions.Height <= 64.0f) {
-                const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
-                row = std::max(8, static_cast<int>(std::ceil(
-                    dimensions.Height * (dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0))));
-            }
-        } catch (...) {}
-        const int top = row * 3;
-        const int bottom = row * 5 + 2;
-        const COLORREF background = light_theme_ ? RGB(247, 248, 250) : RGB(12, 12, 12);
-        HBRUSH cover = CreateSolidBrush(background);
-        RECT top_rect{0, 0, width, std::min(height, top)};
-        RECT bottom_rect{0, std::max(0, height - bottom), width, height};
-        FillRect(dc, &top_rect, cover);
-        FillRect(dc, &bottom_rect, cover);
-        RECT scrollbar_cover{std::max(0, width - 20), top,
-                             width, std::max(top, height - bottom)};
-        FillRect(dc, &scrollbar_cover, cover);
-        DeleteObject(cover);
-
-        const int track_left = width - 12;
-        const int track_top = top + 2;
-        const int track_bottom = std::max(track_top + 1, height - bottom - 2);
-        HBRUSH track = CreateSolidBrush(light_theme_ ? RGB(224, 228, 236) : RGB(37, 43, 53));
-        RECT track_rect{track_left + 3, track_top, track_left + 7, track_bottom};
-        FillRect(dc, &track_rect, track);
-        DeleteObject(track);
-
-        const int track_height = track_bottom - track_top;
-        const int thumb_height = std::clamp(static_cast<int>(std::lround(track_height * 0.18)), 32, 92);
-        const int travel = std::max(0, track_height - thumb_height);
-        const int thumb_top = track_top + static_cast<int>(std::lround(
-            travel * static_cast<double>(std::clamp(session->transcript_percent, 0, 100)) / 100.0));
-        HBRUSH thumb = CreateSolidBrush(RGB(123, 134, 152));
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(123, 134, 152));
-        const auto old_brush = SelectObject(dc, thumb);
-        const auto old_pen = SelectObject(dc, pen);
-        RoundRect(dc, track_left, thumb_top, track_left + 8, thumb_top + thumb_height, 5, 5);
-        SelectObject(dc, old_pen);
-        SelectObject(dc, old_brush);
-        DeleteObject(pen);
-        DeleteObject(thumb);
-    }
-    void UpdateTranscriptOverlayRegion() noexcept {
-        if (!overlay_) return;
-        auto* session = ActiveSession();
-        if (!session || !session->is_codex || !session->transcript_mode || !visible_) {
-            SetWindowRgn(overlay_, nullptr, TRUE);
-            return;
-        }
-        RECT client{};
-        GetClientRect(overlay_, &client);
-        const int width = client.right - client.left;
-        const int height = client.bottom - client.top;
-        if (width <= 0 || height <= 0) return;
-        int row = 18;
-        try {
-            const auto dimensions = session->control.CharacterDimensions();
-            if (dimensions.Height >= 8.0f && dimensions.Height <= 64.0f) {
-                const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
-                row = std::max(8, static_cast<int>(std::ceil(
-                    dimensions.Height * (dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0))));
-            }
-        } catch (...) {}
-        const int top = std::clamp(row * 3, 0, height);
-        const int bottom = std::clamp(row * 5 + 2, 0, height);
-        HRGN region = CreateRectRgn(0, 0, 0, 0);
-        HRGN piece = CreateRectRgn(0, 0, width, top);
-        CombineRgn(region, region, piece, RGN_OR);
-        DeleteObject(piece);
-        piece = CreateRectRgn(0, std::max(0, height - bottom), width, height);
-        CombineRgn(region, region, piece, RGN_OR);
-        DeleteObject(piece);
-        piece = CreateRectRgn(std::max(0, width - 20), top,
-                              width, std::max(top, height - bottom));
-        CombineRgn(region, region, piece, RGN_OR);
-        DeleteObject(piece);
-        SetWindowRgn(overlay_, region, TRUE);
-    }
-    void EnsureTranscriptOverlay() {
-        if (overlay_ || !parent_) return;
-        WNDCLASSW wc{};
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.lpfnWndProc = TranscriptOverlayProc;
-        wc.lpszClassName = kTranscriptOverlayClassName;
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        RegisterClassW(&wc);
-        overlay_ = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-            kTranscriptOverlayClassName,
-            L"",
-            WS_POPUP,
-            0, 0, 0, 0, parent_, nullptr, wc.hInstance, this);
-        if (!overlay_) winrt::throw_last_error();
-        ShowWindow(overlay_, SW_HIDE);
-    }
     void OnIslandDestroyed(HWND window) noexcept {
         if (hwnd_ == window) hwnd_ = nullptr;
     }
@@ -1013,17 +711,6 @@ public:
     void CollapseNativeScrollbar() {
         if (auto* session = ActiveSession()) SetNativeScrollbarVisual(*session, false);
     }
-    void ApplyTranscriptState(const TranscriptStateMessage& message) {
-        auto* session = FindSession(message.project_id);
-        if (!session || !session->is_codex) return;
-        // The bridge may expose alternate-screen sequences while Codex is
-        // repainting.  Those sequences are not a reliable indication of the
-        // Codex transcript toggle, so the host-owned state is changed only by
-        // EnterTranscript/LeaveTranscript.
-        if (message.percent >= 0)
-            session->transcript_percent = std::clamp(message.percent, 0, 100);
-        if (active_project_id_ == message.project_id) UpdateTranscriptChrome(*session);
-    }
     const std::wstring& LastError() const { return last_error_; }
 private:
     struct TerminalSession {
@@ -1031,11 +718,7 @@ private:
         winrt::Microsoft::Terminal::Settings::Model::TerminalSettings control_settings{nullptr};
         winrt::Microsoft::Terminal::Settings::Model::TerminalSettings unfocused_settings{nullptr};
         winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection connection{nullptr};
-        winrt::com_ptr<aicli::terminal::AnsiStyleConnection> style_connection;
         winrt::Windows::UI::Xaml::Controls::Primitives::ScrollBar native_scrollbar{nullptr};
-        bool is_codex{};
-        bool transcript_mode{};
-        int transcript_percent{100};
         bool scrollbar_visual_initialized{};
         bool scrollbar_expanded{};
         bool scrollbar_loaded_handler_attached{};
@@ -1051,113 +734,6 @@ private:
     }
     TerminalSession* ActiveSession() { return FindSession(active_project_id_); }
     const TerminalSession* ActiveSession() const { return FindSession(active_project_id_); }
-
-    void ObserveTranscriptOutput(std::wstring_view project_id, std::wstring_view output) const {
-        int percent = -1;
-        size_t position = 0;
-        while ((position = output.find(L'%', position)) != std::wstring_view::npos) {
-            size_t begin = position;
-            while (begin > 0 && std::iswdigit(output[begin - 1])) --begin;
-            if (begin < position && position - begin <= 3) {
-                int parsed = 0;
-                for (size_t index = begin; index < position; ++index)
-                    parsed = parsed * 10 + (output[index] - L'0');
-                if (parsed >= 0 && parsed <= 100) percent = parsed;
-            }
-            ++position;
-        }
-        if (percent < 0) return;
-
-        auto* message = new (std::nothrow) TranscriptStateMessage{
-            std::wstring(project_id), -1, percent};
-        const HWND target = parent_;
-        if (!message || !target || !IsWindow(target) ||
-            !PostMessageW(target, WM_TRANSCRIPT_STATE, 0,
-                          reinterpret_cast<LPARAM>(message))) {
-            delete message;
-        }
-    }
-
-    static bool SendTranscriptInput(TerminalSession& session, std::wstring_view value) {
-        if (!session.connection || value.empty()) return false;
-        try {
-            const auto* first = reinterpret_cast<const char16_t*>(value.data());
-            session.connection.WriteInput(winrt::array_view<const char16_t>{
-                first, static_cast<uint32_t>(value.size())});
-            return true;
-        } catch (...) {
-            return false;
-        }
-    }
-
-    void EnterTranscript(TerminalSession& session) {
-        if (session.transcript_mode) return;
-        const wchar_t toggle = 0x14;
-        if (!SendTranscriptInput(session, std::wstring_view{&toggle, 1})) return;
-        session.transcript_mode = true;
-        session.transcript_percent = 100;
-        UpdateTranscriptChrome(session);
-    }
-
-    void LeaveTranscript(TerminalSession& session) {
-        if (!session.transcript_mode) return;
-        const wchar_t toggle = 0x14;
-        SendTranscriptInput(session, std::wstring_view{&toggle, 1});
-        session.transcript_mode = false;
-        UpdateTranscriptChrome(session);
-    }
-
-    void SetTranscriptPercent(TerminalSession& session, int target) {
-        if (!session.transcript_mode) return;
-        target = std::clamp(target, 0, 100);
-        const int difference = target - session.transcript_percent;
-        if (difference == 0) return;
-
-        std::wstring input;
-        if (target <= 1) {
-            input = L"\x1b[H";
-        } else if (target >= 99) {
-            input = L"\x1b[F";
-        } else {
-            const int pages = std::clamp((std::abs(difference) + 7) / 8, 1, 16);
-            const std::wstring_view page = difference < 0 ? L"\x1b[5~" : L"\x1b[6~";
-            for (int index = 0; index < pages; ++index) input.append(page);
-        }
-        if (!input.empty()) SendTranscriptInput(session, input);
-        session.transcript_percent = target;
-        UpdateTranscriptChrome(session);
-    }
-
-    void SetTranscriptChromeVisibility(TerminalSession& session, bool visible) {
-        using winrt::Windows::UI::Xaml::Visibility;
-        if (session.native_scrollbar) {
-            // Keep the native scrollbar in the visual tree so TermControl's
-            // measured column count remains stable.  It is transparent only
-            // while our Codex transcript overlay is active.
-            session.native_scrollbar.Visibility(Visibility::Visible);
-            session.native_scrollbar.Opacity(visible ? 0.0 : 1.0);
-            session.native_scrollbar.IsHitTestVisible(!visible);
-        }
-        if (overlay_ && ActiveSession() == &session) {
-            UpdateTranscriptOverlayRegion();
-            ShowWindow(overlay_, visible ? SW_SHOW : SW_HIDE);
-            if (visible) SetWindowPos(overlay_, HWND_TOP, 0, 0, 0, 0,
-                                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-            InvalidateRect(overlay_, nullptr, FALSE);
-        }
-    }
-
-    void UpdateTranscriptChrome(TerminalSession& session) {
-        const bool show = session.transcript_mode && visible_ &&
-                          ActiveSession() == &session;
-        if (!show) {
-            SetTranscriptChromeVisibility(session, false);
-            return;
-        }
-        SetTranscriptChromeVisibility(session, true);
-        UpdateTranscriptOverlayRegion();
-        if (overlay_) InvalidateRect(overlay_, nullptr, FALSE);
-    }
 
     static void ApplyPalette(
         const winrt::Microsoft::Terminal::Settings::Model::TerminalSettings& settings,
@@ -1213,7 +789,7 @@ private:
     }
 
     static void SetNativeScrollbarVisual(TerminalSession& session, bool expanded) noexcept {
-        if (session.transcript_mode || !session.native_scrollbar ||
+        if (!session.native_scrollbar ||
             (session.scrollbar_visual_initialized && session.scrollbar_expanded == expanded)) {
             return;
         }
@@ -1276,8 +852,8 @@ private:
                 scrollbar.Visibility(winrt::Windows::UI::Xaml::Visibility::Visible);
                 scrollbar.IndicatorMode(
                     winrt::Windows::UI::Xaml::Controls::Primitives::ScrollingIndicatorMode::MouseIndicator);
-                scrollbar.IsHitTestVisible(!session->transcript_mode);
-                scrollbar.Opacity(session->transcript_mode ? 0.0 : 1.0);
+                scrollbar.IsHitTestVisible(true);
+                scrollbar.Opacity(1.0);
                 if (!session->scrollbar_loaded_handler_attached) {
                     session->scrollbar_loaded_handler_attached = true;
                     const auto weak_scrollbar = winrt::make_weak(scrollbar);
@@ -1314,57 +890,7 @@ private:
     std::wstring last_error_;
     HWND parent_{};
     HWND hwnd_{};
-    HWND overlay_{};
-    bool transcript_dragging_{};
-    double transcript_drag_offset_{};
 };
-
-LRESULT CALLBACK TranscriptOverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
-    auto* adapter = reinterpret_cast<XamlIslandAdapter*>(GetWindowLongPtrW(
-        hwnd, GWLP_USERDATA));
-    if (message == WM_NCCREATE) {
-        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
-        adapter = reinterpret_cast<XamlIslandAdapter*>(create ? create->lpCreateParams : nullptr);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(adapter));
-    }
-    if (!adapter) return DefWindowProcW(hwnd, message, wparam, lparam);
-    switch (message) {
-    case WM_MOUSEACTIVATE:
-        return MA_NOACTIVATE;
-    case WM_NCHITTEST: {
-        POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        ScreenToClient(hwnd, &point);
-        return adapter->OverlayTranscriptHit(point) ? HTCLIENT : HTTRANSPARENT;
-    }
-    case WM_MOUSEWHEEL:
-        if (adapter->HandleMouseWheel(wparam, lparam)) return 0;
-        break;
-    case WM_MOUSEHWHEEL:
-        if (adapter->HandleMouseWheel(wparam, lparam, true)) return 0;
-        break;
-    case WM_LBUTTONDOWN:
-    case WM_MOUSEMOVE:
-    case WM_LBUTTONUP:
-        if (adapter->HandleTranscriptOverlayMouse(message, lparam)) return 0;
-        break;
-    case WM_CAPTURECHANGED:
-        adapter->HandleTranscriptCaptureChanged();
-        break;
-    case WM_ERASEBKGND:
-        return 1;
-    case WM_PAINT: {
-        PAINTSTRUCT paint{};
-        const HDC dc = BeginPaint(hwnd, &paint);
-        adapter->PaintTranscriptOverlay(dc);
-        EndPaint(hwnd, &paint);
-        return 0;
-    }
-    case WM_NCDESTROY:
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-        break;
-    }
-    return DefWindowProcW(hwnd, message, wparam, lparam);
-}
 
 LRESULT CALLBACK XamlIslandSubclassProc(
     HWND hwnd,
@@ -1381,10 +907,6 @@ LRESULT CALLBACK XamlIslandSubclassProc(
             adapter->UpdateNativeScrollbarHover();
         }
         if (message == WM_MOUSELEAVE) adapter->CollapseNativeScrollbar();
-        if (message == WM_MOUSEWHEEL && adapter->HandleMouseWheel(wparam, lparam)) return 0;
-        if (message == WM_MOUSEHWHEEL && adapter->HandleMouseWheel(wparam, lparam, true)) return 0;
-        if (message == WM_POINTERWHEEL && adapter->HandleMouseWheel(wparam, lparam, false, true)) return 0;
-        if (message == WM_POINTERHWHEEL && adapter->HandleMouseWheel(wparam, lparam, true, true)) return 0;
         if (message == WM_NCDESTROY) {
             adapter->OnIslandDestroyed(hwnd);
             RemoveWindowSubclass(hwnd, XamlIslandSubclassProc, subclass_id);
@@ -1556,7 +1078,7 @@ bool PickFolder(HWND owner,std::wstring& path);
 std::wstring DefaultProjectCommand(const std::wstring& type){
     const auto found=std::find_if(g_project_types.begin(),g_project_types.end(),[&](const ProjectType& value){return _wcsicmp(value.name.c_str(),type.c_str())==0;});
     if(found!=g_project_types.end())return found->default_command;
-    return type==L"Claude"?L"claude --dangerously-skip-permissions --continue":L"codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last";
+    return type==L"Claude"?L"claude --dangerously-skip-permissions --continue":L"codex --yolo --no-alt-screen resume --last";
 }
 void ReleaseProjectSnapshot(){if(g_project_snapshot){DeleteObject(g_project_snapshot);g_project_snapshot=nullptr;}g_project_snapshot_size={};}
 void CaptureProjectSnapshot(HWND owner){
@@ -2676,13 +2198,8 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_DRAWITEM:{auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){DrawContextMenuItem(item);return TRUE;}if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){DrawProjectItem(item);return TRUE;}}break;
     case WM_SIZE: if(w==SIZE_MINIMIZED){g_island.SetVisible(false);return 0;}if(g_project_dialog||g_binding_dialog||FindWindowExW(h,nullptr,L"AicliManagementDialog",nullptr)){RECT client{};GetClientRect(h,&client);if(g_project_dialog)MoveWindow(g_project_dialog,0,0,client.right,client.bottom,TRUE);if(g_binding_dialog)MoveWindow(g_binding_dialog,0,0,client.right,client.bottom,TRUE);if(HWND management=FindWindowExW(h,nullptr,L"AicliManagementDialog",nullptr))MoveWindow(management,0,0,client.right,client.bottom,TRUE);}Layout();return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshot_message_pending=false;if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
-    case WM_TRANSCRIPT_STATE:{std::unique_ptr<TranscriptStateMessage> message(reinterpret_cast<TranscriptStateMessage*>(l));if(message)g_island.ApplyTranscriptState(*message);return 0;}
     case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshot_dirty.exchange(false))PublishTerminalSnapshots();else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}break;
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;info->ptMinTrackSize.x=900;info->ptMinTrackSize.y=600;return 0;}
-    case WM_MOUSEWHEEL: if(g_island.HandleMouseWheel(w,l))return 0; break;
-    case WM_MOUSEHWHEEL: if(g_island.HandleMouseWheel(w,l,true))return 0; break;
-    case WM_POINTERWHEEL: if(g_island.HandleMouseWheel(w,l,false,true))return 0; break;
-    case WM_POINTERHWHEEL: if(g_island.HandleMouseWheel(w,l,true,true))return 0; break;
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;
     case WM_CTLCOLORSTATIC: {HDC dc=(HDC)w;HWND control=(HWND)l;const bool onPanel=control==g_sidebar_title||control==g_status;SetBkMode(dc,OPAQUE);SetTextColor(dc,fg);SetBkColor(dc,onPanel?panel:bg);return (LRESULT)(onPanel?g_list_brush:g_bg_brush);}
@@ -2890,4 +2407,4 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
 }
 }
 
-int WINAPI wWinMain(HINSTANCE inst,HINSTANCE, PWSTR, int show){GdiplusRuntime gdiplus;winrt::init_apartment(winrt::apartment_type::single_threaded);const int activation=EnsurePackagedActivation();if(activation<0){MessageBoxW(nullptr,L"无法启动已注册的 AI CLI 桌面实例，请先完成包注册。",L"AI CLI",MB_OK|MB_ICONERROR);return 1;}if(activation==0)return 0;if(!InitializePersistentState()){winrt::uninit_apartment();return 1;}g_components.Initialize();INITCOMMONCONTROLSEX ic{sizeof(ic),ICC_STANDARD_CLASSES};InitCommonControlsEx(&ic);WNDCLASSW wc{};wc.hInstance=inst;wc.lpfnWndProc=WndProc;wc.lpszClassName=kClassName;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);RegisterClassW(&wc);constexpr DWORD windowStyle=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_CLIPCHILDREN;g_hwnd=CreateWindowExW(0,kClassName,L"\x200B",windowStyle,CW_USEDEFAULT,CW_USEDEFAULT,1280,800,nullptr,nullptr,inst,nullptr);BOOL dark=g_light_theme?FALSE:TRUE;DwmSetWindowAttribute(g_hwnd,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));COLORREF captionColor=panel,borderColor=border;DwmSetWindowAttribute(g_hwnd,DWMWA_CAPTION_COLOR,&captionColor,sizeof(captionColor));DwmSetWindowAttribute(g_hwnd,DWMWA_BORDER_COLOR,&borderColor,sizeof(borderColor));ShowWindow(g_hwnd,show);UpdateWindow(g_hwnd);MSG msg;while(GetMessageW(&msg,nullptr,0,0)){const bool mouseWheel=msg.message==WM_MOUSEWHEEL||msg.message==WM_MOUSEHWHEEL;const bool pointerWheel=msg.message==WM_POINTERWHEEL||msg.message==WM_POINTERHWHEEL;if((mouseWheel||pointerWheel)&&g_island.HandleMouseWheel(msg.wParam,msg.lParam,msg.message==WM_MOUSEHWHEEL||msg.message==WM_POINTERHWHEEL,pointerWheel))continue;TranslateMessage(&msg);DispatchMessageW(&msg);}g_store.Close();winrt::uninit_apartment();return 0;}
+int WINAPI wWinMain(HINSTANCE inst,HINSTANCE, PWSTR arguments, int show){GdiplusRuntime gdiplus;winrt::init_apartment(winrt::apartment_type::single_threaded);const int activation=EnsurePackagedActivation(arguments);if(activation<0){MessageBoxW(nullptr,L"无法启动已注册的 AI CLI 桌面实例，请先完成包注册。",L"AI CLI",MB_OK|MB_ICONERROR);return 1;}if(activation==0)return 0;if(!InitializePersistentState()){winrt::uninit_apartment();return 1;}g_components.Initialize();INITCOMMONCONTROLSEX ic{sizeof(ic),ICC_STANDARD_CLASSES};InitCommonControlsEx(&ic);WNDCLASSW wc{};wc.hInstance=inst;wc.lpfnWndProc=WndProc;wc.lpszClassName=kClassName;wc.hCursor=LoadCursor(nullptr,IDC_ARROW);wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1);RegisterClassW(&wc);constexpr DWORD windowStyle=WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_CLIPCHILDREN;g_hwnd=CreateWindowExW(0,kClassName,L"\x200B",windowStyle,CW_USEDEFAULT,CW_USEDEFAULT,1280,800,nullptr,nullptr,inst,nullptr);BOOL dark=g_light_theme?FALSE:TRUE;DwmSetWindowAttribute(g_hwnd,DWMWA_USE_IMMERSIVE_DARK_MODE,&dark,sizeof(dark));COLORREF captionColor=panel,borderColor=border;DwmSetWindowAttribute(g_hwnd,DWMWA_CAPTION_COLOR,&captionColor,sizeof(captionColor));DwmSetWindowAttribute(g_hwnd,DWMWA_BORDER_COLOR,&borderColor,sizeof(borderColor));ShowWindow(g_hwnd,show);UpdateWindow(g_hwnd);MSG msg;while(GetMessageW(&msg,nullptr,0,0)){TranslateMessage(&msg);DispatchMessageW(&msg);}g_store.Close();winrt::uninit_apartment();return 0;}
