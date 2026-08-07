@@ -14,7 +14,7 @@ AI CLI 主要在 Windows 电脑上使用。电脑端负责创建项目、运行 
 - Android 使用 Java/XML，不使用 Kotlin；
 - 手机首次绑定只在电脑确认一次，断网、App 重启和电脑重启后不重复确认；
 - 手机输入必须进入电脑当前项目的同一个 ConPTY，不能只写入聊天记录；
-- Codex 默认使用 `codex --yolo resume --last`；
+- Codex 默认使用 `codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last`，以内联模式最多回放 10,000 行到 Windows Terminal 原生滚动历史；滚轮和右侧滚动条只操作 TermControl 原生 scrollback，不自动打开 Codex Transcript，也不向终端注入方向键或 PgUp/PgDn；
 - Claude 默认使用 `claude --dangerously-skip-permissions --continue`；
 - 项目数据、设备授权和终端事件使用 SQLite 持久化；
 - 构建依赖、Gradle 缓存、Windows Terminal 源码和大体积运行环境放在 F 盘。
@@ -54,10 +54,10 @@ C:\project\aitest\codex_tool\desktop\bin\Debug\aicli.exe
 标题栏信息固定包含：
 
 ```text
-[AI CLI] [当前分组] [+] [绑定手机] [已绑定 N 台] [Agent 状态] [内存] [公网状态] [设置]
+[AI CLI] [当前分组 (项目数) ▼] [+] [绑定手机] [已绑定 N 台] [Agent 状态] [内存] [公网状态] [设置]
 ```
 
-标题栏不再放 Codex/Claude 全局过滤按钮。左侧 `AI CLI` 下方旧的 `Local Workplace` 已删除。
+当前分组使用下拉菜单直接切换，每个菜单项显示 `分组名称 (项目数)`；旁边的 `+` 只负责快速新增分组。标题栏不再放 Codex/Claude 全局过滤按钮。左侧 `AI CLI` 下方旧的 `Local Workplace` 已删除。
 
 ### 3.2 项目列表
 
@@ -65,11 +65,15 @@ C:\project\aitest\codex_tool\desktop\bin\Debug\aicli.exe
 
 - 使用公共 `StyledInput` 搜索项目名称和项目类型；
 - 搜索提示使用类似 HTML `placeholder` 的灰色占位文字；
-- 显示项目名称、项目类型、所属分组和运行状态；
+- 每个项目只用一行显示项目名称，不在列表里重复显示项目类型和分组；
+- 状态只显示紧凑图标：运行中为绿色环形点、暂停为黄橙色双竖线、停止/取消/失败为黄色警告三角、未运行为灰色空心圆；
+- 项目卡片使用 GDI+ 抗锯齿圆角，鼠标经过时改变背景色和边框色；
+- 项目支持上下拖动排序，但只有按住卡片左侧的三横线把手才会开始拖动；其他区域点击只选中项目；
 - 双击项目或点击“立即开始”启动项目；
 - 右键菜单包含打开项目文件夹、项目详情、移动分组、重新启动、暂停、继续、取消和删除；
 - 删除项目只删除 SQLite 中的项目配置，不删除项目目录及其文件；
-- 启动时恢复上次选择的分组和项目，并自动重新运行上次项目的启动命令。
+- 启动时恢复上次选择的分组和项目，并自动重新运行上次项目的启动命令；
+- 左下 Git 状态卡只检查当前项目目录，显示“未初始化”“已初始化但尚无提交”或“已有提交”，兼容普通仓库、父目录仓库和 Git worktree。
 
 ### 3.3 新建和编辑项目
 
@@ -86,16 +90,18 @@ C:\project\aitest\codex_tool\desktop\bin\Debug\aicli.exe
 | 启动命令 | 根据项目类型自动填入默认值，也允许当前项目覆盖 |
 | 执行策略 | AI CLI 使用无逐条确认模式；Codex/Claude 默认命令已固定 |
 
-项目创建后先写入 SQLite，右侧显示目录、启动命令、状态、“立即开始”和“编辑项目”。只有点击“立即开始”或双击项目时才创建真实 ConPTY 并运行命令。
+项目创建后先写入 SQLite，右侧显示目录、启动命令、状态、“立即开始”和“编辑项目”。只有点击“立即开始”或双击项目时才创建真实 ConPTY 并运行命令。每个项目拥有独立的 TermControl、ConPTY 和 PowerShell 进程；启动项目 B 不得关闭已经运行的项目 A。
 
 ### 3.4 动态项目类型
 
 设置页提供“管理项目类型”：
 
-- `Codex` 和 `Claude` 是内置类型；
-- 内置类型不可重命名、不可删除；
+- `Codex` 和 `Claude` 是安装后自动创建的预置类型；
+- 预置类型可以手工修改名称和默认启动命令，修改后仍保留预置保护标记；
+- 预置类型不可删除，避免误删安装默认配置；
 - 用户可以新增自定义类型，只填写类型名称和默认启动命令；
 - 自定义类型可以重命名、修改默认命令和删除；
+- 项目类型列表页不内嵌编辑输入框；新增和修改统一打开二层模态框，在同一模态框内填写名称与默认启动命令；
 - 重命名类型时，SQLite 事务会同步更新已有项目；
 - 类型仍被项目使用时禁止删除；
 - 新建项目选择类型后自动填入该类型的默认命令；
@@ -104,17 +110,18 @@ C:\project\aitest\codex_tool\desktop\bin\Debug\aicli.exe
 内置默认命令：
 
 ```text
-Codex  : codex --yolo resume --last
+Codex  : codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last
 Claude : claude --dangerously-skip-permissions --continue
 ```
 
 ### 3.5 动态分组
 
-标题栏当前分组按钮和 `+` 都进入分组管理模态框。分组功能包括：
+标题栏当前分组控件是直接切换用的下拉菜单，菜单项统一显示 `分组名 (项目数)`；标题栏 `+` 打开只包含分组名称输入框的新增模态框。完整管理入口位于“设置 → 分组管理”。分组功能包括：
 
 - 永远存在 `默认分组`；
 - 默认分组不可重命名、不可删除；
 - 可以新增、重命名和切换分组；
+- 新增和重命名使用设置页之上的第二层模态框，背景保留半透明遮罩；
 - 分组重命名时同步更新已有项目；
 - 非空分组禁止删除，必须先移动其中的项目；
 - 项目右键菜单可以直接移动到任意分组；
@@ -135,25 +142,31 @@ Claude : claude --dangerously-skip-permissions --continue
 
 终端支持：
 
+- 多个项目同时运行，每个项目的进程、终端缓冲区、光标、输入和滚动状态互相独立；
+- 点击左侧项目只切换当前可见的 TermControl，未显示的项目继续在后台运行；
+- “暂停”“取消”“重新启动”和删除项目只作用于目标项目，不影响其他正在运行的项目；
+- 手机输入按项目 ID 写入对应 ConPTY，即使该项目不是电脑端当前可见项目也不得误发到其他终端；
 - 直接点击获得焦点并输入；
 - Enter、Backspace、Tab、Escape、方向键、Home/End、PageUp/PageDown；
 - Ctrl+C、Ctrl+D、Ctrl+L；
 - 中文输入、复制、粘贴、文本选择；
 - Windows Terminal 原生滚动和全屏 TUI；
+- Codex 恢复会话只使用 TermControl 原生 scrollback；鼠标滚轮、触控板滚动和 Ctrl+滚轮统一交给 TermControl 的原生 `OnMouseWheel` 处理，宿主不得自行计算缓冲偏移；不得由宿主自动打开 Codex Transcript，不显示 Transcript 的上下箭头、PgUp/PgDn 等分页提示，也不得把滚轮动作转换为发送给 CLI 的按键；
 - Codex/Claude ANSI、光标和弱化文字颜色；
 - 最小化后恢复、窗口缩放和最大化；
 - 终端输出同时写入 SQLite 事件并通过 WSS 推送给手机。
 
 ### 3.7 设置
 
-电脑设置当前包含：
+设置窗口使用左侧固定导航、右侧功能内容的结构；左侧入口保持可见，右侧内容独立滚动。当前包含：
 
-- 白天/夜间主题，默认夜间；
+- 外观：白天/夜间主题，默认夜间，使用紧凑型切换按钮；点击后立即写入 SQLite 并同步刷新主窗口、标题栏和原生终端，切换期间不得残留浅色方形按钮边缘；
 - Agent 监听地址，默认 `0.0.0.0`；
 - HTTPS/WSS 端口，默认 `4280`；
 - 本机/内网访问地址；
 - 公网访问地址；
-- 动态项目类型管理；
+- 项目类型：动态 CLI 类型管理；
+- 分组管理：显示 `分组名 (项目数)`，支持新增、改名和安全删除；
 - Windows 防火墙“允许手机访问”；
 - 保存设置并重启 Agent。
 
@@ -179,15 +192,18 @@ Android App 使用 Java/XML，当前最低 Android 版本为 API 26。
 
 ### 4.1 主页面
 
-- 顶部只保留 Codex/Claude 切换；
-- 会话列表默认折叠，通过顶部按钮展开；
-- 顶部提供扫码入口和设置入口；
-- 自动加载电脑端项目列表，并按 Codex/Claude 类型过滤；
+- 页面使用原生 Java/XML + Material 3 深色视觉，不使用 WebView；整体由现代顶部栏、动态分组、会话抽屉、会话状态卡、终端内容区、控制区和消息输入区组成；
+- 顶部栏显示 AI CLI 和电脑连接状态，并提供会话抽屉、扫码和设置入口；
+- 会话列表默认折叠，通过顶部按钮从左侧展开，项目根据运行、暂停、取消/失败和就绪状态使用不同颜色；
+- 不再写死 Codex/Claude 两个页面或过滤按钮，项目类型、分组、目录和状态全部读取电脑端动态数据；
+- 分组使用下拉框切换，每项显示 `分组名 (项目数)`，并提供“全部”视图；
 - 选择项目后加载 SQLite 历史事件；
 - 建立 WSS 获取实时终端输出和状态；
 - WSS 断线后按最后 `eventId` 补发遗漏事件并自动重连；
 - 可输入文字或终端命令，回车后写入电脑同一个 PTY；
 - 支持暂停、继续、取消和重启；
+- 终端显示面占满会话页除状态栏之外的剩余高度，控制栏和消息输入栏浮在终端底部；通过布局比例增加可视区域，不缩小终端字号；
+- 未绑定、连接失败、分组为空等状态使用独立空状态页面，不显示失效的终端控件；
 - 本地只保留有限长度的显示文本，CLI 和模型密钥始终留在电脑端。
 
 ### 4.2 扫码和设置
@@ -399,7 +415,7 @@ $env:JAVA_HOME='F:\android\Java\jdk-17.0.11'
 $env:ANDROID_HOME='F:\android\sdk'
 $env:ANDROID_SDK_ROOT='F:\android\sdk'
 $env:GRADLE_USER_HOME='F:\android\.gradle'
-F:\android\.gradle\wrapper\dists\gradle-8.10.2-bin\e0thjr3we83usdufs66z371ne\gradle-8.10.2\bin\gradle.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+F:\android\.gradle\wrapper\dists\gradle-8.2-bin\bbg7u40eoinfdyxsxr3z4i7ta\gradle-8.2\bin\gradle.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
 ```
 
 APK：
@@ -430,9 +446,12 @@ F:\android\sdk\platform-tools\adb.exe -s 607faa8d reverse tcp:4280 tcp:4280
 - WSS `hello` 和实时事件成功；
 - 手机发送 Ctrl+L/Ctrl+C 类控制输入进入真实桌面 PTY，并广播 `terminal.input`；
 - 电脑解绑手机后，原设备重新认证和会话请求被拒绝；
-- 动态类型新增、重命名、内置保护、使用中删除保护通过数据层测试；
+- 动态类型新增、重命名、预置类型可编辑/不可删除、使用中删除保护通过数据层测试；
 - 分组新增、重命名、默认分组保护、非空删除保护通过数据层测试；
 - 类型/分组重命名会事务性更新项目；
+- 管理端标题栏分组下拉会显示每组项目数量并可直接切换；
+- 设置页四个左侧导航、右侧独立滚动、分组/项目类型二层模态框和主题即时切换已完成启动检查；
+- Android 主页面已改为动态分组和动态项目类型，Material 3 新页面 Debug APK 构建并覆盖安装成功；
 - requestId、sequence 重复请求和撤销设备请求被拒绝；
 - TLS PEM ACL 只允许文件所有者和 `SYSTEM` 完全访问。
 
@@ -446,7 +465,7 @@ OK (1 test)
 
 以下内容未伪装成已经完成：
 
-- 当前桌面端只有一个活动 `TermControl`/ConPTY；切换并启动其他项目会停止当前 PTY。项目配置和历史事件会保留，但还没有做到多个项目终端同时在后台常驻；
+- 桌面端运行期间已经支持多个项目终端同时后台常驻；应用进程退出时系统会关闭全部 ConPTY，重新打开后只自动恢复最后选择的项目，其他项目需要再次启动；
 - 当前公网方案是 HTTPS 直连、端口映射、VPN 或反向隧道，仓库内没有托管 Relay 服务；
 - 当前 Windows 进程是 `mediumIL`，尚未拆分真正的管理员 Broker/Service；
 - Android 通知和震动设置已保存，但完整的后台通知调度尚未实现；

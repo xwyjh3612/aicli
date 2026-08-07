@@ -56,12 +56,19 @@ public final class AicliClient {
         public final String id;
         public final String name;
         public final String provider;
+        public final String type;
+        public final String group;
+        public final String folder;
         public final String status;
 
-        Conversation(String id, String name, String provider, String status) {
+        Conversation(String id, String name, String provider, String type,
+                     String group, String folder, String status) {
             this.id = id;
             this.name = name;
             this.provider = provider;
+            this.type = type;
+            this.group = group;
+            this.folder = folder;
             this.status = status;
         }
     }
@@ -188,13 +195,19 @@ public final class AicliClient {
                     String itemProvider = stringValue(value, "provider");
                     if (provider == null || provider.equalsIgnoreCase(itemProvider)) {
                         result.add(new Conversation(stringValue(value, "id"), stringValue(value, "name"),
-                                itemProvider, stringValue(value, "status")));
+                                itemProvider, stringValue(value, "type"),
+                                stringValue(value, "group"), stringValue(value, "folder"),
+                                stringValue(value, "status")));
                     }
                 }
                 callback.onSuccess(result);
             }
             @Override public void onError(String message) { callback.onError(message); }
         });
+    }
+
+    public void listConversations(ConversationCallback callback) {
+        listConversations(null, callback);
     }
 
     public void control(String conversationId, String action, ActionCallback callback) {

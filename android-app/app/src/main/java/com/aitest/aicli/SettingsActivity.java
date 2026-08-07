@@ -6,7 +6,6 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.widget.Switch;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.appcompat.app.AppCompatActivity;
@@ -16,6 +15,7 @@ import com.google.gson.JsonParser;
 import com.journeyapps.barcodescanner.ScanContract;
 import com.journeyapps.barcodescanner.ScanIntentResult;
 import com.journeyapps.barcodescanner.ScanOptions;
+import com.google.android.material.materialswitch.MaterialSwitch;
 
 /** Connection, QR pairing and local Android settings. */
 public final class SettingsActivity extends AppCompatActivity {
@@ -36,7 +36,7 @@ public final class SettingsActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
-        setTitle("设置");
+        findViewById(R.id.settingsBackButton).setOnClickListener(view -> finish());
 
         baseUrlInput = findViewById(R.id.baseUrlInput);
         computerStatus = findViewById(R.id.computerStatus);
@@ -52,8 +52,8 @@ public final class SettingsActivity extends AppCompatActivity {
         findViewById(R.id.clearComputerButton).setOnClickListener(view -> clearComputer());
 
         SharedPreferences appSettings = getSharedPreferences(APP_PREFS, MODE_PRIVATE);
-        Switch notifications = findViewById(R.id.notificationSwitch);
-        Switch vibration = findViewById(R.id.vibrationSwitch);
+        MaterialSwitch notifications = findViewById(R.id.notificationSwitch);
+        MaterialSwitch vibration = findViewById(R.id.vibrationSwitch);
         notifications.setChecked(appSettings.getBoolean("notifications", true));
         vibration.setChecked(appSettings.getBoolean("vibration", true));
         notifications.setOnCheckedChangeListener((button, checked) ->

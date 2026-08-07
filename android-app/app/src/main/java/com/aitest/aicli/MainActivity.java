@@ -3,56 +3,64 @@ package com.aitest.aicli;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.EditorInfo;
+import android.widget.ArrayAdapter;
 import android.widget.EditText;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.GravityCompat;
+import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
-import com.google.android.material.tabs.TabLayout;
+import com.google.android.material.textfield.MaterialAutoCompleteTextView;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
-/**
- * Android is deliberately a thin remote console.  The CLI process and the
- * PTY always stay on the desktop; this activity only displays events and
- * forwards input/control requests through AicliClient.
- */
+/** Native Android companion for the desktop-owned AI CLI sessions. */
 public final class MainActivity extends AppCompatActivity {
-    private static final String[] PROVIDERS = {"Codex", "Claude"};
     private static final String CONNECTION_PREFS = "connection";
     private static final String BASE_URL_KEY = "baseUrl";
+    private static final String APP_PREFS = "app_settings";
+    private static final String ALL_GROUPS = "__all__";
 
     private final StringBuilder terminalText = new StringBuilder();
+    private final List<AicliClient.Conversation> allConversations = new ArrayList<>();
+    private final List<String> displayedGroups = new ArrayList<>();
     private AicliClient client;
     private ConversationAdapter conversationAdapter;
-    private String provider = "codex";
+    private String selectedGroup = ALL_GROUPS;
     private String selectedConversationId;
     private long lastEventId;
-    /**
-     * Includes every persisted transport value, not only the base URL.  The
-     * settings screen can replace the certificate pin and computer identity
-     * while this activity is still alive; retaining the old AicliClient in
-     * that case would make the next request use the previous TLS pin.
-     */
     private String configuredConnectionKey = "";
+    private boolean rebuildingGroups;
 
-    private TextView emptyState;
+    private DrawerLayout drawerLayout;
+    private View groupSelectorLayout;
+    private MaterialAutoCompleteTextView groupSelector;
+    private View emptyState;
+    private TextView emptyStateTitle;
+    private TextView emptyStateMessage;
     private TextView connectionStatus;
+    private TextView drawerConnectionStatus;
+    private TextView drawerGroupLabel;
     private TextView terminalOutput;
     private ScrollView terminalScroll;
     private View inputBar;
     private EditText messageInput;
     private RecyclerView conversationList;
-    private boolean listExpanded;
 
     private void initializeDeviceIdentity() {
         SharedPreferences preferences = getSharedPreferences("device_identity", MODE_PRIVATE);
@@ -74,39 +82,41 @@ public final class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         initializeDeviceIdentity();
 
+        drawerLayout = findViewById(R.id.drawerLayout);
+        groupSelectorLayout = findViewById(R.id.groupSelectorLayout);
+        groupSelector = findViewById(R.id.groupSelector);
         emptyState = findViewById(R.id.emptyState);
+        emptyStateTitle = findViewById(R.id.emptyStateTitle);
+        emptyStateMessage = findViewById(R.id.emptyStateMessage);
         connectionStatus = findViewById(R.id.connectionStatus);
+        drawerConnectionStatus = findViewById(R.id.drawerConnectionStatus);
+        drawerGroupLabel = findViewById(R.id.drawerGroupLabel);
         terminalOutput = findViewById(R.id.terminalOutput);
         terminalScroll = findViewById(R.id.terminalScroll);
         inputBar = findViewById(R.id.inputBar);
         messageInput = findViewById(R.id.messageInput);
         conversationList = findViewById(R.id.conversationList);
+
+        selectedGroup = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
+                .getString("selected_group", ALL_GROUPS);
         conversationList.setLayoutManager(new LinearLayoutManager(this));
         conversationAdapter = new ConversationAdapter(this::selectConversation);
         conversationList.setAdapter(conversationAdapter);
 
-        TabLayout providerTabs = findViewById(R.id.providerTabs);
-        providerTabs.removeAllTabs();
-        for (String providerName : PROVIDERS) {
-            providerTabs.addTab(providerTabs.newTab().setText(providerName));
-        }
-        providerTabs.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
-            @Override
-            public void onTabSelected(TabLayout.Tab tab) {
-                provider = tab.getPosition() == 1 ? "claude" : "codex";
-                selectedConversationId = null;
-                lastEventId = 0L;
-                loadConversations();
-            }
-
-            @Override public void onTabUnselected(TabLayout.Tab tab) { }
-            @Override public void onTabReselected(TabLayout.Tab tab) { loadConversations(); }
+        groupSelector.setOnItemClickListener((parent, view, position, id) -> {
+            if (rebuildingGroups || position < 0 || position >= displayedGroups.size()) return;
+            selectedGroup = displayedGroups.get(position);
+            getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit()
+                    .putString("selected_group", selectedGroup).apply();
+            renderSelectedGroup(true);
         });
 
         findViewById(R.id.settingsButton).setOnClickListener(view ->
                 startActivity(new Intent(this, SettingsActivity.class)));
         findViewById(R.id.scanButton).setOnClickListener(view -> openScannerInSettings());
         findViewById(R.id.conversationsButton).setOnClickListener(view -> toggleConversationList());
+        findViewById(R.id.closeDrawerButton).setOnClickListener(view ->
+                drawerLayout.closeDrawer(GravityCompat.START));
         findViewById(R.id.sendButton).setOnClickListener(view -> sendInput());
         findViewById(R.id.pauseButton).setOnClickListener(view -> sendControl("pause"));
         findViewById(R.id.continueButton).setOnClickListener(view -> sendControl("continue"));
@@ -123,14 +133,23 @@ public final class MainActivity extends AppCompatActivity {
             return false;
         });
 
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override public void handleOnBackPressed() {
+                if (drawerLayout.isDrawerOpen(GravityCompat.START)) {
+                    drawerLayout.closeDrawer(GravityCompat.START);
+                } else {
+                    setEnabled(false);
+                    getOnBackPressedDispatcher().onBackPressed();
+                }
+            }
+        });
+
         configureClient();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        // SettingsActivity may have completed a pairing while this activity
-        // was paused.  Re-read the pinned connection and reconnect once.
         configureClient();
     }
 
@@ -160,13 +179,14 @@ public final class MainActivity extends AppCompatActivity {
             configuredConnectionKey = connectionKey;
         }
         if (baseUrl.isEmpty()) {
-            connectionStatus.setText("未绑定电脑");
-            emptyState.setText("扫描电脑端二维码后开始使用");
-            emptyState.setVisibility(View.VISIBLE);
-            conversationList.setVisibility(View.GONE);
-            terminalScroll.setVisibility(View.GONE);
-            inputBar.setVisibility(View.GONE);
-            setControlsVisible(false);
+            setConnectionStatus("未绑定电脑");
+            showEmptyState("连接你的 AI 工作台", "扫描电脑端二维码后，即可查看进度并继续当前会话。");
+            allConversations.clear();
+            displayedGroups.clear();
+            groupSelector.setAdapter(null);
+            groupSelector.setText("", false);
+            groupSelectorLayout.setVisibility(View.GONE);
+            hideConversation();
             return;
         }
         loadConversations();
@@ -174,46 +194,108 @@ public final class MainActivity extends AppCompatActivity {
 
     private void loadConversations() {
         if (client == null || client.baseUrl().isEmpty()) return;
-        connectionStatus.setText("正在连接电脑…");
-        client.listConversations(provider, new AicliClient.ConversationCallback() {
+        setConnectionStatus("正在连接电脑…");
+        client.listConversations(new AicliClient.ConversationCallback() {
             @Override public void onSuccess(List<AicliClient.Conversation> conversations) {
                 runOnUiThread(() -> {
-                    conversationAdapter.replace(conversations);
-                    connectionStatus.setText("已连接 · " + conversations.size() + " 个会话");
-                    boolean hasConversations = !conversations.isEmpty();
-                    emptyState.setVisibility(hasConversations ? View.GONE : View.VISIBLE);
-                    if (!hasConversations) {
-                        emptyState.setText("电脑上暂无此提供方会话");
-                        terminalScroll.setVisibility(View.GONE);
-                        inputBar.setVisibility(View.GONE);
-                        setControlsVisible(false);
-                    } else if (selectedConversationId == null) {
-                        selectConversation(conversations.get(0));
-                    }
+                    allConversations.clear();
+                    allConversations.addAll(conversations);
+                    rebuildGroupSelector(conversations);
+                    setConnectionStatus("已连接 · " + conversations.size() + " 个项目");
+                    renderSelectedGroup(false);
                 });
             }
 
             @Override public void onError(String message) {
                 runOnUiThread(() -> {
-                    connectionStatus.setText("连接失败：" + message);
-                    emptyState.setText("请确认电脑端已授权此手机；可在设置中重新扫码");
-                    emptyState.setVisibility(View.VISIBLE);
+                    setConnectionStatus("连接失败");
+                    showEmptyState("暂时无法连接电脑", "请确认电脑端在线且已授权此手机；也可以在设置中重新扫码。");
                     Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show();
                 });
             }
         });
     }
 
+    private void rebuildGroupSelector(List<AicliClient.Conversation> conversations) {
+        Set<String> unique = new LinkedHashSet<>();
+        for (AicliClient.Conversation conversation : conversations) {
+            unique.add(conversation.group.isEmpty() ? "默认分组" : conversation.group);
+        }
+        List<String> next = new ArrayList<>();
+        next.add(ALL_GROUPS);
+        next.addAll(unique);
+        displayedGroups.clear();
+        displayedGroups.addAll(next);
+        if (!displayedGroups.contains(selectedGroup)) selectedGroup = ALL_GROUPS;
+
+        rebuildingGroups = true;
+        List<String> labels = new ArrayList<>();
+        int selectedIndex = 0;
+        for (int index = 0; index < displayedGroups.size(); index++) {
+            String group = displayedGroups.get(index);
+            int count = 0;
+            for (AicliClient.Conversation conversation : conversations) {
+                String itemGroup = conversation.group.isEmpty() ? "默认分组" : conversation.group;
+                if (ALL_GROUPS.equals(group) || group.equals(itemGroup)) count++;
+            }
+            labels.add((ALL_GROUPS.equals(group) ? "全部" : group) + " (" + count + ")");
+            if (group.equals(selectedGroup)) selectedIndex = index;
+        }
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, R.layout.item_group_dropdown, labels);
+        groupSelector.setAdapter(adapter);
+        if (!labels.isEmpty()) groupSelector.setText(labels.get(selectedIndex), false);
+        groupSelectorLayout.setVisibility(View.VISIBLE);
+        rebuildingGroups = false;
+    }
+
+    private void renderSelectedGroup(boolean selectFirst) {
+        List<AicliClient.Conversation> filtered = new ArrayList<>();
+        for (AicliClient.Conversation conversation : allConversations) {
+            String group = conversation.group.isEmpty() ? "默认分组" : conversation.group;
+            if (ALL_GROUPS.equals(selectedGroup) || selectedGroup.equals(group)) filtered.add(conversation);
+        }
+        conversationAdapter.replace(filtered);
+        drawerGroupLabel.setText(ALL_GROUPS.equals(selectedGroup)
+                ? "全部分组 · " + filtered.size() + " 个项目"
+                : selectedGroup + " · " + filtered.size() + " 个项目");
+        if (filtered.isEmpty()) {
+            selectedConversationId = null;
+            conversationAdapter.select(null);
+            hideConversation();
+            showEmptyState("这个分组还没有项目", "请先在电脑端创建项目，手机会自动同步最新分组和会话。");
+            return;
+        }
+
+        AicliClient.Conversation selected = null;
+        if (!selectFirst && selectedConversationId != null) {
+            for (AicliClient.Conversation value : filtered) {
+                if (value.id.equals(selectedConversationId)) {
+                    selected = value;
+                    break;
+                }
+            }
+        }
+        if (selected == null) selected = filtered.get(0);
+        if (!selected.id.equals(selectedConversationId)) selectConversation(selected);
+        else {
+            conversationAdapter.select(selected.id);
+            hideEmptyState();
+        }
+    }
+
     private void selectConversation(AicliClient.Conversation conversation) {
+        if (client == null) return;
         client.closeEvents();
         selectedConversationId = conversation.id;
         conversationAdapter.select(conversation.id);
+        drawerLayout.closeDrawer(GravityCompat.START);
         lastEventId = 0L;
         terminalText.setLength(0);
+        terminalOutput.setText("");
         terminalScroll.setVisibility(View.VISIBLE);
         inputBar.setVisibility(View.VISIBLE);
         setControlsVisible(true);
-        appendOutput("[" + conversation.name + "] 状态：" + conversation.status);
+        hideEmptyState();
         client.listEvents(conversation.id, 0, new AicliClient.HistoryCallback() {
             @Override public void onSuccess(List<String> events) {
                 runOnUiThread(() -> {
@@ -234,13 +316,11 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void sendInput() {
-        if (selectedConversationId == null) return;
-        // Do not trim: spaces and control characters are meaningful to a CLI.
+        if (selectedConversationId == null || client == null) return;
         String input = messageInput.getText().toString();
         if (input.isEmpty()) return;
         messageInput.setText("");
-        appendOutput("> " + input);
-        client.sendInput(selectedConversationId, input + "\r", new AicliClient.ActionCallback() {
+        client.sendMessage(selectedConversationId, input, new AicliClient.ActionCallback() {
             @Override public void onSuccess() { }
             @Override public void onError(String message) {
                 runOnUiThread(() -> appendOutput("[发送失败] " + message));
@@ -252,7 +332,7 @@ public final class MainActivity extends AppCompatActivity {
         if (client == null || selectedConversationId == null) return;
         client.control(selectedConversationId, action, new AicliClient.ActionCallback() {
             @Override public void onSuccess() {
-                runOnUiThread(() -> connectionStatus.setText("操作已发送：" + action));
+                runOnUiThread(() -> setConnectionStatus("操作已发送 · " + action));
             }
             @Override public void onError(String message) {
                 runOnUiThread(() -> Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show());
@@ -265,30 +345,43 @@ public final class MainActivity extends AppCompatActivity {
             JsonObject event = JsonParser.parseString(eventJson).getAsJsonObject();
             String type = event.has("type") ? event.get("type").getAsString() : "";
             if ("hello".equals(type)) {
-                connectionStatus.setText("已连接 · 实时事件在线");
+                setConnectionStatus("实时连接在线");
                 return;
             }
             String eventConversationId = event.has("conversationId")
                     ? event.get("conversationId").getAsString() : "";
             if (selectedConversationId != null && !selectedConversationId.equals(eventConversationId)) return;
             if (!consumeEvent(eventJson)) return;
-            if (type.startsWith("conversation.")) {
-                loadConversations();
-            }
+            if (type.startsWith("conversation.")) loadConversations();
         } catch (Exception ignored) {
             appendOutput(eventJson);
         }
     }
 
     private boolean consumeEvent(String eventJson) {
+        String type = "";
+        JsonObject payload = null;
         try {
             JsonObject event = JsonParser.parseString(eventJson).getAsJsonObject();
+            type = event.has("event_type") ? event.get("event_type").getAsString()
+                    : event.has("type") ? event.get("type").getAsString() : "";
+            payload = event.has("payload") && event.get("payload").isJsonObject()
+                    ? event.getAsJsonObject("payload") : null;
             if (event.has("id")) {
                 long eventId = event.get("id").getAsLong();
                 if (eventId > 0 && eventId <= lastEventId) return false;
                 lastEventId = Math.max(lastEventId, eventId);
             }
         } catch (Exception ignored) { }
+        if ("terminal.snapshot".equals(type) && payload != null && payload.has("text")) {
+            setTerminalSnapshot(payload.get("text").getAsString());
+            return true;
+        }
+        // Legacy desktop builds emitted every TUI repaint as a separate text
+        // event. They are intentionally ignored once screen snapshots are
+        // supported, otherwise Working/composer/status rows accumulate.
+        if ("terminal.output".equals(type) || "terminal.input".equals(type)
+                || type.startsWith("conversation.")) return true;
         appendOutput(formatEvent(eventJson));
         return true;
     }
@@ -302,7 +395,7 @@ public final class MainActivity extends AppCompatActivity {
 
             @Override public void onClosed() {
                 runOnUiThread(() -> {
-                    connectionStatus.setText("实时连接断开，正在补发事件并自动重连…");
+                    setConnectionStatus("实时连接断开 · 正在重连");
                     recoverMissedEvents();
                 });
             }
@@ -322,16 +415,25 @@ public final class MainActivity extends AppCompatActivity {
             }
 
             @Override public void onError(String message) {
-                runOnUiThread(() -> connectionStatus.setText("补发失败，正在继续重连…"));
+                runOnUiThread(() -> setConnectionStatus("补发失败 · 正在继续重连"));
             }
         });
     }
 
     private void appendOutput(String line) {
         if (line == null || line.isEmpty()) return;
-        if (terminalText.length() > 64 * 1024) terminalText.delete(0, terminalText.length() - 48 * 1024);
+        if (terminalText.length() > 64 * 1024) {
+            terminalText.delete(0, terminalText.length() - 48 * 1024);
+        }
         if (terminalText.length() > 0) terminalText.append('\n');
         terminalText.append(line);
+        terminalOutput.setText(terminalText.toString());
+        terminalOutput.post(() -> terminalScroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private void setTerminalSnapshot(String text) {
+        terminalText.setLength(0);
+        if (text != null) terminalText.append(text);
         terminalOutput.setText(terminalText.toString());
         terminalOutput.post(() -> terminalScroll.fullScroll(View.FOCUS_DOWN));
     }
@@ -349,7 +451,9 @@ public final class MainActivity extends AppCompatActivity {
                 if (payload.has("input")) return "> " + payload.get("input").getAsString();
             }
             return type.isEmpty() ? eventJson : "[" + type + "]";
-        } catch (Exception ignored) { return eventJson; }
+        } catch (Exception ignored) {
+            return eventJson;
+        }
     }
 
     private void setControlsVisible(boolean visible) {
@@ -357,7 +461,32 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void toggleConversationList() {
-        listExpanded = !listExpanded;
-        conversationList.setVisibility(listExpanded ? View.VISIBLE : View.GONE);
+        if (drawerLayout.isDrawerOpen(GravityCompat.START)) {
+            drawerLayout.closeDrawer(GravityCompat.START);
+        } else {
+            drawerLayout.openDrawer(GravityCompat.START);
+        }
+    }
+
+    private void setConnectionStatus(String value) {
+        connectionStatus.setText(value);
+        drawerConnectionStatus.setText(value);
+    }
+
+    private void showEmptyState(String title, String message) {
+        emptyStateTitle.setText(title);
+        emptyStateMessage.setText(message);
+        emptyState.setVisibility(View.VISIBLE);
+    }
+
+    private void hideEmptyState() {
+        emptyState.setVisibility(View.GONE);
+    }
+
+    private void hideConversation() {
+        if (client != null) client.closeEvents();
+        terminalScroll.setVisibility(View.GONE);
+        inputBar.setVisibility(View.GONE);
+        setControlsVisible(false);
     }
 }
