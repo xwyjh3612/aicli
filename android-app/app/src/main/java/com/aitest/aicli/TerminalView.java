@@ -14,6 +14,8 @@ import android.widget.OverScroller;
 
 import androidx.annotation.Nullable;
 
+import java.util.ArrayList;
+
 /** Native cell renderer with terminal-style scrolling and pinch zoom. */
 public final class TerminalView extends View {
     private static final float MIN_TEXT_SP = 7.5f;
@@ -27,6 +29,7 @@ public final class TerminalView extends View {
     private final OverScroller scroller;
     private final float density;
     private final float scaledDensity;
+    private final ArrayList<VisualLine> visualLines = new ArrayList<>();
 
     private VtTerminalEmulator terminal;
     private float textSizeSp = 12f;
@@ -37,6 +40,23 @@ public final class TerminalView extends View {
     private boolean followOnFrame;
     private boolean cursorOn = true;
     private boolean attached;
+    private boolean softWrapEnabled = true;
+    private long visualRevision = Long.MIN_VALUE;
+    private int visualWrapColumns = -1;
+    private int visualLogicalLines = -1;
+    private int[] visualStarts = new int[0];
+
+    private static final class VisualLine {
+        final int logicalRow;
+        final int startColumn;
+        final int endColumn;
+
+        VisualLine(int logicalRow, int startColumn, int endColumn) {
+            this.logicalRow = logicalRow;
+            this.startColumn = startColumn;
+            this.endColumn = endColumn;
+        }
+    }
 
     private final Runnable cursorBlink = new Runnable() {
         @Override public void run() {
@@ -125,6 +145,7 @@ public final class TerminalView extends View {
     void setTerminal(@Nullable VtTerminalEmulator value, int restoredX,
                      int restoredY, boolean followBottom) {
         terminal = value;
+        invalidateVisualLayout();
         scroller.forceFinished(true);
         if (value == null) {
             scrollTo(0, 0);
@@ -147,6 +168,7 @@ public final class TerminalView extends View {
             framePosted = false;
             boolean follow = followOnFrame;
             followOnFrame = false;
+            invalidateVisualLayout();
             if (follow) scrollToClamped(getScrollX(), maximumScrollY());
             else scrollToClamped(getScrollX(), getScrollY());
             invalidate();
@@ -160,6 +182,26 @@ public final class TerminalView extends View {
 
     boolean followsBottom() {
         return isNearBottom();
+    }
+
+    public void setSoftWrapEnabled(boolean enabled) {
+        if (softWrapEnabled == enabled) return;
+        boolean follow = isNearBottom();
+        int logicalTop = logicalRowAtViewportTop();
+        softWrapEnabled = enabled;
+        invalidateVisualLayout();
+        post(() -> {
+            ensureVisualLayout();
+            int targetY = follow ? maximumScrollY()
+                    : Math.round(getPaddingTop() + visualStartForLogicalRow(logicalTop) * cellHeight);
+            scrollToClamped(enabled ? 0 : getScrollX(), targetY);
+            invalidate();
+            awakenScrollBars();
+        });
+    }
+
+    public boolean softWrapEnabled() {
+        return softWrapEnabled;
     }
 
     @Override public boolean performClick() {
@@ -188,8 +230,11 @@ public final class TerminalView extends View {
     }
 
     @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+        boolean follow = terminal != null && isNearBottom();
         super.onSizeChanged(width, height, oldWidth, oldHeight);
-        scrollToClamped(getScrollX(), getScrollY());
+        invalidateVisualLayout();
+        if (follow) post(() -> scrollToClamped(softWrapEnabled ? 0 : getScrollX(), maximumScrollY()));
+        else scrollToClamped(softWrapEnabled ? 0 : getScrollX(), getScrollY());
     }
 
     @Override protected void onDraw(Canvas canvas) {
@@ -197,28 +242,40 @@ public final class TerminalView extends View {
         canvas.drawColor(VtTerminalEmulator.DEFAULT_BACKGROUND);
         VtTerminalEmulator model = terminal;
         if (model == null) return;
+        ensureVisualLayout();
 
         int firstRow = Math.max(0, (int) Math.floor(
                 (getScrollY() - getPaddingTop()) / Math.max(1f, cellHeight)));
         int visibleRows = (int) Math.ceil(getHeight() / Math.max(1f, cellHeight)) + 2;
-        int lastRow = Math.min(model.totalLines(), firstRow + visibleRows);
-        int firstColumn = Math.max(0, (int) Math.floor(
+        int lastRow = Math.min(visualLines.size(), firstRow + visibleRows);
+        int viewportFirstColumn = softWrapEnabled ? 0 : Math.max(0, (int) Math.floor(
                 (getScrollX() - getPaddingLeft()) / Math.max(1f, cellWidth)));
         int visibleColumns = (int) Math.ceil(getWidth() / Math.max(1f, cellWidth)) + 2;
 
         for (int row = firstRow; row < lastRow; row++) {
-            VtTerminalEmulator.Line line = model.lineAt(row);
+            VisualLine visual = visualLines.get(row);
+            VtTerminalEmulator.Line line = model.lineAt(visual.logicalRow);
             if (line == null) continue;
-            int lastColumn = Math.min(line.columns(), firstColumn + visibleColumns);
+            int firstColumn = softWrapEnabled ? visual.startColumn : viewportFirstColumn;
+            int lastColumn = softWrapEnabled ? visual.endColumn
+                    : Math.min(line.columns(), firstColumn + visibleColumns);
             float top = getPaddingTop() + row * cellHeight;
-            drawLine(canvas, line, firstColumn, lastColumn, top);
+            drawLine(canvas, line, firstColumn, lastColumn, top,
+                    softWrapEnabled ? visual.startColumn : 0);
         }
 
         if (model.cursorVisible() && cursorOn) {
-            int cursorRow = model.cursorDisplayRow();
+            int logicalCursorRow = model.cursorDisplayRow();
+            int cursorRow = visualStartForLogicalRow(logicalCursorRow);
             int cursorColumn = model.cursorColumn();
+            if (softWrapEnabled) {
+                int columns = Math.max(1, currentWrapColumns());
+                cursorRow += cursorColumn / columns;
+                cursorColumn %= columns;
+            }
             if (cursorRow >= firstRow && cursorRow < lastRow &&
-                    cursorColumn >= firstColumn && cursorColumn < firstColumn + visibleColumns) {
+                    (softWrapEnabled || (cursorColumn >= viewportFirstColumn &&
+                            cursorColumn < viewportFirstColumn + visibleColumns))) {
                 float left = getPaddingLeft() + cursorColumn * cellWidth;
                 float top = getPaddingTop() + cursorRow * cellHeight;
                 canvas.drawRect(left + 0.5f, top + 0.5f,
@@ -228,7 +285,8 @@ public final class TerminalView extends View {
     }
 
     private void drawLine(Canvas canvas, VtTerminalEmulator.Line line,
-                          int firstColumn, int lastColumn, float top) {
+                          int firstColumn, int lastColumn, float top,
+                          int originColumn) {
         for (int column = firstColumn; column < lastColumn;) {
             long colors = line.colorsAt(column);
             byte flags = line.flagsAt(column);
@@ -244,15 +302,16 @@ public final class TerminalView extends View {
             }
             if (background != VtTerminalEmulator.DEFAULT_BACKGROUND) {
                 fillPaint.setColor(background);
-                canvas.drawRect(getPaddingLeft() + column * cellWidth, top,
-                        getPaddingLeft() + runEnd * cellWidth, top + cellHeight, fillPaint);
+                canvas.drawRect(getPaddingLeft() + (column - originColumn) * cellWidth, top,
+                        getPaddingLeft() + (runEnd - originColumn) * cellWidth,
+                        top + cellHeight, fillPaint);
             }
             configureTextPaint(foreground, background, flags);
             for (int cell = column; cell < runEnd; cell++) {
                 int codePoint = line.codePointAt(cell);
                 if (codePoint <= 0 || codePoint == ' ') continue;
                 String glyph = new String(Character.toChars(codePoint));
-                canvas.drawText(glyph, getPaddingLeft() + cell * cellWidth,
+                canvas.drawText(glyph, getPaddingLeft() + (cell - originColumn) * cellWidth,
                         top + baselineOffset, textPaint);
             }
             column = runEnd;
@@ -276,6 +335,7 @@ public final class TerminalView extends View {
         cellWidth = Math.max(1f, textPaint.measureText("M"));
         cellHeight = Math.max(1f, (float) Math.ceil(metrics.descent - metrics.ascent + density));
         baselineOffset = -metrics.ascent + density * 0.5f;
+        invalidateVisualLayout();
     }
 
     private void scrollByClamped(int deltaX, int deltaY) {
@@ -288,13 +348,15 @@ public final class TerminalView extends View {
     }
 
     private int contentWidth() {
-        return terminal == null ? getWidth() : Math.round(
+        if (terminal == null || softWrapEnabled) return getWidth();
+        return Math.round(
                 getPaddingLeft() + terminal.columns() * cellWidth + getPaddingRight());
     }
 
     private int contentHeight() {
-        return terminal == null ? getHeight() : Math.round(
-                getPaddingTop() + terminal.totalLines() * cellHeight + getPaddingBottom());
+        if (terminal == null) return getHeight();
+        ensureVisualLayout();
+        return Math.round(getPaddingTop() + visualLines.size() * cellHeight + getPaddingBottom());
     }
 
     private int maximumScrollX() { return Math.max(0, contentWidth() - getWidth()); }
@@ -311,6 +373,76 @@ public final class TerminalView extends View {
         if (!scroller.computeScrollOffset()) return;
         scrollToClamped(scroller.getCurrX(), scroller.getCurrY());
         postInvalidateOnAnimation();
+    }
+
+    private void ensureVisualLayout() {
+        VtTerminalEmulator model = terminal;
+        if (model == null) {
+            visualLines.clear();
+            visualStarts = new int[0];
+            return;
+        }
+        int wrapColumns = softWrapEnabled ? currentWrapColumns() : model.columns();
+        int logicalLines = model.totalLines();
+        if (visualRevision == model.revision() && visualWrapColumns == wrapColumns &&
+                visualLogicalLines == logicalLines) return;
+
+        visualLines.clear();
+        visualStarts = new int[logicalLines + 1];
+        int cursorRow = model.cursorDisplayRow();
+        int cursorColumn = model.cursorColumn();
+        for (int row = 0; row < logicalLines; row++) {
+            visualStarts[row] = visualLines.size();
+            VtTerminalEmulator.Line line = model.lineAt(row);
+            if (line == null) continue;
+            if (!softWrapEnabled) {
+                visualLines.add(new VisualLine(row, 0, line.columns()));
+                continue;
+            }
+            int used = line.usedColumns();
+            if (row == cursorRow) used = Math.max(used, cursorColumn + 1);
+            // A desktop-width TUI separator should become one phone-width
+            // separator, not four stacked stripes after visual reflow.
+            if (line.isHorizontalRule()) used = Math.min(used, wrapColumns);
+            used = Math.max(1, Math.min(line.columns(), used));
+            int segments = Math.max(1, (used + wrapColumns - 1) / wrapColumns);
+            for (int segment = 0; segment < segments; segment++) {
+                int start = segment * wrapColumns;
+                visualLines.add(new VisualLine(row, start,
+                        Math.min(line.columns(), start + wrapColumns)));
+            }
+        }
+        visualStarts[logicalLines] = visualLines.size();
+        visualRevision = model.revision();
+        visualWrapColumns = wrapColumns;
+        visualLogicalLines = logicalLines;
+    }
+
+    private int currentWrapColumns() {
+        int available = Math.max(1, getWidth() - getPaddingLeft() - getPaddingRight());
+        return Math.max(1, (int) Math.floor(available / Math.max(1f, cellWidth)));
+    }
+
+    private int visualStartForLogicalRow(int logicalRow) {
+        ensureVisualLayout();
+        if (visualStarts.length == 0) return 0;
+        int row = clamp(logicalRow, 0, visualStarts.length - 1);
+        return visualStarts[row];
+    }
+
+    private int logicalRowAtViewportTop() {
+        ensureVisualLayout();
+        if (visualLines.isEmpty()) return 0;
+        int visualRow = clamp((int) Math.floor(
+                (getScrollY() - getPaddingTop()) / Math.max(1f, cellHeight)),
+                0, visualLines.size() - 1);
+        return visualLines.get(visualRow).logicalRow;
+    }
+
+    private void invalidateVisualLayout() {
+        visualRevision = Long.MIN_VALUE;
+        visualWrapColumns = -1;
+        visualLogicalLines = -1;
     }
 
     private static int blend(int foreground, int background, float amount) {

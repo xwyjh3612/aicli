@@ -26,8 +26,7 @@ final class VtTerminalEmulator {
     static final byte STYLE_STRIKE = 1 << 5;
 
     private static final int CONTINUATION = -1;
-    private static final int MAX_SCROLLBACK_LINES = 3000;
-    private static final int SCROLLBACK_TRIM_BATCH = 128;
+    private static final int MAX_SCROLLBACK_LINES = 1000;
     private static final int STATE_GROUND = 0;
     private static final int STATE_ESCAPE = 1;
     private static final int STATE_CSI = 2;
@@ -64,6 +63,33 @@ final class VtTerminalEmulator {
         int codePointAt(int column) { return codePoints[column]; }
         long colorsAt(int column) { return colors[column]; }
         byte flagsAt(int column) { return flags[column]; }
+
+        int usedColumns() {
+            for (int column = codePoints.length - 1; column >= 0; column--) {
+                // Reflow follows actual text, not a TUI's desktop-width
+                // background fill. Counting styled blank cells here turns one
+                // composer row into several empty grey rows on a phone.
+                if (codePoints[column] != ' ') {
+                    return column + 1;
+                }
+            }
+            return 0;
+        }
+
+        boolean isHorizontalRule() {
+            int visible = 0;
+            int rule = 0;
+            for (int codePoint : codePoints) {
+                if (codePoint == ' ' || codePoint == CONTINUATION) continue;
+                visible++;
+                if (codePoint == '-' || codePoint == '_' || codePoint == 0x2014 ||
+                        codePoint == 0x2500 || codePoint == 0x2501 ||
+                        (codePoint >= 0x2504 && codePoint <= 0x2509) ||
+                        (codePoint >= 0x254c && codePoint <= 0x254f) ||
+                        codePoint == 0x2550) rule++;
+            }
+            return visible >= 8 && rule * 100 >= visible * 85;
+        }
 
         void resize(int columns, long fillColors, byte fillFlags) {
             int nextColumns = Math.max(1, columns);
@@ -210,6 +236,7 @@ final class VtTerminalEmulator {
     private int parserState = STATE_GROUND;
     private final StringBuilder controlBuffer = new StringBuilder();
     private int lastPrintedCodePoint = ' ';
+    private long revision;
 
     VtTerminalEmulator(int rows, int columns) {
         reset(rows, columns);
@@ -234,6 +261,7 @@ final class VtTerminalEmulator {
         parserState = STATE_GROUND;
         controlBuffer.setLength(0);
         lastPrintedCodePoint = ' ';
+        revision++;
     }
 
     void resize(int requestedRows, int requestedColumns) {
@@ -245,6 +273,7 @@ final class VtTerminalEmulator {
         rows = nextRows;
         columns = nextColumns;
         wrapPending = false;
+        revision++;
     }
 
     void feed(String data) {
@@ -254,6 +283,7 @@ final class VtTerminalEmulator {
             offset += Character.charCount(codePoint);
             process(codePoint);
         }
+        revision++;
     }
 
     int rows() { return rows; }
@@ -264,6 +294,7 @@ final class VtTerminalEmulator {
     int cursorColumn() { return active.cursorColumn; }
     boolean cursorVisible() { return cursorVisible; }
     boolean synchronizedOutput() { return synchronizedOutput; }
+    long revision() { return revision; }
 
     Line lineAt(int displayRow) {
         if (displayRow < 0) return null;
@@ -532,7 +563,10 @@ final class VtTerminalEmulator {
                 active.scrollBottom - active.scrollTop + 1);
         for (int index = 0; index < count; index++) {
             Line removed = active.rows.remove(active.scrollTop);
-            if (active.scrollTop == 0 && active.scrollBottom == rows - 1) {
+            // Full-screen TUIs commonly reserve one or more footer rows for
+            // their composer. Lines still leave through the top edge of the
+            // viewport, so preserve them just like normal terminal scrollback.
+            if (active.scrollTop == 0) {
                 active.history.add(removed);
                 trimHistory(active);
             }
@@ -552,8 +586,8 @@ final class VtTerminalEmulator {
     }
 
     private static void trimHistory(Screen screen) {
-        if (screen.history.size() <= MAX_SCROLLBACK_LINES + SCROLLBACK_TRIM_BATCH) return;
-        screen.history.subList(0, SCROLLBACK_TRIM_BATCH).clear();
+        int overflow = screen.history.size() - MAX_SCROLLBACK_LINES;
+        if (overflow > 0) screen.history.subList(0, overflow).clear();
     }
 
     private void insertLines(int requested) {

@@ -130,6 +130,155 @@
                         android:visibility="gone" />
                 </FrameLayout>
 
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/startProjectButton"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="42dp"
+                    android:layout_marginTop="6dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="开始项目"
+                    android:textAllCaps="false"
+                    android:textColor="@color/aicli_text"
+                    android:textSize="14sp"
+                    android:visibility="gone"
+                    app:backgroundTint="@color/aicli_surface_high"
+                    app:cornerRadius="12dp"
+                    app:strokeColor="@color/aicli_outline_strong"
+                    app:strokeWidth="1dp" />
+
+                <LinearLayout
+                    android:id="@+id/terminalKeyBar"
+                    android:layout_width="match_parent"
+                    android:layout_height="42dp"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/wrapButton"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1.35"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="换行"
+                        android:textAllCaps="false"
+                        android:textColor="@color/aicli_text_secondary"
+                        android:textSize="12sp"
+                        app:backgroundTint="@color/aicli_surface_high"
+                        app:cornerRadius="11dp"
+                        app:strokeColor="@color/aicli_outline"
+                        app:strokeWidth="1dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/keyLeftButton"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:padding="0dp"
+                        android:text="←"
+                        android:textAllCaps="false"
+                        android:textColor="@color/aicli_text"
+                        android:textSize="19sp"
+                        app:backgroundTint="@color/aicli_surface_high"
+                        app:cornerRadius="11dp"
+                        app:strokeColor="@color/aicli_outline"
+                        app:strokeWidth="1dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/keyUpButton"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:padding="0dp"
+                        android:text="↑"
+                        android:textAllCaps="false"
+                        android:textColor="@color/aicli_text"
+                        android:textSize="19sp"
+                        app:backgroundTint="@color/aicli_surface_high"
+                        app:cornerRadius="11dp"
+                        app:strokeColor="@color/aicli_outline"
+                        app:strokeWidth="1dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/keyDownButton"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:padding="0dp"
+                        android:text="↓"
+                        android:textAllCaps="false"
+                        android:textColor="@color/aicli_text"
+                        android:textSize="19sp"
+                        app:backgroundTint="@color/aicli_surface_high"
+                        app:cornerRadius="11dp"
+                        app:strokeColor="@color/aicli_outline"
+                        app:strokeWidth="1dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/keyRightButton"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:padding="0dp"
+                        android:text="→"
+                        android:textAllCaps="false"
+                        android:textColor="@color/aicli_text"
+                        android:textSize="19sp"
+                        app:backgroundTint="@color/aicli_surface_high"
+                        app:cornerRadius="11dp"
+                        app:strokeColor="@color/aicli_outline"
+                        app:strokeWidth="1dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/keyEnterButton"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_weight="1.35"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingStart="4dp"
+                        android:paddingEnd="4dp"
+                        android:text="回车"
+                        android:textAllCaps="false"
+                        android:textColor="@color/aicli_text"
+                        android:textSize="12sp"
+                        app:backgroundTint="@color/aicli_surface_high"
+                        app:cornerRadius="11dp"
+                        app:strokeColor="@color/aicli_outline"
+                        app:strokeWidth="1dp" />
+                </LinearLayout>
+
                 <LinearLayout
                     android:id="@+id/inputBar"
                     android:layout_width="match_parent"
@@ -181,6 +330,7 @@
                 android:id="@+id/emptyState"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
+                android:background="@color/aicli_background"
                 android:gravity="center"
                 android:orientation="vertical"
                 android:padding="36dp">

@@ -47,6 +47,7 @@ public:
     bool WriteInput(const std::wstring& value);
     bool WriteInput(std::wstring_view project_id, const std::wstring& value);
     bool SubmitInput(std::wstring_view project_id, const std::wstring& value);
+    bool SendKey(std::wstring_view project_id, UINT virtual_key);
     void UpdateNativeScrollbarHover();
     void CollapseNativeScrollbar();
     const std::wstring& LastError() const;

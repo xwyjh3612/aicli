@@ -8,6 +8,10 @@ void EndProjectDragPreview(){
     g_project_drag_hotspot={};
 }
 bool BeginProjectDragPreview(HWND list,int row,POINT cursor_screen){
+    // Dispose the previous layered preview before calculating the new drag
+    // hotspot. EndProjectDragPreview also clears the hotspot, so calling it
+    // later would make the preview's top-left corner jump under the cursor.
+    EndProjectDragPreview();
     RECT item{};
     if(SendMessageW(list,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))==LB_ERR)return false;
     const int project_index=static_cast<int>(SendMessageW(list,LB_GETITEMDATA,row,0));
@@ -140,7 +144,6 @@ bool BeginProjectDragPreview(HWND list,int row,POINT cursor_screen){
     POINT source_origin{};
     BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
 
-    EndProjectDragPreview();
     g_project_drag_preview=CreateWindowExW(
         WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE,
         L"STATIC",L"",WS_POPUP,destination.x,destination.y,width,height,
@@ -171,7 +174,8 @@ void RepaintProjectDragList(HWND list){
 void ResetProjectDrag(HWND list){
     const bool repaint=g_project_dragging||g_project_drag_insert>=0;
     EndProjectDragPreview();
-    g_project_drag_source=-1;g_project_drag_insert=-1;g_project_dragging=false;
+    g_project_drag_source=-1;g_project_drag_insert=-1;g_project_drag_candidate=-1;
+    g_project_dragging=false;
     if(repaint&&list)InvalidateRect(list,nullptr,FALSE);
 }
 int ProjectDropSlot(HWND list,POINT point){
@@ -187,22 +191,37 @@ int ProjectDropSlot(HWND list,POINT point){
     return point.y<(item.top+item.bottom)/2?row:row+1;
 }
 void ReorderVisibleProjects(int source_row,int insert_slot){
-    if(g_group_name==kAllGroupsName)return;
     const int count=static_cast<int>(g_visible_project_indices.size());
     if(source_row<0||source_row>=count||insert_slot<0||insert_slot>count)return;
-    int destination=insert_slot;if(destination>source_row)--destination;
-    if(destination==source_row)return;
+    const int source_index=g_visible_project_indices[source_row];
+    if(source_index<0||source_index>=static_cast<int>(g_projects.size()))return;
+    const auto& moving_project=g_projects[source_index];
+    const std::wstring moving_group=moving_project.group.empty()?L"默认分组":moving_project.group;
 
-    std::vector<std::wstring> ordered_ids;ordered_ids.reserve(g_visible_project_indices.size());
-    for(const int index:g_visible_project_indices){if(index>=0&&index<(int)g_projects.size())ordered_ids.push_back(g_projects[index].id);}
-    if(source_row>=static_cast<int>(ordered_ids.size()))return;
-    const std::wstring moving_id=ordered_ids[source_row];
-    ordered_ids.erase(ordered_ids.begin()+source_row);
+    std::vector<std::wstring> ordered_ids;
+    ordered_ids.reserve(g_visible_project_indices.size());
+    int source_in_group=-1;
+    int destination=0;
+    for(int row=0;row<count;++row){
+        const int index=g_visible_project_indices[row];
+        if(index<0||index>=static_cast<int>(g_projects.size()))continue;
+        const auto& project=g_projects[index];
+        const std::wstring group=project.group.empty()?L"默认分组":project.group;
+        if(group!=moving_group)continue;
+        if(row<insert_slot)++destination;
+        if(index==source_index)source_in_group=static_cast<int>(ordered_ids.size());
+        ordered_ids.push_back(project.id);
+    }
+    if(source_in_group<0)return;
+    const std::wstring moving_id=ordered_ids[source_in_group];
+    ordered_ids.erase(ordered_ids.begin()+source_in_group);
+    if(destination>source_in_group)--destination;
     destination=std::clamp(destination,0,static_cast<int>(ordered_ids.size()));
+    if(destination==source_in_group)return;
     ordered_ids.insert(ordered_ids.begin()+destination,moving_id);
 
     std::wstring error;
-    if(!g_store.ReorderProjects(g_group_name,ordered_ids,&error)){
+    if(!g_store.ReorderProjects(moving_group,ordered_ids,&error)){
         MessageBoxW(g_hwnd,(L"无法保存项目顺序："+error).c_str(),L"项目排序",MB_OK|MB_ICONWARNING);
         return;
     }
@@ -215,19 +234,11 @@ LRESULT HandleProjectDragListMessage(HWND,LPARAM lparam){
     if(!info||info->hWnd!=g_list)return 0;
     switch(info->uNotification){
     case DL_BEGINDRAG:{
+        const int row=g_project_drag_candidate;
         ResetProjectDrag(g_list);
-        if(g_group_name==kAllGroupsName)return FALSE;
         if(!aicli::ui::GetStyledInputText(g_search).empty())return FALSE;
-        const int row=LBItemFromPt(g_list,info->ptCursor,FALSE);
         const int count=static_cast<int>(SendMessageW(g_list,LB_GETCOUNT,0,0));
         if(row<0||row>=count)return FALSE;
-        POINT client_point=info->ptCursor;
-        ScreenToClient(g_list,&client_point);
-        RECT item{};
-        if(SendMessageW(g_list,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))==LB_ERR)
-            return FALSE;
-        const RECT drag_handle{item.left+3,item.top+3,item.left+31,item.bottom-3};
-        if(!PtInRect(&drag_handle,client_point))return FALSE;
         BeginProjectDragPreview(g_list,row,info->ptCursor);
         g_project_dragging=true;g_project_drag_source=row;g_project_drag_insert=row;
         RepaintProjectDragList(g_list);return TRUE;

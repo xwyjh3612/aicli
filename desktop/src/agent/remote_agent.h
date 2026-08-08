@@ -51,6 +51,10 @@ public:
                                              const std::wstring& phone_id,
                                              const std::wstring& input,
                                              std::wstring* error)>;
+    using KeyCallback = std::function<bool(const std::wstring& project_id,
+                                           const std::wstring& phone_id,
+                                           const std::wstring& key,
+                                           std::wstring* error)>;
     using ControlCallback = std::function<bool(const std::wstring& project_id,
                                                const std::wstring& phone_id,
                                                const std::wstring& action,
@@ -75,6 +79,7 @@ public:
 
     void SetPairingCallback(PairingCallback callback);
     void SetInputCallback(InputCallback callback);
+    void SetKeyCallback(KeyCallback callback);
     void SetControlCallback(ControlCallback callback);
     void SetConversationsCallback(ConversationsCallback callback);
     void SetEventsCallback(EventsCallback callback);
@@ -160,6 +165,7 @@ private:
     PairingInfo last_pairing_;
     PairingCallback pairing_callback_;
     InputCallback input_callback_;
+    KeyCallback key_callback_;
     ControlCallback control_callback_;
     ConversationsCallback conversations_callback_;
     EventsCallback events_callback_;

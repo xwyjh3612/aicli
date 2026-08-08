@@ -62,13 +62,13 @@ constexpr UINT WM_TERMINAL_DIRTY = WM_APP + 25;
 // BN_CLICKED dispatch.  Posting this message lets WM_LBUTTONUP finish and
 // the owner-draw button paint its released state before the modal is shown.
 constexpr UINT WM_OPEN_SETTINGS = WM_APP + 26;
+constexpr UINT WM_REMOTE_KEY = WM_APP + 27;
 constexpr int ID_PROJECT_LIST = 1001;
 constexpr int ID_NEW_PROJECT = 1004;
 constexpr int ID_SETTINGS = 1005;
 constexpr int ID_GROUP_DEFAULT = 1008;
 constexpr int ID_GROUP_ADD = 1009;
 constexpr int ID_BIND_PHONE = 1010;
-constexpr int ID_CLI_TAB = 1011;
 constexpr int ID_START_PROJECT = 1013;
 constexpr int ID_EDIT_PROJECT = 1014;
 constexpr int ID_SEARCH_PROJECTS = 1015;
@@ -119,6 +119,16 @@ struct RemoteInputMessage {
     ~RemoteInputMessage(){if(completed)CloseHandle(completed);}
 };
 struct RemoteControlMessage { std::wstring project_id, phone_id, action; };
+struct RemoteKeyMessage {
+    std::wstring project_id, phone_id, key;
+    HANDLE completed{CreateEventW(nullptr,TRUE,FALSE,nullptr)};
+    std::atomic_bool cancelled{};
+    bool accepted{};
+    std::wstring error;
+    RemoteKeyMessage(std::wstring project,std::wstring phone,std::wstring value):
+        project_id(std::move(project)),phone_id(std::move(phone)),key(std::move(value)){}
+    ~RemoteKeyMessage(){if(completed)CloseHandle(completed);}
+};
 struct AgentStatusMessage { bool online{}; std::wstring text; };
 
 // WinRT component registration and activation factories live in
@@ -127,7 +137,7 @@ struct AgentStatusMessage { bool online{}; std::wstring text; };
 // Native TermControl/XAML Island session management lives in
 // terminal/xaml_island_adapter.*.
 
-HWND g_hwnd{}, g_list{}, g_status{}, g_new_project{}, g_settings{}, g_group{}, g_group_add{}, g_bind{}, g_devices{}, g_cli_tab{}, g_sidebar_title{}, g_search{}, g_terminal_title{};
+HWND g_hwnd{}, g_list{}, g_status{}, g_new_project{}, g_settings{}, g_group{}, g_group_add{}, g_bind{}, g_devices{}, g_sidebar_title{}, g_search{};
 HWND g_detail_title{}, g_detail_folder{}, g_detail_command{}, g_detail_state{}, g_start_project{}, g_edit_project{};
 WNDPROC g_button_proc{}; HWND g_hover_button{};
 HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_sidebar_title{}, g_font_project_list{}, g_font_modal_title{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
@@ -171,6 +181,7 @@ aicli::agent::TerminalStreamPublisher g_terminal_streams;
 bool g_terminal_snapshot_timer_active{};
 int g_project_drag_source=-1;
 int g_project_drag_insert=-1;
+int g_project_drag_candidate=-1;
 int g_project_hover_row=-1;
 bool g_project_dragging{};
 UINT g_project_drag_message{};
@@ -402,7 +413,7 @@ void Layout(){
     MoveMainChild(g_settings,settingsX,10,72,32);
 
     RECT search_rect{6,top+6,left-6,top+44};aicli::ui::LayoutStyledInput(g_search,search_rect,2,9);
-    MoveMainChild(g_sidebar_title,6,top+54,200,24);
+    MoveMainChild(g_sidebar_title,9,top+54,200,24);
     MoveMainChild(g_new_project,left-42,top+48,36,34);
     SetWindowPos(g_new_project,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
     const int footer_top=r.bottom-bottom;
@@ -410,9 +421,7 @@ void Layout(){
     const int git_left=g_footer_status.git_bounds().left;
     MoveMainChild(g_list,6,top+88,left-12,std::max(80,footer_top-(top+88)-6));
 
-    MoveMainChild(g_cli_tab,left+16,top+12,96,34);
-    MoveMainChild(g_terminal_title,left+132,top+19,r.right-left-150,22);
-    RECT terminal{left,top+52,r.right,r.bottom-bottom};
+    RECT terminal{left,top,r.right,r.bottom-bottom};
     const int selectedIndex=SelectedProjectIndex();
     const bool selectedRunning=selectedIndex>=0&&selectedIndex<(int)g_projects.size()&&
         g_island.HasSession(g_projects[selectedIndex].id);
@@ -422,7 +431,6 @@ void Layout(){
         // focus from the native terminal or trigger a TUI repaint when the
         // selected session has not actually changed.
         g_island.Activate(selectedProject.id,false);
-        SetText(g_terminal_title,selectedProject.name+L"   /   "+selectedProject.type);
         SetText(g_status,L"原生终端已连接    |    "+selectedProject.type);
     }
     const bool showingTerminal=selectedRunning;
@@ -487,7 +495,6 @@ void DeleteProject(){
 }
 #include "ui/internal/project_context_menu_section.inl"
 bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const std::wstring& title,const std::wstring& sessionAgent,const std::wstring& project_id){
-    SetText(g_terminal_title,title+L"   /   "+sessionAgent);
     g_terminal_streams.BeginSession(project_id);
     if(g_island.Start(
            project_id,cmd,cwd,title,g_hwnd,g_status,
@@ -512,7 +519,7 @@ void StartSession(bool restart=false){
     const int i=SelectedProjectIndex();if(i<0||i>=(int)g_projects.size())return;
     auto& project=g_projects[i];
     if(g_island.HasSession(project.id)){
-        if(!restart){g_island.Activate(project.id);SetText(g_terminal_title,project.name+L"   /   "+project.type);Layout();return;}
+        if(!restart){g_island.Activate(project.id);Layout();return;}
         g_island.Stop(project.id);
     }
     const std::wstring sessionAgent=project.type;
@@ -565,6 +572,25 @@ void ConfigureRemoteAgent(){
             return false;
         }
         if(!request->accepted&&error)*error=request->error.empty()?L"终端未接受输入":request->error;
+        return request->accepted;
+    });
+    g_remote_agent.SetKeyCallback([](const std::wstring& project,const std::wstring& phone,
+                                     const std::wstring& key,std::wstring* error){
+        auto request=std::make_shared<RemoteKeyMessage>(project,phone,key);
+        if(!request->completed){if(error)*error=L"无法创建按键同步事件";return false;}
+        auto* envelope=new(std::nothrow) std::shared_ptr<RemoteKeyMessage>(request);
+        if(!envelope||!g_hwnd||
+           !PostMessageW(g_hwnd,WM_REMOTE_KEY,0,reinterpret_cast<LPARAM>(envelope))){
+            delete envelope;
+            if(error)*error=L"桌面窗口未就绪";
+            return false;
+        }
+        if(WaitForSingleObject(request->completed,30000)!=WAIT_OBJECT_0){
+            request->cancelled=true;
+            if(error)*error=L"电脑端处理按键超时";
+            return false;
+        }
+        if(!request->accepted&&error)*error=request->error.empty()?L"终端未接受按键":request->error;
         return request->accepted;
     });
     g_remote_agent.SetControlCallback([](const std::wstring& project,const std::wstring& phone,const std::wstring& action,std::wstring* error){auto* message=new(std::nothrow) RemoteControlMessage{project,phone,action};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_REMOTE_CONTROL,0,reinterpret_cast<LPARAM>(message))){delete message;if(error)*error=L"桌面窗口未就绪";return false;}return true;});
@@ -666,9 +692,9 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     if(g_project_drag_message&&m==g_project_drag_message)return HandleProjectDragListMessage(h,l);
     switch(m){
     case WM_CREATE:{g_hwnd=h;g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY); g_font=CreateFontW(-15,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_medium=CreateFontW(-17,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_small=CreateFontW(-13,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_sidebar_title=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_project_list=CreateFontW(-14,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_modal_title=CreateFontW(-21,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_icon_font=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe MDL2 Assets");
-        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);g_cli_tab=CreateWindowW(L"BUTTON",L"AI 终端",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,302,72,100,30,h,(HMENU)(INT_PTR)ID_CLI_TAB,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings,g_cli_tab};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
+        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
         g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputFocusBorderOnly(g_search);
-        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);RefreshProjectList();
+        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
         g_detail_title=CreateWindowW(L"STATIC",L"选择一个项目",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         g_detail_folder=CreateWindowW(L"STATIC",L"文件夹: 未设置",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         g_detail_command=CreateWindowW(L"STATIC",L"启动命令: 未设置",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -676,7 +702,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         g_start_project=CreateWindowW(L"BUTTON",L"立即开始",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,0,0,0,0,h,(HMENU)(INT_PTR)ID_START_PROJECT,GetModuleHandleW(nullptr),nullptr);
         g_edit_project=CreateWindowW(L"BUTTON",L"编辑项目",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,0,0,0,0,h,(HMENU)(INT_PTR)ID_EDIT_PROJECT,GetModuleHandleW(nullptr),nullptr);
         HWND detailControls[]={g_detail_title,g_detail_folder,g_detail_command,g_detail_state,g_start_project,g_edit_project};for(HWND c:detailControls){SendMessageW(c,WM_SETFONT,(WPARAM)g_font,TRUE);if(c==g_start_project||c==g_edit_project)EnableButtonHover(c);}
-        g_terminal_title=CreateWindowW(L"STATIC",L"选择一个项目开始",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_terminal_title,WM_SETFONT,(WPARAM)g_font,TRUE);g_status=CreateWindowW(L"STATIC",L"就绪    |    选择项目后查看启动信息",WS_CHILD|WS_VISIBLE,0,0,0,0,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_status,WM_SETFONT,(WPARAM)g_font_small,TRUE);
+        g_status=CreateWindowW(L"STATIC",L"就绪    |    选择项目后查看启动信息",WS_CHILD|WS_VISIBLE,0,0,0,0,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_status,WM_SETFONT,(WPARAM)g_font_small,TRUE);
         g_island.Attach(h,RECT{250,60,500,400});g_island.SetTheme(g_light_theme);RefreshProjectDetails();ExtendCustomTitleBar(h);SetWindowPos(h,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);Layout();ConfigureRemoteAgent();UpdateHeaderTelemetry();SetTimer(h,1,2000,nullptr);PostMessageW(h,WM_RESTORE_LAST_SESSION,0,0);return 0;}
     case WM_ACTIVATE:
         // An owned modal surface becomes the thread's active window while it
@@ -769,7 +795,6 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         }
         if(id==ID_GROUP_DEFAULT){ShowGroupDropdown();return 0;}
         if(id==ID_GROUP_ADD){CreateGroupFromHeader();Layout();return 0;}
-        if(id==ID_CLI_TAB){RefreshProjectDetails();Layout();return 0;}
         return 0;
     }
     case WM_OPEN_SETTINGS:
@@ -825,6 +850,38 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
                 nlohmann::json{{"input",Utf8Text(text)},{"phoneId",Utf8Text(request->phone_id)}});
             complete(true);
         }else complete(false,L"终端输入失败");
+        return 0;
+    }
+    case WM_REMOTE_KEY:{
+        std::unique_ptr<std::shared_ptr<RemoteKeyMessage>> envelope(
+            reinterpret_cast<std::shared_ptr<RemoteKeyMessage>*>(l));
+        if(!envelope||!*envelope)return 0;
+        const auto request=*envelope;
+        auto complete=[&](bool accepted,const std::wstring& error={}){
+            request->accepted=accepted;
+            request->error=error;
+            SetEvent(request->completed);
+        };
+        if(request->cancelled){complete(false,L"按键请求已超时");return 0;}
+        if(!SelectProjectById(request->project_id)){
+            complete(false,L"项目或会话不存在");
+            return 0;
+        }
+        if(!g_island.HasSession(request->project_id))StartSession();
+        if(request->cancelled){complete(false,L"按键请求已超时");return 0;}
+        if(!g_island.HasSession(request->project_id)){
+            complete(false,L"终端会话未就绪");
+            return 0;
+        }
+        UINT virtualKey=0;
+        if(request->key==L"left")virtualKey=VK_LEFT;
+        else if(request->key==L"right")virtualKey=VK_RIGHT;
+        else if(request->key==L"up")virtualKey=VK_UP;
+        else if(request->key==L"down")virtualKey=VK_DOWN;
+        else if(request->key==L"enter")virtualKey=VK_RETURN;
+        if(!virtualKey){complete(false,L"不支持的终端按键");return 0;}
+        if(g_island.SendKey(request->project_id,virtualKey))complete(true);
+        else complete(false,L"终端按键发送失败");
         return 0;
     }
     case WM_REMOTE_CONTROL:{

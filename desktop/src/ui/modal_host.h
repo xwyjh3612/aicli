@@ -149,7 +149,7 @@ public:
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
             if (batch) {
                 batch = DeferWindowPos(
-                    batch, surface_, scrim_, bounds.left, bounds.top, width, height,
+                    batch, surface_, HWND_TOP, bounds.left, bounds.top, width, height,
                     SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
             }
             if (batch) EndDeferWindowPos(batch);
@@ -157,9 +157,15 @@ public:
         if (!IsWindowVisible(scrim_) || !IsWindowVisible(surface_)) {
             SetWindowPos(scrim_, HWND_TOP, bounds.left, bounds.top, width, height,
                          SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-            SetWindowPos(surface_, scrim_, bounds.left, bounds.top, width, height,
+            SetWindowPos(surface_, HWND_TOP, bounds.left, bounds.top, width, height,
                          SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
         }
+        // Owned popup z-order is not deterministic when a modal is opened
+        // from another modal. Explicitly raise the content surface after both
+        // windows are shown, otherwise the new scrim can sit above the form
+        // and make every child look disabled while still reporting enabled.
+        SetWindowPos(surface_, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         // Hidden child windows are not guaranteed to update their DWM
         // redirection surfaces.  Repaint again after both popups are visible,
         // but before returning to the message loop, so the compositor only

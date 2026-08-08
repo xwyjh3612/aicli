@@ -277,6 +277,7 @@ bool RemoteAgent::Online() const noexcept {
 
 void RemoteAgent::SetPairingCallback(PairingCallback callback) { std::scoped_lock l(mutex_); pairing_callback_=std::move(callback); }
 void RemoteAgent::SetInputCallback(InputCallback callback) { std::scoped_lock l(mutex_); input_callback_=std::move(callback); }
+void RemoteAgent::SetKeyCallback(KeyCallback callback) { std::scoped_lock l(mutex_); key_callback_=std::move(callback); }
 void RemoteAgent::SetControlCallback(ControlCallback callback) { std::scoped_lock l(mutex_); control_callback_=std::move(callback); }
 void RemoteAgent::SetConversationsCallback(ConversationsCallback callback) { std::scoped_lock l(mutex_); conversations_callback_=std::move(callback); }
 void RemoteAgent::SetEventsCallback(EventsCallback callback) { std::scoped_lock l(mutex_); events_callback_=std::move(callback); }
@@ -401,6 +402,18 @@ int RemoteAgent::OnHttp(struct mg_connection* connection) {
                 if(action=="chat")input.push_back(L'\r');
                 auto callback=input_callback_;
                 if(!callback||!callback(project_id,phone_id,input,&error)){WriteError(connection,409,error.empty()?L"输入未被接受":error);return 409;}
+                WriteJson(connection,200,"{\"ok\":true}");return 200;
+            }
+            if(action=="key"&&method=="POST"){
+                const auto key=Wide(value.value("key",std::string{}));
+                if(key!=L"left"&&key!=L"right"&&key!=L"up"&&key!=L"down"&&key!=L"enter"){
+                    WriteError(connection,400,L"不支持的终端按键");return 400;
+                }
+                if(!AcquireInputLease(project_id,phone_id,false,&error)){WriteError(connection,409,error);return 409;}
+                auto callback=key_callback_;
+                if(!callback||!callback(project_id,phone_id,key,&error)){
+                    WriteError(connection,409,error.empty()?L"终端按键未被接受":error);return 409;
+                }
                 WriteJson(connection,200,"{\"ok\":true}");return 200;
             }
             if(action=="control"){

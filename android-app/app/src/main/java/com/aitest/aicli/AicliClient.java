@@ -232,6 +232,17 @@ public final class AicliClient {
                 gson.toJson(new MessagePayload(message)), callback);
     }
 
+    public void sendKey(String conversationId, String key, ActionCallback callback) {
+        if (!"left".equals(key) && !"right".equals(key) &&
+                !"up".equals(key) && !"down".equals(key) &&
+                !"enter".equals(key)) {
+            callback.onError("不支持的终端按键");
+            return;
+        }
+        postJson("/api/conversations/" + safePath(conversationId) + "/key",
+                gson.toJson(new KeyPayload(key)), callback);
+    }
+
     public void listEvents(String conversationId, long afterEventId, HistoryCallback callback) {
         String path = "/api/conversations/" + safePath(conversationId)
                 + "/events?after=" + Math.max(0, afterEventId) + "&limit=1000";
@@ -626,5 +637,6 @@ public final class AicliClient {
 
     private static final class ActionPayload { final String action; ActionPayload(String action) { this.action = action; } }
     private static final class InputPayload { final String input; InputPayload(String input) { this.input = input; } }
+    private static final class KeyPayload { final String key; KeyPayload(String key) { this.key = key; } }
     private static final class MessagePayload { final String message; final String requestId = UUID.randomUUID().toString(); MessagePayload(String message) { this.message = message; } }
 }

@@ -31,6 +31,22 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
             if(!g_list_brush)DeleteObject(brush);
         }
         return 1;
+    }else if(m==WM_LBUTTONDOWN){
+        g_project_drag_candidate=-1;
+        if(aicli::ui::GetStyledInputText(g_search).empty()){
+            POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
+            const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
+            if(!HIWORD(hit)){
+                const int row=static_cast<int>(LOWORD(hit));
+                RECT item{};
+                if(SendMessageW(h,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))!=LB_ERR){
+                    const RECT handle{item.left+3,item.top+3,item.left+31,item.bottom-3};
+                    if(PtInRect(&handle,point))g_project_drag_candidate=row;
+                }
+            }
+        }
+    }else if(m==WM_LBUTTONUP){
+        if(!g_project_dragging)g_project_drag_candidate=-1;
     }else if(m==WM_MOUSEMOVE){
         const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
         const int next=HIWORD(hit)?-1:static_cast<int>(LOWORD(hit));
@@ -119,7 +135,7 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         if(primary){fill=disabled?g_theme.surface:(down?g_theme.accent_strong:(hover?g_theme.accent:g_theme.accent_strong));stroke=hover?g_theme.accent:g_theme.accent_strong;}
         else{fill=disabled?g_theme.surface:(down?g_theme.pressed:(hover?g_theme.hover:g_theme.field));stroke=hover?g_theme.accent:g_theme.border;}
     }else{
-        if(item->CtlID==ID_CLI_TAB||item->CtlID==ID_D_CANCEL||item->CtlID==ID_EDIT_PROJECT)fill=elevated;
+        if(item->CtlID==ID_D_CANCEL||item->CtlID==ID_EDIT_PROJECT)fill=elevated;
         if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)fill=accent2;
         if(disabled)fill=g_light_theme?RGB(235,238,243):RGB(33,37,45);
         else if(down){

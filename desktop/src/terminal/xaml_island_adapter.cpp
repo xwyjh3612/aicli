@@ -491,6 +491,32 @@ public:
             return false;
         }
     }
+    bool SendKey(std::wstring_view project_id, UINT virtual_key) {
+        auto* session = FindSession(project_id);
+        if (!session || !session->control) return false;
+        if (virtual_key != VK_LEFT && virtual_key != VK_RIGHT &&
+            virtual_key != VK_UP && virtual_key != VK_DOWN &&
+            virtual_key != VK_RETURN) return false;
+        try {
+            const auto scan_code = static_cast<uint16_t>(
+                MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC));
+            const bool enhanced = virtual_key == VK_LEFT || virtual_key == VK_RIGHT ||
+                                  virtual_key == VK_UP || virtual_key == VK_DOWN;
+            const winrt::Microsoft::Terminal::Core::ControlKeyStates modifiers{
+                enhanced ? ENHANCED_KEY : 0u};
+            bool handled = session->control.RawWriteKeyEvent(
+                static_cast<uint16_t>(virtual_key), scan_code, modifiers, true);
+            if (!handled && virtual_key == VK_RETURN) {
+                handled = session->control.RawWriteChar(
+                    L'\r', scan_code, modifiers);
+            }
+            (void)session->control.RawWriteKeyEvent(
+                static_cast<uint16_t>(virtual_key), scan_code, modifiers, false);
+            return handled;
+        } catch (...) {
+            return false;
+        }
+    }
     void OnIslandDestroyed(HWND window) noexcept {
         if (hwnd_ == window) hwnd_ = nullptr;
     }
@@ -807,6 +833,9 @@ bool XamlIslandAdapter::WriteInput(std::wstring_view project_id,
 bool XamlIslandAdapter::SubmitInput(std::wstring_view project_id,
                                     const std::wstring& value) {
     return impl_ && impl_->SubmitInput(project_id, value);
+}
+bool XamlIslandAdapter::SendKey(std::wstring_view project_id, UINT virtual_key) {
+    return impl_ && impl_->SendKey(project_id, virtual_key);
 }
 
 void XamlIslandAdapter::UpdateNativeScrollbarHover() {

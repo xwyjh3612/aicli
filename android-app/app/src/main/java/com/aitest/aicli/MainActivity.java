@@ -20,6 +20,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.textfield.MaterialAutoCompleteTextView;
+import com.google.android.material.button.MaterialButton;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -41,6 +42,7 @@ public final class MainActivity extends AppCompatActivity {
     private ConversationAdapter conversationAdapter;
     private String selectedGroup = ALL_GROUPS;
     private String selectedConversationId;
+    private AicliClient.Conversation selectedConversation;
     private long lastEventId;
     private String configuredConnectionKey = "";
     private boolean rebuildingGroups;
@@ -57,7 +59,10 @@ public final class MainActivity extends AppCompatActivity {
     private TextView drawerGroupLabel;
     private TerminalView terminalView;
     private TerminalTextRenderer terminalRenderer;
+    private View terminalKeyBar;
     private View inputBar;
+    private MaterialButton startProjectButton;
+    private MaterialButton wrapButton;
     private EditText messageInput;
     private RecyclerView conversationList;
     private boolean terminalReconnectScheduled;
@@ -94,12 +99,18 @@ public final class MainActivity extends AppCompatActivity {
         drawerGroupLabel = findViewById(R.id.drawerGroupLabel);
         terminalView = findViewById(R.id.terminalView);
         terminalRenderer = new TerminalTextRenderer(terminalView);
+        terminalKeyBar = findViewById(R.id.terminalKeyBar);
         inputBar = findViewById(R.id.inputBar);
+        startProjectButton = findViewById(R.id.startProjectButton);
+        wrapButton = findViewById(R.id.wrapButton);
         messageInput = findViewById(R.id.messageInput);
         conversationList = findViewById(R.id.conversationList);
 
         selectedGroup = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
                 .getString("selected_group", ALL_GROUPS);
+        terminalView.setSoftWrapEnabled(getSharedPreferences(APP_PREFS, MODE_PRIVATE)
+                .getBoolean("terminal_soft_wrap", true));
+        updateWrapButton();
         conversationList.setLayoutManager(new LinearLayoutManager(this));
         conversationAdapter = new ConversationAdapter(this::selectConversation);
         conversationList.setAdapter(conversationAdapter);
@@ -119,6 +130,13 @@ public final class MainActivity extends AppCompatActivity {
         findViewById(R.id.closeDrawerButton).setOnClickListener(view ->
                 drawerLayout.closeDrawer(GravityCompat.START));
         findViewById(R.id.sendButton).setOnClickListener(view -> sendInput());
+        startProjectButton.setOnClickListener(view -> startSelectedProject());
+        wrapButton.setOnClickListener(view -> toggleSoftWrap());
+        findViewById(R.id.keyLeftButton).setOnClickListener(view -> sendTerminalKey("left"));
+        findViewById(R.id.keyUpButton).setOnClickListener(view -> sendTerminalKey("up"));
+        findViewById(R.id.keyDownButton).setOnClickListener(view -> sendTerminalKey("down"));
+        findViewById(R.id.keyRightButton).setOnClickListener(view -> sendTerminalKey("right"));
+        findViewById(R.id.keyEnterButton).setOnClickListener(view -> sendTerminalKey("enter"));
 
         messageInput.setOnEditorActionListener((view, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEND ||
@@ -258,6 +276,7 @@ public final class MainActivity extends AppCompatActivity {
                 : selectedGroup + " · " + filtered.size() + " 个项目");
         if (filtered.isEmpty()) {
             selectedConversationId = null;
+            selectedConversation = null;
             conversationAdapter.select(null);
             hideConversation();
             showEmptyState("这个分组还没有项目", "请先在电脑端创建项目，手机会自动同步最新分组和会话。");
@@ -277,7 +296,9 @@ public final class MainActivity extends AppCompatActivity {
         updateProjectHeader(selected);
         if (!selected.id.equals(selectedConversationId)) selectConversation(selected);
         else {
+            selectedConversation = selected;
             conversationAdapter.select(selected.id);
+            updateProjectControls(selected);
             hideEmptyState();
         }
     }
@@ -286,13 +307,14 @@ public final class MainActivity extends AppCompatActivity {
         if (client == null) return;
         client.closeEvents();
         selectedConversationId = conversation.id;
+        selectedConversation = conversation;
         updateProjectHeader(conversation);
         conversationAdapter.select(conversation.id);
         drawerLayout.closeDrawer(GravityCompat.START);
         lastEventId = 0L;
         terminalRenderer.selectSession(conversation.id);
         terminalView.setVisibility(View.VISIBLE);
-        inputBar.setVisibility(View.VISIBLE);
+        updateProjectControls(conversation);
         hideEmptyState();
         client.listEvents(conversation.id, 0, new AicliClient.HistoryCallback() {
             @Override public void onSuccess(List<String> events) {
@@ -324,6 +346,55 @@ public final class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> appendOutput("[发送失败] " + message));
             }
         });
+    }
+
+    private void sendTerminalKey(String key) {
+        if (selectedConversationId == null || client == null) return;
+        client.sendKey(selectedConversationId, key, new AicliClient.ActionCallback() {
+            @Override public void onSuccess() { }
+            @Override public void onError(String message) {
+                runOnUiThread(() -> Toast.makeText(
+                        MainActivity.this, "按键发送失败：" + message, Toast.LENGTH_SHORT).show());
+            }
+        });
+    }
+
+    private void startSelectedProject() {
+        if (selectedConversationId == null || client == null) return;
+        startProjectButton.setEnabled(false);
+        startProjectButton.setText("正在启动…");
+        client.control(selectedConversationId, "start", new AicliClient.ActionCallback() {
+            @Override public void onSuccess() {
+                runOnUiThread(() -> terminalView.postDelayed(() -> {
+                    if (selectedConversationId != null) loadConversations();
+                }, 350L));
+            }
+
+            @Override public void onError(String message) {
+                runOnUiThread(() -> {
+                    startProjectButton.setEnabled(true);
+                    updateProjectControls(selectedConversation);
+                    Toast.makeText(MainActivity.this,
+                            "项目启动失败：" + message, Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+    }
+
+    private void toggleSoftWrap() {
+        boolean enabled = !terminalView.softWrapEnabled();
+        terminalView.setSoftWrapEnabled(enabled);
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit()
+                .putBoolean("terminal_soft_wrap", enabled).apply();
+        updateWrapButton();
+    }
+
+    private void updateWrapButton() {
+        if (wrapButton == null) return;
+        boolean enabled = terminalView != null && terminalView.softWrapEnabled();
+        wrapButton.setText(enabled ? "换行" : "原始");
+        wrapButton.setAlpha(enabled ? 1f : 0.72f);
+        wrapButton.setContentDescription(enabled ? "自动换行已开启" : "原始终端布局已开启");
     }
 
     private void handleEvent(String eventJson) {
@@ -497,6 +568,20 @@ public final class MainActivity extends AppCompatActivity {
         currentProjectMeta.setText(group + " · " + (type.isEmpty() ? "未设置类型" : type));
     }
 
+    private void updateProjectControls(AicliClient.Conversation conversation) {
+        boolean running = conversation != null &&
+                "running".equalsIgnoreCase(conversation.status);
+        terminalKeyBar.setVisibility(running ? View.VISIBLE : View.GONE);
+        inputBar.setVisibility(running ? View.VISIBLE : View.GONE);
+        startProjectButton.setVisibility(conversation != null && !running
+                ? View.VISIBLE : View.GONE);
+        startProjectButton.setEnabled(true);
+        if (!running && conversation != null) {
+            boolean resumable = "paused".equalsIgnoreCase(conversation.status);
+            startProjectButton.setText(resumable ? "继续项目" : "开始项目");
+        }
+    }
+
     private void showEmptyState(String title, String message) {
         emptyStateTitle.setText(title);
         emptyStateMessage.setText(message);
@@ -509,9 +594,12 @@ public final class MainActivity extends AppCompatActivity {
 
     private void hideConversation() {
         if (client != null) client.closeEvents();
+        selectedConversation = null;
         updateProjectHeader(null);
         terminalRenderer.detach();
         terminalView.setVisibility(View.GONE);
+        terminalKeyBar.setVisibility(View.GONE);
+        startProjectButton.setVisibility(View.GONE);
         inputBar.setVisibility(View.GONE);
     }
 
