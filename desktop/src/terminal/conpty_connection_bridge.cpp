@@ -421,6 +421,7 @@ void ConPtyConnectionBridge::Resize(uint32_t rows, uint32_t columns) {
     std::scoped_lock lock(lifecycle_mutex_);
     rows_ = rows;
     columns_ = columns;
+    ++resize_generation_;
     if (!pseudo_console_) return;
     const COORD dimensions{
         static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
@@ -430,6 +431,53 @@ void ConPtyConnectionBridge::Resize(uint32_t rows, uint32_t columns) {
 
 void ConPtyConnectionBridge::SetLightTheme(bool light_theme) noexcept {
     light_theme_.store(light_theme, std::memory_order_relaxed);
+}
+
+void ConPtyConnectionBridge::RefreshViewport() noexcept {
+    // A palette update does not re-resolve RGB attributes already stored in
+    // TermControl cells. A one-column ConPTY transition makes Codex redraw
+    // its current TUI while keeping the same process and terminal control.
+    uint32_t rows{};
+    uint32_t columns{};
+    uint64_t generation{};
+    {
+        std::scoped_lock lock(lifecycle_mutex_);
+        if (!pseudo_console_ || closing_) return;
+        rows = rows_;
+        columns = columns_;
+        generation = resize_generation_.load(std::memory_order_relaxed);
+        const COORD probe{
+            static_cast<SHORT>(std::clamp<uint32_t>(columns > 20 ? columns - 1 : columns + 1,
+                                                     20, SHRT_MAX)),
+            static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
+        (void)ConptyResizePseudoConsole(pseudo_console_, probe);
+    }
+
+    try {
+        auto strong = get_strong();
+        std::thread([strong = std::move(strong), rows, columns, generation] {
+            Sleep(75);
+            std::scoped_lock lock(strong->lifecycle_mutex_);
+            if (!strong->pseudo_console_ || strong->closing_ ||
+                strong->resize_generation_.load(std::memory_order_relaxed) != generation) {
+                return;
+            }
+            const COORD original{
+                static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
+                static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
+            (void)ConptyResizePseudoConsole(strong->pseudo_console_, original);
+        }).detach();
+    } catch (...) {
+        // If a worker cannot be created, restore synchronously while still
+        // holding the lifecycle lock so the PTY is never left at probe size.
+        std::scoped_lock lock(lifecycle_mutex_);
+        if (pseudo_console_ && !closing_) {
+            const COORD original{
+                static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
+                static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
+            (void)ConptyResizePseudoConsole(pseudo_console_, original);
+        }
+    }
 }
 
 void ConPtyConnectionBridge::ReadLoop() {

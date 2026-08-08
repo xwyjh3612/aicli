@@ -641,7 +641,7 @@ public:
                     : winrt::Windows::UI::Color{0xff, 0x0c, 0x0c, 0x0c};
                 grid_.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(background));
             }
-            for (auto& [_, session] : sessions_) {
+            for (auto& [project_id, session] : sessions_) {
                 if (!session->control || !session->control_settings) continue;
                 if (session->conpty_connection)
                     session->conpty_connection->SetLightTheme(light);
@@ -650,6 +650,9 @@ public:
                 session->control.UpdateControlSettings(
                     session->control_settings, session->unfocused_settings);
                 session->control.UpdateLayout();
+                if (session->conpty_connection && active_project_id_ == project_id && visible_) {
+                    session->conpty_connection->RefreshViewport();
+                }
             }
             if (grid_) grid_.UpdateLayout();
         } catch (...) {

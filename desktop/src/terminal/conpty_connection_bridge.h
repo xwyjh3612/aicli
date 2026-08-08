@@ -30,6 +30,7 @@ struct ConPtyConnectionBridge :
     void WriteInput(winrt::array_view<const char16_t> data);
     void Resize(uint32_t rows, uint32_t columns);
     void SetLightTheme(bool light_theme) noexcept;
+    void RefreshViewport() noexcept;
     void Close() noexcept;
 
     winrt::event_token TerminalOutput(
@@ -73,6 +74,7 @@ private:
     std::mutex input_mutex_;
     std::atomic<bool> closing_{false};
     std::atomic<bool> light_theme_{false};
+    std::atomic<uint64_t> resize_generation_{0};
     std::wstring display_pending_;
     std::atomic<winrt::Microsoft::Terminal::TerminalConnection::ConnectionState> state_{
         winrt::Microsoft::Terminal::TerminalConnection::ConnectionState::NotConnected};
