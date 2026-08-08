@@ -12,6 +12,7 @@ constexpr wchar_t kStyledInputProperty[] = L"Aicli.StyledInput";
 
 struct StyledInputState {
     std::wstring placeholder;
+    COLORREF placeholder_color{RGB(126, 136, 151)};
 };
 
 StyledInputState* State(HWND control) {
@@ -37,6 +38,21 @@ void CenterText(HWND control) {
     SendMessageW(control, EM_SETRECTNP, 0, reinterpret_cast<LPARAM>(&format));
 }
 
+// The underline/outline around an edit is painted by its parent.  Invalidating
+// the whole parent on every focus transition made a click look like a full
+// screen flash, especially when the parent is a modal host covering the
+// workspace.  Restrict the repaint to the small frame around this control.
+void InvalidateParentFrame(HWND control) {
+    HWND parent = GetParent(control);
+    if (!parent) return;
+    RECT frame{};
+    GetWindowRect(control, &frame);
+    MapWindowPoints(HWND_DESKTOP, parent,
+                    reinterpret_cast<POINT*>(&frame), 2);
+    InflateRect(&frame, 3, 3);
+    InvalidateRect(parent, &frame, FALSE);
+}
+
 LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPARAM lparam,
                                  UINT_PTR, DWORD_PTR) {
     switch (message) {
@@ -47,14 +63,17 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
         {
             const auto result = DefSubclassProc(control, message, wparam, lparam);
             CenterText(control);
-            InvalidateRect(control, nullptr, TRUE);
+            InvalidateRect(control, nullptr, FALSE);
             return result;
         }
     case WM_SETFOCUS:
     case WM_KILLFOCUS:
         CenterText(control);
-        InvalidateRect(control, nullptr, TRUE);
-        InvalidateRect(GetParent(control), nullptr, FALSE);
+        // A multiline EDIT only repaints its formatting rectangle when the
+        // background is not erased.  Erase this control (not its full modal
+        // parent) so the top and bottom bands use the focused field colour.
+        RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE);
+        InvalidateParentFrame(control);
         break;
     case WM_KEYDOWN:
     case WM_CHAR:
@@ -71,7 +90,7 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
                 rect.left += 10;
                 rect.right -= 10;
                 SetBkMode(dc, TRANSPARENT);
-                SetTextColor(dc, RGB(126, 136, 151));
+                SetTextColor(dc, state->placeholder_color);
                 const auto font = reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0));
                 const auto old = font ? SelectObject(dc, font) : nullptr;
                 DrawTextW(dc, state->placeholder.c_str(), -1, &rect,
@@ -118,7 +137,7 @@ HWND CreateStyledInput(HWND parent, int control_id, HFONT font,
 void SetStyledInputPlaceholder(HWND control, const std::wstring& placeholder) {
     if (auto* state = State(control)) {
         state->placeholder = placeholder;
-        InvalidateRect(control, nullptr, TRUE);
+        InvalidateRect(control, nullptr, FALSE);
     }
 }
 
@@ -134,16 +153,36 @@ std::wstring GetStyledInputText(HWND control) {
 void SetStyledInputText(HWND control, const std::wstring& value) {
     SetWindowTextW(control, value.c_str());
     CenterText(control);
-    InvalidateRect(control, nullptr, TRUE);
+    InvalidateRect(control, nullptr, FALSE);
+}
+
+void SetStyledInputTheme(HWND control, const ThemePalette& palette) {
+    if (auto* state = State(control)) {
+        state->placeholder_color = palette.muted;
+        RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE);
+    }
 }
 
 void LayoutStyledInput(HWND control, const RECT& outer, int inset, int radius) {
     if (!control) return;
     const int width = std::max(1L, outer.right - outer.left - inset * 2);
     const int height = std::max(1L, outer.bottom - outer.top - inset * 2);
-    MoveWindow(control, outer.left + inset, outer.top + inset, width, height, TRUE);
+    RECT current{};
+    GetWindowRect(control, &current);
+    POINT points[2] = {{current.left, current.top}, {current.right, current.bottom}};
+    HWND parent = GetParent(control);
+    if (parent) MapWindowPoints(HWND_DESKTOP, parent, points, 2);
+    const RECT desired{outer.left + inset, outer.top + inset,
+                       outer.left + inset + width, outer.top + inset + height};
+    const RECT actual{points[0].x, points[0].y, points[1].x, points[1].y};
+    const bool geometry_changed = !EqualRect(&actual, &desired);
+    if (!geometry_changed) return;
+    SetWindowPos(control, nullptr, desired.left, desired.top, width, height,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+                     SWP_NOSENDCHANGING);
     SetWindowRgn(control, CreateRoundRectRgn(0, 0, width + 1, height + 1, radius, radius), TRUE);
     CenterText(control);
+    RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE);
 }
 
 bool IsStyledInput(HWND control) {

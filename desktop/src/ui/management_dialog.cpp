@@ -1,6 +1,9 @@
 #include "ui/management_dialog.h"
 
 #include "ui/styled_input.h"
+#include "ui/theme.h"
+#include "ui/layout_metrics.h"
+#include "ui/modal_host.h"
 
 #include <windows.h>
 #include <windowsx.h>
@@ -70,14 +73,20 @@ enum class SettingsPage {
     Groups,
 };
 
-constexpr COLORREF kBg = RGB(12, 14, 18);
-constexpr COLORREF kPanel = RGB(28, 31, 37);
-constexpr COLORREF kPanelEdge = RGB(60, 66, 76);
-constexpr COLORREF kText = RGB(239, 242, 247);
-constexpr COLORREF kMuted = RGB(143, 153, 168);
-constexpr COLORREF kField = RGB(37, 40, 47);
-constexpr COLORREF kFieldFocus = RGB(43, 48, 57);
-constexpr COLORREF kAccent = RGB(67, 139, 224);
+COLORREF BlendBackdrop(COLORREF base, COLORREF overlay, BYTE alpha) {
+    const auto blend = [alpha](BYTE from, BYTE to) -> BYTE {
+        return static_cast<BYTE>((static_cast<unsigned>(from) * (255u - alpha) +
+                                  static_cast<unsigned>(to) * alpha) / 255u);
+    };
+    return RGB(blend(GetRValue(base), GetRValue(overlay)),
+               blend(GetGValue(base), GetGValue(overlay)),
+               blend(GetBValue(base), GetBValue(overlay)));
+}
+
+const ThemePalette& DarkPalette() {
+    static const ThemePalette palette = MakeThemePalette(ThemeMode::Dark);
+    return palette;
+}
 
 struct State {
     HWND window{};
@@ -88,8 +97,6 @@ struct State {
     AgentRestartCallback restart_agent;
     ThemeChangedCallback theme_changed;
     ManagementDialogResult result;
-    HBITMAP snapshot{};
-    SIZE snapshot_size{};
     RECT panel{};
     RECT content_rect{};
     HFONT font{};
@@ -117,22 +124,27 @@ struct State {
     HWND settings_connection{};
     HWND settings_project_types{};
     HWND settings_groups{};
+    HWND title_close{};
     HWND hovered_control{};
     std::vector<ProjectGroup> groups;
     std::vector<ProjectType> types_data;
     std::vector<DeviceRecord> devices;
+    ThemePalette palette;
     bool light_theme{};
     SettingsPage settings_page{SettingsPage::Appearance};
     int content_scroll{};
     int content_extent{};
-    COLORREF background_color{kBg};
-    COLORREF panel_color{kPanel};
-    COLORREF panel_edge{kPanelEdge};
-    COLORREF text_color{kText};
-    COLORREF muted_color{kMuted};
-    COLORREF field_color{kField};
-    COLORREF field_focus_color{kFieldFocus};
-    COLORREF accent_color{kAccent};
+    COLORREF background_color{};
+    COLORREF panel_color{};
+    COLORREF panel_edge{};
+    COLORREF text_color{};
+    COLORREF muted_color{};
+    COLORREF field_color{};
+    COLORREF field_focus_color{};
+    COLORREF accent_color{};
+    HBRUSH field_brush{};
+    HBRUSH field_focus_brush{};
+    HBRUSH list_brush{};
 };
 
 struct GroupNameState {
@@ -142,8 +154,6 @@ struct GroupNameState {
     HWND save{};
     HWND cancel{};
     HWND hovered{};
-    HBITMAP snapshot{};
-    SIZE snapshot_size{};
     RECT panel{};
     HFONT font{};
     HFONT title_font{};
@@ -155,6 +165,7 @@ struct GroupNameState {
     std::wstring initial_name;
     std::wstring value;
     bool accepted{};
+    ThemePalette palette;
     bool light_theme{};
     COLORREF background{};
     COLORREF panel_color{};
@@ -174,8 +185,6 @@ struct ProjectTypeEditorState {
     HWND save{};
     HWND cancel{};
     HWND hovered{};
-    HBITMAP snapshot{};
-    SIZE snapshot_size{};
     RECT panel{};
     HFONT font{};
     HFONT title_font{};
@@ -189,6 +198,7 @@ struct ProjectTypeEditorState {
     std::wstring name;
     std::wstring command;
     bool accepted{};
+    ThemePalette palette;
     bool light_theme{};
     COLORREF background{};
     COLORREF panel_color{};
@@ -258,25 +268,30 @@ LRESULT CALLBACK ManagementButtonProc(HWND control, UINT message, WPARAM wparam,
                                       LPARAM lparam, UINT_PTR, DWORD_PTR) {
     State* state = FindState(control);
     switch (message) {
+    case WM_ERASEBKGND:
+        // The close glyph is painted by WM_DRAWITEM.  Prevent the stock
+        // button class from erasing its rounded region with a white brush.
+        if (state && state->title_close == control) return 1;
+        break;
     case WM_MOUSEMOVE:
         if (state && state->hovered_control != control) {
             HWND previous = state->hovered_control;
             state->hovered_control = control;
-            if (previous) InvalidateRect(previous, nullptr, TRUE);
-            InvalidateRect(control, nullptr, TRUE);
+            if (previous) InvalidateRect(previous, nullptr, FALSE);
+            InvalidateRect(control, nullptr, FALSE);
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, control, 0};
             TrackMouseEvent(&tracking);
         }
         break;
     case WM_MOUSELEAVE:
         if (state && state->hovered_control == control) state->hovered_control = nullptr;
-        InvalidateRect(control, nullptr, TRUE);
+        InvalidateRect(control, nullptr, FALSE);
         break;
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP:
     case WM_SETFOCUS:
     case WM_KILLFOCUS:
-        InvalidateRect(control, nullptr, TRUE);
+        InvalidateRect(control, nullptr, FALSE);
         break;
     case WM_NCDESTROY:
         if (state && state->hovered_control == control) state->hovered_control = nullptr;
@@ -287,73 +302,26 @@ LRESULT CALLBACK ManagementButtonProc(HWND control, UINT message, WPARAM wparam,
 }
 
 void ApplyTheme(State& state, bool light) {
-    state.light_theme = light;
-    state.background_color = light ? RGB(246, 248, 251) : kBg;
-    state.panel_color = light ? RGB(255, 255, 255) : kPanel;
-    state.panel_edge = light ? RGB(215, 221, 230) : kPanelEdge;
-    state.text_color = light ? RGB(28, 34, 43) : kText;
-    state.muted_color = light ? RGB(101, 111, 125) : kMuted;
-    state.field_color = light ? RGB(239, 243, 248) : kField;
-    state.field_focus_color = light ? RGB(231, 238, 249) : kFieldFocus;
-    state.accent_color = light ? RGB(46, 118, 211) : kAccent;
-}
-
-void DeleteSnapshot(State& state) {
-    if (state.snapshot) DeleteObject(state.snapshot);
-    state.snapshot = nullptr;
-    state.snapshot_size = {};
-}
-
-void CaptureSnapshot(State& state) {
-    RECT client{};
-    if (!GetClientRect(state.owner, &client)) return;
-    const int width = client.right - client.left;
-    const int height = client.bottom - client.top;
-    if (width <= 0 || height <= 0) return;
-    HDC screen = GetDC(nullptr);
-    HDC memory = screen ? CreateCompatibleDC(screen) : nullptr;
-    HBITMAP bitmap = (screen && memory) ? CreateCompatibleBitmap(screen, width, height) : nullptr;
-    if (!screen || !memory || !bitmap) {
-        if (bitmap) DeleteObject(bitmap);
-        if (memory) DeleteDC(memory);
-        if (screen) ReleaseDC(nullptr, screen);
-        return;
+    state.palette = MakeThemePalette(light);
+    state.light_theme = state.palette.light();
+    state.background_color = state.palette.window;
+    state.panel_color = state.palette.panel;
+    state.panel_edge = state.palette.border;
+    state.text_color = state.palette.text;
+    state.muted_color = state.palette.muted;
+    state.field_color = state.palette.field;
+    state.field_focus_color = state.palette.field_focus;
+    state.accent_color = state.palette.accent;
+    if (state.field_brush) DeleteObject(state.field_brush);
+    if (state.field_focus_brush) DeleteObject(state.field_focus_brush);
+    if (state.list_brush) DeleteObject(state.list_brush);
+    state.field_brush = CreateSolidBrush(state.field_color);
+    state.field_focus_brush = CreateSolidBrush(state.field_focus_color);
+    state.list_brush = CreateSolidBrush(state.palette.list_surface);
+    for (HWND field : {state.name, state.command, state.listen, state.port,
+                       state.local, state.remote}) {
+        if (field) SetStyledInputTheme(field, state.palette);
     }
-    HBITMAP old = static_cast<HBITMAP>(SelectObject(memory, bitmap));
-    POINT origin{0, 0};
-    ClientToScreen(state.owner, &origin);
-    BitBlt(memory, 0, 0, width, height, screen, origin.x, origin.y, SRCCOPY);
-    SelectObject(memory, old);
-    DeleteDC(memory);
-    ReleaseDC(nullptr, screen);
-    state.snapshot = bitmap;
-    state.snapshot_size = {width, height};
-}
-
-void CaptureGroupNameSnapshot(GroupNameState& state) {
-    RECT client{};
-    if (!GetClientRect(state.owner, &client)) return;
-    const int width = client.right - client.left;
-    const int height = client.bottom - client.top;
-    if (width <= 0 || height <= 0) return;
-    HDC screen = GetDC(nullptr);
-    HDC memory = screen ? CreateCompatibleDC(screen) : nullptr;
-    HBITMAP bitmap = (screen && memory) ? CreateCompatibleBitmap(screen, width, height) : nullptr;
-    if (!screen || !memory || !bitmap) {
-        if (bitmap) DeleteObject(bitmap);
-        if (memory) DeleteDC(memory);
-        if (screen) ReleaseDC(nullptr, screen);
-        return;
-    }
-    HBITMAP old = static_cast<HBITMAP>(SelectObject(memory, bitmap));
-    POINT origin{0, 0};
-    ClientToScreen(state.owner, &origin);
-    BitBlt(memory, 0, 0, width, height, screen, origin.x, origin.y, SRCCOPY);
-    SelectObject(memory, old);
-    DeleteDC(memory);
-    ReleaseDC(nullptr, screen);
-    state.snapshot = bitmap;
-    state.snapshot_size = {width, height};
 }
 
 constexpr UINT_PTR kGroupNameButtonSubclassId = 0xA1C15;
@@ -367,21 +335,21 @@ LRESULT CALLBACK GroupNameButtonProc(HWND control, UINT message, WPARAM wparam,
         if (state && state->hovered != control) {
             HWND previous = state->hovered;
             state->hovered = control;
-            if (previous) InvalidateRect(previous, nullptr, TRUE);
-            InvalidateRect(control, nullptr, TRUE);
+            if (previous) InvalidateRect(previous, nullptr, FALSE);
+            InvalidateRect(control, nullptr, FALSE);
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, control, 0};
             TrackMouseEvent(&tracking);
         }
         break;
     case WM_MOUSELEAVE:
         if (state && state->hovered == control) state->hovered = nullptr;
-        InvalidateRect(control, nullptr, TRUE);
+        InvalidateRect(control, nullptr, FALSE);
         break;
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP:
     case WM_SETFOCUS:
     case WM_KILLFOCUS:
-        InvalidateRect(control, nullptr, TRUE);
+        InvalidateRect(control, nullptr, FALSE);
         break;
     case WM_NCDESTROY:
         RemoveWindowSubclass(control, GroupNameButtonProc, kGroupNameButtonSubclassId);
@@ -426,37 +394,16 @@ void LayoutGroupNameDialog(GroupNameState& state) {
     MoveWindow(state.save, left + width - 138, top + 208, 108, 38, TRUE);
     SetWindowRgn(state.cancel, CreateRoundRectRgn(0, 0, 101, 39, 9, 9), TRUE);
     SetWindowRgn(state.save, CreateRoundRectRgn(0, 0, 109, 39, 9, 9), TRUE);
+    SetModalSurfaceRegion(state.window, state.panel, 16);
     InvalidateRect(state.window, nullptr, FALSE);
 }
 
 void PaintGroupNameDialog(GroupNameState& state, HDC dc) {
     RECT client{};
     GetClientRect(state.window, &client);
-    if (state.snapshot && state.snapshot_size.cx == client.right &&
-        state.snapshot_size.cy == client.bottom) {
-        HDC source = CreateCompatibleDC(dc);
-        HBITMAP old = static_cast<HBITMAP>(SelectObject(source, state.snapshot));
-        BitBlt(dc, 0, 0, client.right, client.bottom, source, 0, 0, SRCCOPY);
-        SelectObject(source, old);
-        DeleteDC(source);
-    } else {
-        HBRUSH fallback = CreateSolidBrush(state.background);
-        FillRect(dc, &client, fallback);
-        DeleteObject(fallback);
-    }
-    HDC overlay = CreateCompatibleDC(dc);
-    HBITMAP pixel = CreateCompatibleBitmap(dc, 1, 1);
-    HBITMAP old_pixel = static_cast<HBITMAP>(SelectObject(overlay, pixel));
-    HBRUSH shade = CreateSolidBrush(state.light_theme ? RGB(117, 124, 135) : RGB(5, 7, 10));
-    RECT one{0, 0, 1, 1};
-    FillRect(overlay, &one, shade);
-    const BYTE opacity = static_cast<BYTE>(state.light_theme ? 105 : 175);
-    BLENDFUNCTION blend{AC_SRC_OVER, 0, opacity, 0};
-    AlphaBlend(dc, 0, 0, client.right, client.bottom, overlay, 0, 0, 1, 1, blend);
-    DeleteObject(shade);
-    SelectObject(overlay, old_pixel);
-    DeleteObject(pixel);
-    DeleteDC(overlay);
+    // The layered ModalWorkspaceScope scrim is behind this content window.
+    // Leave the host background untouched so the dimmed owner remains visible.
+    (void)client;
 
     HBRUSH panel_brush = CreateSolidBrush(state.panel_color);
     HPEN panel_pen = CreatePen(PS_SOLID, 1, state.panel_edge);
@@ -502,8 +449,7 @@ void DrawGroupNameButton(GroupNameState& state, const DRAWITEMSTRUCT& item) {
     COLORREF fill = primary ? state.accent : state.field;
     COLORREF edge = primary ? state.accent : state.panel_edge;
     if (hovered || pressed) {
-        fill = primary ? (state.light_theme ? RGB(31, 97, 181) : RGB(55, 122, 211))
-                       : state.field_focus;
+        fill = primary ? state.palette.accent_strong : state.field_focus;
         edge = primary ? RGB(91, 157, 236) : state.muted;
     }
     HBRUSH brush = CreateSolidBrush(fill);
@@ -536,6 +482,7 @@ LRESULT CALLBACK GroupNameWindowProc(HWND h, UINT message, WPARAM wparam, LPARAM
     switch (message) {
     case WM_CREATE:
         state->input = CreateStyledInput(h, kGroupNameInput, state->font, L"输入分组名称");
+        SetStyledInputTheme(state->input, state->palette);
         SetStyledInputText(state->input, state->initial_name);
         SetWindowSubclass(state->input, GroupNameInputProc, kGroupNameInputSubclassId,
                           reinterpret_cast<DWORD_PTR>(state));
@@ -610,32 +557,6 @@ LRESULT CALLBACK GroupNameWindowProc(HWND h, UINT message, WPARAM wparam, LPARAM
     return DefWindowProcW(h, message, wparam, lparam);
 }
 
-void CaptureProjectTypeEditorSnapshot(ProjectTypeEditorState& state) {
-    RECT client{};
-    if (!GetClientRect(state.owner, &client)) return;
-    const int width = client.right - client.left;
-    const int height = client.bottom - client.top;
-    if (width <= 0 || height <= 0) return;
-    HDC screen = GetDC(nullptr);
-    HDC memory = screen ? CreateCompatibleDC(screen) : nullptr;
-    HBITMAP bitmap = (screen && memory) ? CreateCompatibleBitmap(screen, width, height) : nullptr;
-    if (!screen || !memory || !bitmap) {
-        if (bitmap) DeleteObject(bitmap);
-        if (memory) DeleteDC(memory);
-        if (screen) ReleaseDC(nullptr, screen);
-        return;
-    }
-    HBITMAP old = static_cast<HBITMAP>(SelectObject(memory, bitmap));
-    POINT origin{0, 0};
-    ClientToScreen(state.owner, &origin);
-    BitBlt(memory, 0, 0, width, height, screen, origin.x, origin.y, SRCCOPY);
-    SelectObject(memory, old);
-    DeleteDC(memory);
-    ReleaseDC(nullptr, screen);
-    state.snapshot = bitmap;
-    state.snapshot_size = {width, height};
-}
-
 constexpr UINT_PTR kProjectTypeEditorButtonSubclassId = 0xA1C17;
 constexpr UINT_PTR kProjectTypeEditorInputSubclassId = 0xA1C18;
 
@@ -648,21 +569,21 @@ LRESULT CALLBACK ProjectTypeEditorButtonProc(HWND control, UINT message, WPARAM 
         if (state && state->hovered != control) {
             HWND previous = state->hovered;
             state->hovered = control;
-            if (previous) InvalidateRect(previous, nullptr, TRUE);
-            InvalidateRect(control, nullptr, TRUE);
+            if (previous) InvalidateRect(previous, nullptr, FALSE);
+            InvalidateRect(control, nullptr, FALSE);
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, control, 0};
             TrackMouseEvent(&tracking);
         }
         break;
     case WM_MOUSELEAVE:
         if (state && state->hovered == control) state->hovered = nullptr;
-        InvalidateRect(control, nullptr, TRUE);
+        InvalidateRect(control, nullptr, FALSE);
         break;
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP:
     case WM_SETFOCUS:
     case WM_KILLFOCUS:
-        InvalidateRect(control, nullptr, TRUE);
+        InvalidateRect(control, nullptr, FALSE);
         break;
     case WM_NCDESTROY:
         RemoveWindowSubclass(control, ProjectTypeEditorButtonProc,
@@ -723,38 +644,14 @@ void LayoutProjectTypeEditorDialog(ProjectTypeEditorState& state) {
     MoveWindow(state.save, left + width - 138, top + 326, 108, 38, TRUE);
     SetWindowRgn(state.cancel, CreateRoundRectRgn(0, 0, 101, 39, 9, 9), TRUE);
     SetWindowRgn(state.save, CreateRoundRectRgn(0, 0, 109, 39, 9, 9), TRUE);
+    SetModalSurfaceRegion(state.window, state.panel, 16);
     InvalidateRect(state.window, nullptr, FALSE);
 }
 
 void PaintProjectTypeEditorDialog(ProjectTypeEditorState& state, HDC dc) {
     RECT client{};
     GetClientRect(state.window, &client);
-    if (state.snapshot && state.snapshot_size.cx == client.right &&
-        state.snapshot_size.cy == client.bottom) {
-        HDC source = CreateCompatibleDC(dc);
-        HBITMAP old = static_cast<HBITMAP>(SelectObject(source, state.snapshot));
-        BitBlt(dc, 0, 0, client.right, client.bottom, source, 0, 0, SRCCOPY);
-        SelectObject(source, old);
-        DeleteDC(source);
-    } else {
-        HBRUSH fallback = CreateSolidBrush(state.background);
-        FillRect(dc, &client, fallback);
-        DeleteObject(fallback);
-    }
-
-    HDC overlay = CreateCompatibleDC(dc);
-    HBITMAP pixel = CreateCompatibleBitmap(dc, 1, 1);
-    HBITMAP old_pixel = static_cast<HBITMAP>(SelectObject(overlay, pixel));
-    HBRUSH shade = CreateSolidBrush(state.light_theme ? RGB(117, 124, 135) : RGB(5, 7, 10));
-    RECT one{0, 0, 1, 1};
-    FillRect(overlay, &one, shade);
-    const BYTE opacity = static_cast<BYTE>(state.light_theme ? 105 : 175);
-    BLENDFUNCTION blend{AC_SRC_OVER, 0, opacity, 0};
-    AlphaBlend(dc, 0, 0, client.right, client.bottom, overlay, 0, 0, 1, 1, blend);
-    DeleteObject(shade);
-    SelectObject(overlay, old_pixel);
-    DeleteObject(pixel);
-    DeleteDC(overlay);
+    (void)client;
 
     HBRUSH panel_brush = CreateSolidBrush(state.panel_color);
     HPEN panel_pen = CreatePen(PS_SOLID, 1, state.panel_edge);
@@ -822,8 +719,7 @@ void DrawProjectTypeEditorButton(ProjectTypeEditorState& state,
     COLORREF fill = primary ? state.accent : state.field;
     COLORREF edge = primary ? state.accent : state.panel_edge;
     if (hovered || pressed) {
-        fill = primary ? (state.light_theme ? RGB(31, 97, 181) : RGB(55, 122, 211))
-                       : state.field_focus;
+        fill = primary ? state.palette.accent_strong : state.field_focus;
         edge = primary ? RGB(91, 157, 236) : state.muted;
     }
     HBRUSH brush = CreateSolidBrush(fill);
@@ -861,6 +757,8 @@ LRESULT CALLBACK ProjectTypeEditorWindowProc(HWND h, UINT message,
                                               state->font, L"输入类型名称");
         state->command_input = CreateStyledInput(h, kProjectTypeCommandInput,
                                                  state->font, L"输入默认启动命令");
+        SetStyledInputTheme(state->name_input, state->palette);
+        SetStyledInputTheme(state->command_input, state->palette);
         SetStyledInputText(state->name_input, state->initial_name);
         SetStyledInputText(state->command_input, state->initial_command);
         for (HWND input : {state->name_input, state->command_input}) {
@@ -965,7 +863,9 @@ HWND MakeButton(State& state, const wchar_t* text, int id, HWND parent = nullptr
 }
 
 HWND MakeField(State& state, int id, const wchar_t* placeholder, HWND parent = nullptr) {
-    return CreateStyledInput(parent ? parent : state.window, id, state.font, placeholder);
+    HWND field=CreateStyledInput(parent ? parent : state.window, id, state.font, placeholder);
+    SetStyledInputTheme(field,state.palette);
+    return field;
 }
 
 void SetField(HWND field, const std::wstring& value) {
@@ -988,8 +888,8 @@ void AddLine(HDC dc, const wchar_t* text, int x, int y, int width, HFONT font, C
 void DrawButton(const DRAWITEMSTRUCT* item) {
     if (!item) return;
     State* state = FindState(item->hwndItem);
-    const COLORREF text_color = state ? state->text_color : kText;
-    const COLORREF muted_color = state ? state->muted_color : kMuted;
+    const COLORREF text_color = state ? state->text_color : DarkPalette().text;
+    const COLORREF muted_color = state ? state->muted_color : DarkPalette().muted;
     const bool pressed = (item->itemState & ODS_SELECTED) != 0;
     const bool disabled = (item->itemState & ODS_DISABLED) != 0;
     const bool hovered = state && state->hovered_control == item->hwndItem;
@@ -1000,6 +900,44 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
     const bool active = active_navigation || active_theme;
     RECT rect = item->rcItem;
     const bool light = state && state->light_theme;
+
+    const bool title_close = state && state->mode == ManagementMode::Settings &&
+                             state->title_close == item->hwndItem;
+    if (title_close && state) {
+        // This is an icon-only control.  Paint the parent panel through the
+        // idle state and a subtle tinted hit target on hover; never let the
+        // stock button background show through in the dark theme.
+        const bool hot = hovered || pressed;
+        const COLORREF fill = hot
+            ? (light ? RGB(239, 242, 247) : RGB(48, 54, 64))
+            : state->panel_color;
+        HBRUSH clear = CreateSolidBrush(fill);
+        FillRect(item->hDC, &rect, clear);
+        DeleteObject(clear);
+        if (hot) {
+            HPEN edge_pen = CreatePen(PS_SOLID, 1,
+                                      light ? RGB(211, 218, 228) : RGB(69, 77, 90));
+            HGDIOBJ old_pen = SelectObject(item->hDC, edge_pen);
+            HGDIOBJ old_brush = SelectObject(item->hDC, GetStockObject(HOLLOW_BRUSH));
+            RoundRect(item->hDC, rect.left + 1, rect.top + 1,
+                      rect.right - 1, rect.bottom - 1, 8, 8);
+            SelectObject(item->hDC, old_brush);
+            SelectObject(item->hDC, old_pen);
+            DeleteObject(edge_pen);
+        }
+        SetBkMode(item->hDC, TRANSPARENT);
+        SelectObject(item->hDC, state->title_font);
+        SetTextColor(item->hDC, pressed
+                                  ? (light ? RGB(170, 44, 58) : RGB(255, 145, 155))
+                                  : (hovered
+                                         ? (light ? RGB(184, 54, 67) : RGB(255, 132, 143))
+                                         : state->muted_color));
+        RECT close_rect = rect;
+        DrawTextW(item->hDC, L"\x00D7", -1, &close_rect,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        return;
+    }
+
     COLORREF fill = light ? RGB(245, 247, 250) : RGB(38, 42, 50);
     COLORREF edge = light ? RGB(210, 217, 226) : RGB(58, 65, 76);
     if (hovered) {
@@ -1041,6 +979,8 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
     DeleteObject(brush);
     DeleteObject(pen);
 
+    wchar_t text[256]{};
+    GetWindowTextW(item->hwndItem, text, static_cast<int>(std::size(text)));
     if (active_navigation && state) {
         RECT marker{rect.left + 1, rect.top + 10, rect.left + 4, rect.bottom - 10};
         HBRUSH marker_brush = CreateSolidBrush(state->accent_color);
@@ -1048,8 +988,6 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         DeleteObject(marker_brush);
     }
 
-    wchar_t text[256]{};
-    GetWindowTextW(item->hwndItem, text, static_cast<int>(std::size(text)));
     SetBkMode(item->hDC, TRANSPARENT);
     if (IsSettingsNavigationId(item->CtlID) && state) {
         const wchar_t* subtitle = item->CtlID == kSettingsAppearance ? L"主题与显示" :
@@ -1083,14 +1021,14 @@ void DrawListItem(const DRAWITEMSTRUCT* item) {
     State* state = FindState(item->hwndItem);
     if (!state) return;
     const bool selected = (item->itemState & ODS_SELECTED) != 0;
-    HBRUSH fill = CreateSolidBrush(selected ? (state->light_theme ? RGB(226, 237, 251) : RGB(31, 57, 87))
-                                            : (state->light_theme ? RGB(250, 251, 253) : RGB(31, 34, 41)));
+    HBRUSH fill = CreateSolidBrush(selected ? state->palette.selection
+                                            : state->palette.list_surface);
     FillRect(item->hDC, &item->rcItem, fill);
     DeleteObject(fill);
     wchar_t text[512]{};
     SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID, reinterpret_cast<LPARAM>(text));
     SetBkMode(item->hDC, TRANSPARENT);
-    SetTextColor(item->hDC, selected ? state->text_color : (state->light_theme ? RGB(67, 76, 89) : RGB(207, 214, 225)));
+    SetTextColor(item->hDC, selected ? state->text_color : state->palette.list_text);
     SelectObject(item->hDC, state->font);
     RECT rect{item->rcItem.left + 12, item->rcItem.top, item->rcItem.right - 12, item->rcItem.bottom};
     DrawTextW(item->hDC, text, -1, &rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -1135,7 +1073,7 @@ void Layout(State& state) {
         button(state.settings_connection, nav_x, top + 180, nav_width, 54);
         button(state.settings_project_types, nav_x, top + 244, nav_width, 54);
         button(state.settings_groups, nav_x, top + 308, nav_width, 54);
-        button(state.close, nav_x, state.panel.bottom - 56, nav_width, 36);
+        button(state.title_close, state.panel.right - 62, top + 18, 36, 32);
 
         state.content_rect = {left + sidebar_width + 18, top + 88,
                               state.panel.right - 18, state.panel.bottom - 18};
@@ -1170,35 +1108,16 @@ void Layout(State& state) {
         if (state.select) button(state.select, right - 236, y, 108, 36);
         button(state.close, right - 118, y, 118, 36);
     }
+    SetModalSurfaceRegion(state.window, state.panel, 14);
     InvalidateRect(state.window, nullptr, FALSE);
 }
 
 void Paint(State& state, HDC dc) {
     RECT client{};
     GetClientRect(state.window, &client);
-    if (state.snapshot && state.snapshot_size.cx == client.right && state.snapshot_size.cy == client.bottom) {
-        HDC source = CreateCompatibleDC(dc);
-        HBITMAP old = static_cast<HBITMAP>(SelectObject(source, state.snapshot));
-        BitBlt(dc, 0, 0, client.right, client.bottom, source, 0, 0, SRCCOPY);
-        SelectObject(source, old);
-        DeleteDC(source);
-        HBRUSH scrim = CreateSolidBrush(state.light_theme ? RGB(210, 216, 225) : RGB(17, 20, 26));
-        BLENDFUNCTION blend{AC_SRC_OVER, 0, 170, 0};
-        HDC overlay = CreateCompatibleDC(dc);
-        HBITMAP pixel = CreateCompatibleBitmap(dc, 1, 1);
-        HBITMAP old_pixel = static_cast<HBITMAP>(SelectObject(overlay, pixel));
-        RECT one{0, 0, 1, 1};
-        FillRect(overlay, &one, scrim);
-        AlphaBlend(dc, 0, 0, client.right, client.bottom, overlay, 0, 0, 1, 1, blend);
-        SelectObject(overlay, old_pixel);
-        DeleteObject(pixel);
-        DeleteDC(overlay);
-        DeleteObject(scrim);
-    } else {
-        HBRUSH background = CreateSolidBrush(state.background_color);
-        FillRect(dc, &client, background);
-        DeleteObject(background);
-    }
+    // ModalWorkspaceScope owns the translucent scrim.  Painting a solid
+    // backdrop here would make the modal opaque and hide the live workspace.
+    (void)client;
     HBRUSH panel_brush = CreateSolidBrush(state.panel_color);
     HPEN panel_pen = CreatePen(PS_SOLID, 1, state.panel_edge);
     HGDIOBJ old_brush = SelectObject(dc, panel_brush);
@@ -1219,11 +1138,13 @@ void Paint(State& state, HDC dc) {
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, state.text_color);
     SelectObject(dc, state.title_font);
-    RECT title_rect{x, state.panel.top + 24, state.panel.right - 34, state.panel.top + 54};
+    const int title_right = state.mode == ManagementMode::Settings
+        ? state.panel.right - 86 : state.panel.right - 34;
+    RECT title_rect{x, state.panel.top + 24, title_right, state.panel.top + 54};
     DrawTextW(dc, title, -1, &title_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     SetTextColor(dc, state.muted_color);
     SelectObject(dc, state.small_font);
-    RECT sub_rect{x, state.panel.top + 57, state.panel.right - 34, state.panel.top + 82};
+    RECT sub_rect{x, state.panel.top + 57, title_right, state.panel.top + 82};
     DrawTextW(dc, subtitle, -1, &sub_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     if (state.mode == ManagementMode::Settings) {
@@ -1244,7 +1165,7 @@ void Paint(State& state, HDC dc) {
     }
 
     auto label = [&](const wchar_t* text, int y) {
-        SetTextColor(dc, state.light_theme ? RGB(74, 84, 98) : RGB(194, 201, 212));
+        SetTextColor(dc, state.palette.muted);
         SelectObject(dc, state.small_font);
         RECT rect{x, state.panel.top + y, state.panel.right - 34, state.panel.top + y + 22};
         DrawTextW(dc, text, -1, &rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -1396,7 +1317,7 @@ void PaintSettingsContent(State& state, HDC dc) {
 
     auto label = [&](const wchar_t* text, int y) {
         SelectObject(dc, state.small_font);
-        SetTextColor(dc, state.light_theme ? RGB(72, 83, 98) : RGB(194, 201, 212));
+        SetTextColor(dc, state.palette.muted);
         RECT rect{x, y, right, y + 24};
         DrawTextW(dc, text, -1, &rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     };
@@ -1497,11 +1418,11 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
         ReadSelection(state);
     }
     LayoutSettingsContent(state);
-    InvalidateRect(state.settings_appearance, nullptr, TRUE);
-    InvalidateRect(state.settings_connection, nullptr, TRUE);
-    InvalidateRect(state.settings_project_types, nullptr, TRUE);
-    InvalidateRect(state.settings_groups, nullptr, TRUE);
-    InvalidateRect(state.content, nullptr, TRUE);
+    InvalidateRect(state.settings_appearance, nullptr, FALSE);
+    InvalidateRect(state.settings_connection, nullptr, FALSE);
+    InvalidateRect(state.settings_project_types, nullptr, FALSE);
+    InvalidateRect(state.settings_groups, nullptr, FALSE);
+    InvalidateRect(state.content, nullptr, FALSE);
 }
 
 LRESULT CALLBACK SettingsContentProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -1728,7 +1649,7 @@ void CreateControls(State& state) {
         SendMessageW(state.list, WM_SETFONT, reinterpret_cast<WPARAM>(state.font), TRUE);
         state.add = MakeButton(state, L"新增类型", kAdd, state.content);
         state.remove = MakeButton(state, L"删除", kDelete, state.content);
-        state.close = MakeButton(state, L"关闭", kClose);
+        state.title_close = MakeButton(state, L"\x00D7", kClose);
         UpdateSettingsPage(state, SettingsPage::Appearance);
     } else if (state.mode == ManagementMode::Groups) {
         state.list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
@@ -1828,28 +1749,16 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         HDC dc = reinterpret_cast<HDC>(wparam);
         HWND control = reinterpret_cast<HWND>(lparam);
         SetTextColor(dc, state->text_color);
-        SetBkColor(dc, GetFocus() == control ? state->field_focus_color : state->field_color);
-        static HBRUSH normal = CreateSolidBrush(kField);
-        static HBRUSH focused = CreateSolidBrush(kFieldFocus);
-        // The static brushes keep the control path allocation-free; the
-        // light theme uses a freshly created brush for its different fill.
-        if (state->light_theme) {
-            static HBRUSH light_normal = CreateSolidBrush(RGB(239, 243, 248));
-            static HBRUSH light_focused = CreateSolidBrush(RGB(231, 238, 249));
-            return reinterpret_cast<LRESULT>(GetFocus() == control ? light_focused : light_normal);
-        }
-        return reinterpret_cast<LRESULT>(GetFocus() == control ? focused : normal);
+        const bool focused = GetFocus() == control;
+        SetBkColor(dc, focused ? state->field_focus_color : state->field_color);
+        return reinterpret_cast<LRESULT>(focused ? state->field_focus_brush
+                                                  : state->field_brush);
     }
     case WM_CTLCOLORLISTBOX: {
         HDC dc = reinterpret_cast<HDC>(wparam);
         SetTextColor(dc, state->text_color);
         SetBkColor(dc, state->panel_color);
-        static HBRUSH brush = CreateSolidBrush(RGB(31, 34, 41));
-        if (state->light_theme) {
-            static HBRUSH light_brush = CreateSolidBrush(RGB(250, 251, 253));
-            return reinterpret_cast<LRESULT>(light_brush);
-        }
-        return reinterpret_cast<LRESULT>(brush);
+        return reinterpret_cast<LRESULT>(state->list_brush);
     }
     case WM_MEASUREITEM: {
         auto* measure = reinterpret_cast<MEASUREITEMSTRUCT*>(lparam);
@@ -1916,7 +1825,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                     state->store->SetSetting(L"theme", light ? L"light" : L"dark");
                     if (state->theme_changed) state->theme_changed(light);
                     RedrawWindow(state->window, nullptr, nullptr,
-                                 RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+                                 RDW_INVALIDATE | RDW_ALLCHILDREN);
                 }
                 return 0;
             }
@@ -2138,7 +2047,6 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         DestroyWindow(h);
         return 0;
     case WM_DESTROY:
-        DeleteSnapshot(*state);
         return 0;
     }
     return DefWindowProcW(h, message, wparam, lparam);
@@ -2170,15 +2078,16 @@ bool ShowProjectTypeEditorDialog(HWND owner,
     state.subtitle = subtitle;
     state.initial_name = initial_name;
     state.initial_command = initial_command;
-    state.light_theme = light_theme;
-    state.background = light_theme ? RGB(246, 248, 251) : kBg;
-    state.panel_color = light_theme ? RGB(255, 255, 255) : kPanel;
-    state.panel_edge = light_theme ? RGB(211, 218, 228) : kPanelEdge;
-    state.text = light_theme ? RGB(28, 34, 43) : kText;
-    state.muted = light_theme ? RGB(101, 111, 125) : kMuted;
-    state.field = light_theme ? RGB(239, 243, 248) : kField;
-    state.field_focus = light_theme ? RGB(231, 238, 249) : kFieldFocus;
-    state.accent = light_theme ? RGB(46, 118, 211) : kAccent;
+    state.palette = MakeThemePalette(light_theme);
+    state.light_theme = state.palette.light();
+    state.background = state.palette.window;
+    state.panel_color = state.palette.panel;
+    state.panel_edge = state.palette.border;
+    state.text = state.palette.text;
+    state.muted = state.palette.muted;
+    state.field = state.palette.field;
+    state.field_focus = state.palette.field_focus;
+    state.accent = state.palette.accent;
     state.font = CreateFontW(-15, 0, 0, 0, 400, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
@@ -2188,19 +2097,17 @@ bool ShowProjectTypeEditorDialog(HWND owner,
     state.small_font = CreateFontW(-13, 0, 0, 0, 400, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    ModalWorkspaceScope workspace(owner, -1, &state.palette);
     state.field_brush = CreateSolidBrush(state.field);
     state.field_focus_brush = CreateSolidBrush(state.field_focus);
-    CaptureProjectTypeEditorSnapshot(state);
-
-    RECT client{};
-    GetClientRect(owner, &client);
     state.window = CreateWindowExW(
-        WS_EX_CONTROLPARENT, kProjectTypeEditorClassName, L"",
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-        0, 0, client.right, client.bottom, owner, nullptr,
+        WS_EX_CONTROLPARENT | WS_EX_TOOLWINDOW, kProjectTypeEditorClassName, L"",
+        WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        0, 0, 1, 1, owner, nullptr,
         GetModuleHandleW(nullptr), &state);
     if (state.window) {
-        SetWindowPos(state.window, HWND_TOP, 0, 0, client.right, client.bottom, SWP_SHOWWINDOW);
+        workspace.AttachSurface(state.window);
+        aicli::ui::ActivateModalSurface(state.window);
         MSG message{};
         while (IsWindow(state.window) && GetMessageW(&message, nullptr, 0, 0)) {
             TranslateMessage(&message);
@@ -2208,7 +2115,6 @@ bool ShowProjectTypeEditorDialog(HWND owner,
         }
     }
 
-    if (state.snapshot) DeleteObject(state.snapshot);
     if (state.field_brush) DeleteObject(state.field_brush);
     if (state.field_focus_brush) DeleteObject(state.field_focus_brush);
     if (state.font) DeleteObject(state.font);
@@ -2218,8 +2124,7 @@ bool ShowProjectTypeEditorDialog(HWND owner,
         name = state.name;
         command = state.command;
     }
-    SetForegroundWindow(owner);
-    SetFocus(owner);
+    aicli::ui::RestoreModalOwner(owner);
     return state.accepted;
 }
 
@@ -2264,28 +2169,16 @@ ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
     state.small_font = CreateFontW(-13, 0, 0, 0, 400, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    CaptureSnapshot(state);
-    // The modal paints the captured workspace itself. Hide the real owner
-    // children until it closes so owner-drawn buttons cannot leak above the
-    // modal during live theme changes or a nested group-name dialog.
-    std::vector<HWND> hidden_owner_children;
-    for (HWND child = GetWindow(owner, GW_CHILD); child;
-         child = GetWindow(child, GW_HWNDNEXT)) {
-        if (IsWindowVisible(child)) {
-            hidden_owner_children.push_back(child);
-            ShowWindow(child, SW_HIDE);
-        }
-    }
-    RECT client{};
-    GetClientRect(owner, &client);
-    state.window = CreateWindowExW(WS_EX_CONTROLPARENT, kClassName, L"",
-                                   WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-                                   0, 0, client.right, client.bottom, owner, nullptr,
+    const int host_title_height = ModalTopForOwner(owner);
+    ModalWorkspaceScope workspace(owner, host_title_height, &state.palette);
+    state.window = CreateWindowExW(WS_EX_CONTROLPARENT | WS_EX_TOOLWINDOW, kClassName, L"",
+                                   WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                                   0, 0, 1, 1, owner, nullptr,
                                    GetModuleHandleW(nullptr), &state);
     if (state.window) {
-        SetWindowPos(state.window, HWND_TOP, 0, 0, client.right, client.bottom, SWP_SHOWWINDOW);
-        SetFocus(state.window);
+        workspace.AttachSurface(state.window);
         PopulateControls(state);
+        aicli::ui::ActivateModalSurface(state.window);
         MSG message{};
         while (IsWindow(state.window) && GetMessageW(&message, nullptr, 0, 0)) {
             TranslateMessage(&message);
@@ -2295,14 +2188,10 @@ ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
     if (state.font) DeleteObject(state.font);
     if (state.title_font) DeleteObject(state.title_font);
     if (state.small_font) DeleteObject(state.small_font);
-    DeleteSnapshot(state);
-    for (HWND child : hidden_owner_children) {
-        if (IsWindow(child)) ShowWindow(child, SW_SHOW);
-    }
-    RedrawWindow(owner, nullptr, nullptr,
-                 RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
-    SetForegroundWindow(owner);
-    SetFocus(owner);
+    if (state.field_brush) DeleteObject(state.field_brush);
+    if (state.field_focus_brush) DeleteObject(state.field_focus_brush);
+    if (state.list_brush) DeleteObject(state.list_brush);
+    aicli::ui::RestoreModalOwner(owner);
     return state.result;
 }
 
@@ -2327,15 +2216,16 @@ bool ShowGroupNameDialog(HWND owner, const std::wstring& title,
     state.title = title;
     state.subtitle = subtitle;
     state.initial_name = initial_name;
-    state.light_theme = light_theme;
-    state.background = light_theme ? RGB(246, 248, 251) : kBg;
-    state.panel_color = light_theme ? RGB(255, 255, 255) : kPanel;
-    state.panel_edge = light_theme ? RGB(211, 218, 228) : kPanelEdge;
-    state.text = light_theme ? RGB(28, 34, 43) : kText;
-    state.muted = light_theme ? RGB(101, 111, 125) : kMuted;
-    state.field = light_theme ? RGB(239, 243, 248) : kField;
-    state.field_focus = light_theme ? RGB(231, 238, 249) : kFieldFocus;
-    state.accent = light_theme ? RGB(46, 118, 211) : kAccent;
+    state.palette = MakeThemePalette(light_theme);
+    state.light_theme = state.palette.light();
+    state.background = state.palette.window;
+    state.panel_color = state.palette.panel;
+    state.panel_edge = state.palette.border;
+    state.text = state.palette.text;
+    state.muted = state.palette.muted;
+    state.field = state.palette.field;
+    state.field_focus = state.palette.field_focus;
+    state.accent = state.palette.accent;
     state.font = CreateFontW(-15, 0, 0, 0, 400, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
@@ -2345,32 +2235,29 @@ bool ShowGroupNameDialog(HWND owner, const std::wstring& title,
     state.small_font = CreateFontW(-13, 0, 0, 0, 400, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    ModalWorkspaceScope workspace(owner, -1, &state.palette);
     state.field_brush = CreateSolidBrush(state.field);
     state.field_focus_brush = CreateSolidBrush(state.field_focus);
-    CaptureGroupNameSnapshot(state);
-    RECT client{};
-    GetClientRect(owner, &client);
-    state.window = CreateWindowExW(WS_EX_CONTROLPARENT, kGroupNameClassName, L"",
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-        0, 0, client.right, client.bottom, owner, nullptr,
+    state.window = CreateWindowExW(WS_EX_CONTROLPARENT | WS_EX_TOOLWINDOW, kGroupNameClassName, L"",
+        WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        0, 0, 1, 1, owner, nullptr,
         GetModuleHandleW(nullptr), &state);
     if (state.window) {
-        SetWindowPos(state.window, HWND_TOP, 0, 0, client.right, client.bottom, SWP_SHOWWINDOW);
+        workspace.AttachSurface(state.window);
+        aicli::ui::ActivateModalSurface(state.window, state.input);
         MSG message{};
         while (IsWindow(state.window) && GetMessageW(&message, nullptr, 0, 0)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
     }
-    if (state.snapshot) DeleteObject(state.snapshot);
     if (state.field_brush) DeleteObject(state.field_brush);
     if (state.field_focus_brush) DeleteObject(state.field_focus_brush);
     if (state.font) DeleteObject(state.font);
     if (state.title_font) DeleteObject(state.title_font);
     if (state.small_font) DeleteObject(state.small_font);
     if (state.accepted) name = state.value;
-    SetForegroundWindow(owner);
-    SetFocus(owner);
+    aicli::ui::RestoreModalOwner(owner);
     return state.accepted;
 }
 

@@ -1,6 +1,6 @@
 # AI CLI 桌面端与 Android 辅助端实现说明
 
-更新时间：2026-08-07
+更新时间：2026-08-08
 
 ## 1. 开发背景
 
@@ -39,6 +39,61 @@ Windows 原生桌面窗口
 桌面端使用 C++20、Win32/XAML Island、Windows Terminal 1.24 控件、同版本 Microsoft ConPTY、CivetWeb、OpenSSL 和系统 WinSQLite。Android 使用 Java 17、AndroidX、Material、OkHttp、Gson、ZXing 和 Android Keystore。
 
 `TerminalConnection.dll` 和 `OpenConsoleProxy.dll` 不进入运行链路。桌面桥接层直接实现 Windows Terminal 要求的 `ITerminalConnection`，但进程传输固定使用官方 `Microsoft.Windows.Console.ConPTY 1.24.260710001` 包中的 `conpty.dll` 和 `x64/OpenConsole.exe`；Windows Terminal Control 只负责原生终端渲染、输入和 scrollback。
+
+### 2.1 桌面 UI 整体架构（2026-08-08 重构基线）
+
+主题切换、标题栏和模态层不再采用逐个控件修补的方式，固定按下面三层实现：
+
+```text
+DesktopFrame（唯一窗口边界和标题栏所有者）
+├─ TitleBarHost       // 自绘左侧信息 + 三个系统风格按钮
+├─ WorkspaceHost      // 项目列表、详情、TermControl、状态栏
+└─ ModalHost          // 只覆盖 WorkspaceHost，标题栏始终保留
+   └─ ModalSurface     // 设置/绑定/项目/二层编辑模态
+```
+
+#### 2.1.1 单一主题源
+
+- `ThemeManager` 持有唯一 `ThemePalette`，主题只有 `Dark` 和 `Light` 两个状态；默认 `Dark`。
+- 调色板 token 统一包含窗口、面板、输入框、边框、正文、弱化文字、选中、悬停、按下、标题栏、危险/警告/成功等颜色。
+- 主窗口、设置窗口、二层模态、StyledInput 和 TermControl 都从同一份 palette 更新；视图不再保存自己的 RGB 常量。
+- 切换主题采用一次事务：写入 SQLite → 更新 `ThemeManager` → 更新 DWM 边框/TermControl palette → 更新控件 → 一次性无擦除重绘根窗口。设置模态保持打开时，标题栏、工作区、原生终端和设置页必须在同一次操作中生效，不能延迟到关闭模态框。
+- Codex TUI 的输入区域由终端单元格组成，不是独立输入框。主题更新后通过真实 ConPTY 行列变化要求 TUI 重绘；显示链路只映射 Codex 固定的输入区真彩背景，其他 VT 序列和供手机同步的原始输出保持不变。
+- 新建/编辑项目页的面板、输入框、下拉框和按钮全部读取同一 `ThemePalette`，禁止保留只适用于夜间模式的硬编码背景色。
+
+#### 2.1.2 标题栏唯一所有者
+
+- 根窗口使用无系统 caption 的客户区；保留 `WS_THICKFRAME` 负责调整大小。
+- 左侧标题、分组下拉、绑定设备、设置等内容和右侧最小化/最大化/关闭 glyph 全部由 `DesktopFrame` 绘制和命中测试。
+- 不调用 `DwmDefWindowProc` 处理 caption 按钮。根窗口只通过 `DwmExtendFrameIntoClientArea` 保留四周 1 像素合成边缘，让 DWM 提供原生窗口阴影和系统圆角；不得把 frame 扩展成第二条 caption，也不得让 DWM 覆盖自定义标题栏。
+- 标题栏按钮的 hover/pressed/active 状态来自同一 palette，最大化时只切换 glyph，不创建第二套按钮 HWND。
+- 非最大化窗口必须有清晰的 DWM 阴影和主题边框，使深色窗口叠在深色内容上时仍能辨认边界。
+
+#### 2.1.3 ModalHost 生命周期
+
+- 模态由两个线程内 owned popup 组成：一层 `WS_EX_LAYERED` 半透明 scrim 和一层不透明内容窗口；设置页从标题栏下方开始，标题栏始终只保留一套按钮。
+- `ModalHost` 自己绘制确定性的 scrim 和面板，不使用 `BitBlt` 截屏，不依赖桌面当前前台窗口，也不通过截图恢复背景。透明度统一由 `ThemePalette::scrim_opacity` 管理，日间为 `0.34`，夜间为 `0.54`。
+- 打开模态时保留底层 WorkspaceHost 和 TermControl，不销毁 TermControl、不重启 ConPTY；关闭时暂停一次宿主重绘，销毁两层窗口后只合并刷新其覆盖区域。
+- 二层项目类型/分组编辑沿用同一 ModalHost 生命周期，不能再创建独立顶层窗口或嵌套 DWM caption。
+- 窗口最小化、最大化、恢复和 `WM_DPICHANGED` 都只重新计算统一 `LayoutMetrics`，不改变模态状态。
+- 项目列表的 owner-draw 行使用离屏双缓冲；列表 `WM_ERASEBKGND` 必须用当前主题的侧栏色填满整个客户区，包括最后一项以下的空白区域，禁止露出桌面或其他应用。
+
+#### 2.1.4 统一几何指标
+
+`LayoutMetrics::ForWindow()` 按 DPI 计算标题栏高度、底部状态栏高度、侧栏宽度、caption 按钮宽度、模态圆角和输入框圆角。布局函数只能读取这组指标，禁止在不同文件再次写入 `52/30/286` 等 magic number。
+
+#### 2.1.5 验收条件
+
+每次 UI 重构必须一次性验证以下序列，而不是只验证某个颜色：
+
+1. 夜间 → 白天 → 夜间，标题栏、设置、输入框、TermControl 同步变化；
+2. 设置打开时最小化 → 恢复、最大化 → 还原、关闭，模态仍在且标题栏按钮只有一套；
+3. 关闭设置后，项目列表、详情和原生终端焦点恢复，已运行 ConPTY 不退出；
+4. 100% 和高 DPI 下标题栏按钮、模态面板、滚动区域不重叠；
+5. TermControl 仍支持输入、复制、原生滚动和 Codex 全屏 TUI。
+6. 设置框保持打开时切换夜间/日间，已有 Codex 会话的输入区背景和新增项目页控件立即采用新主题，不允许要求重启项目或关闭设置框。
+
+本节是后续桌面 UI 开发的约束。若新功能需要改变标题栏所有权、模态生命周期或主题 token，必须先修改本节设计，再实现代码，禁止在旧绘制路径上继续叠加补丁。
 
 ## 3. 电脑端功能
 

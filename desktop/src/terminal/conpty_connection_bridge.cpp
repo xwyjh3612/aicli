@@ -59,6 +59,8 @@ using NtCreateNamedPipeFileFunction = NTSTATUS(NTAPI*)(
 constexpr ULONG kFilePipeByteStreamType = 0;
 constexpr ULONG kFilePipeByteStreamMode = 0;
 constexpr ULONG kFilePipeQueueOperation = 0;
+constexpr std::wstring_view kCodexInputBackground = L"\x1b[48;2;41;41;41m";
+constexpr std::wstring_view kLightInputBackground = L"\x1b[48;2;232;235;239m";
 
 bool NtSucceeded(NTSTATUS status) noexcept {
     return status >= 0;
@@ -425,6 +427,25 @@ void ConPtyConnectionBridge::Resize(uint32_t rows, uint32_t columns) {
     ConptyResizePseudoConsole(pseudo_console_, dimensions);
 }
 
+void ConPtyConnectionBridge::SetLightTheme(bool light_theme) noexcept {
+    light_theme_.store(light_theme, std::memory_order_relaxed);
+}
+
+void ConPtyConnectionBridge::RefreshViewport() {
+    if (!pseudo_console_) return;
+
+    // A settings-only update changes TermControl's palette, but a full-screen
+    // TUI such as Codex owns the colors already stored in the terminal cells.
+    // Send a real ConPTY size transition so the application receives the
+    // normal terminal resize notification and redraws without restarting the
+    // process or replacing the native TermControl input surface.
+    const uint32_t rows = rows_;
+    const uint32_t columns = columns_;
+    const uint32_t probe_columns = columns > 20 ? columns - 1 : columns + 1;
+    Resize(rows, probe_columns);
+    Resize(rows, columns);
+}
+
 void ConPtyConnectionBridge::ReadLoop() {
     // Windows Terminal's ConptyConnection reads 128 KiB at a time. Keeping
     // the same batch size prevents one Codex TUI repaint from being presented
@@ -512,8 +533,13 @@ void ConPtyConnectionBridge::Close() noexcept {
 
 void ConPtyConnectionBridge::EmitOutput(std::wstring_view output) noexcept {
     try {
-        output_handlers_(winrt::hstring{output});
+        const auto display_output = TransformDisplayOutput(output);
+        if (!display_output.empty()) output_handlers_(winrt::hstring{display_output});
     } catch (...) {
+        try {
+            output_handlers_(winrt::hstring{output});
+        } catch (...) {
+        }
     }
     if (output_observer_) {
         try {
@@ -521,6 +547,58 @@ void ConPtyConnectionBridge::EmitOutput(std::wstring_view output) noexcept {
         } catch (...) {
         }
     }
+}
+
+std::wstring ConPtyConnectionBridge::TransformDisplayOutput(
+    std::wstring_view output) {
+    display_pending_.append(output);
+    std::wstring rendered;
+    rendered.reserve(display_pending_.size());
+    const bool light = light_theme_.load(std::memory_order_relaxed);
+
+    size_t position = 0;
+    while (position < display_pending_.size()) {
+        const size_t escape = display_pending_.find(L'\x1b', position);
+        if (escape == std::wstring::npos) {
+            rendered.append(display_pending_, position, std::wstring::npos);
+            position = display_pending_.size();
+            break;
+        }
+        rendered.append(display_pending_, position, escape - position);
+        if (escape + 1 >= display_pending_.size()) {
+            position = escape;
+            break;
+        }
+        if (display_pending_[escape + 1] != L'[') {
+            rendered.push_back(display_pending_[escape]);
+            position = escape + 1;
+            continue;
+        }
+
+        size_t final = escape + 2;
+        while (final < display_pending_.size() &&
+               !(display_pending_[final] >= 0x40 && display_pending_[final] <= 0x7e)) {
+            ++final;
+        }
+        if (final >= display_pending_.size()) {
+            position = escape;
+            break;
+        }
+
+        const std::wstring_view sequence{
+            display_pending_.data() + escape, final - escape + 1};
+        if (light && sequence == kCodexInputBackground) {
+            rendered.append(kLightInputBackground);
+        } else if (!light && sequence == kLightInputBackground) {
+            rendered.append(kCodexInputBackground);
+        } else {
+            rendered.append(sequence);
+        }
+        position = final + 1;
+    }
+
+    if (position > 0) display_pending_.erase(0, position);
+    return rendered;
 }
 
 void ConPtyConnectionBridge::SetState(

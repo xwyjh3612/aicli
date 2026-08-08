@@ -14,6 +14,7 @@ add_executable(aicli WIN32
     "F:/deps/aicli/civetweb-1.16/src/civetweb.c"
     "F:/deps/aicli/qrcodegen/qrcodegen.cpp"
     src/terminal/conpty_connection_bridge.cpp
+    src/ui/theme.cpp
     src/ui/styled_input.cpp
     src/ui/management_dialog.cpp
 )
