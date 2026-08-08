@@ -5,6 +5,7 @@
 
 #include <windows.h>
 #include <commctrl.h>
+#include <dwmapi.h>
 
 #include <algorithm>
 #include <cmath>
@@ -159,6 +160,16 @@ public:
             SetWindowPos(surface_, scrim_, bounds.left, bounds.top, width, height,
                          SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
         }
+        // Hidden child windows are not guaranteed to update their DWM
+        // redirection surfaces.  Repaint again after both popups are visible,
+        // but before returning to the message loop, so the compositor only
+        // receives a fully themed frame rather than a cached BUTTON frame.
+        RedrawWindow(scrim_, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        RedrawWindow(surface_, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN |
+                         RDW_NOERASE);
+        DwmFlush();
         presented_ = IsWindowVisible(scrim_) && IsWindowVisible(surface_);
     }
 

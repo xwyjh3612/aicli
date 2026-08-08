@@ -1668,7 +1668,16 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
     }else{
         if(item->CtlID==ID_CLI_TAB||item->CtlID==ID_D_CANCEL||item->CtlID==ID_EDIT_PROJECT)fill=elevated;
         if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)fill=accent2;
-        if(disabled)fill=g_light_theme?RGB(235,238,243):RGB(33,37,45);else if(down)fill=g_light_theme?RGB(205,220,241):RGB(37,91,174);else if(hover)fill=g_light_theme?RGB(229,235,243):RGB(34,40,51);
+        if(disabled)fill=g_light_theme?RGB(235,238,243):RGB(33,37,45);
+        else if(down){
+            // Header actions already provide a hover cue.  A bright blue
+            // pressed frame is perceived as a flash when a modal opens on
+            // the next compositor frame, especially on the fast second open.
+            // Keep the pressed surface identical to hover for these actions.
+            fill=onMainTitleBar
+                ?(g_light_theme?RGB(229,235,243):RGB(34,40,51))
+                :(g_light_theme?RGB(205,220,241):RGB(37,91,174));
+        }else if(hover)fill=g_light_theme?RGB(229,235,243):RGB(34,40,51);
         if(item->CtlID==ID_CLOSE)fill=down?RGB(157,44,55):(hover?RGB(120,38,47):panel);if(item->CtlID==ID_MINIMIZE)fill=hover?RGB(37,42,51):panel;
         stroke=disabled?(g_light_theme?RGB(218,223,231):RGB(43,48,57)):(hover?(g_light_theme?RGB(164,181,205):RGB(78,104,142)):border);if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)stroke=hover?RGB(117,177,255):RGB(64,128,225);
     }
@@ -2801,6 +2810,16 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_OPEN_SETTINGS:
         g_settings_open_posted=false;
         if(!aicli::ui::HasActiveModal(h)){
+            // BN_CLICKED is sent from inside the BUTTON's mouse-up handling.
+            // Even after that message returns, DWM may still have the pressed
+            // redirection surface queued.  Publish the released owner-draw
+            // frame and wait for the compositor before creating the popup.
+            if(g_settings&&IsWindow(g_settings)){
+                SendMessageW(g_settings,BM_SETSTATE,FALSE,0);
+                RedrawWindow(g_settings,nullptr,nullptr,
+                             RDW_INVALIDATE|RDW_UPDATENOW|RDW_NOERASE);
+            }
+            DwmFlush();
             OpenSettingsDialog();
             ReloadPersistentModels();
         }
