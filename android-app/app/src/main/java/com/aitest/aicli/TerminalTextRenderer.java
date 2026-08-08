@@ -12,6 +12,7 @@ final class TerminalTextRenderer {
     enum StreamResult { APPLIED, IGNORED, GAP }
 
     private static final int MAX_CACHED_PROJECTS = 6;
+    private static final long SYNCHRONIZED_REFRESH_DELAY_MS = 180L;
 
     private static final class SessionState {
         final VtTerminalEmulator terminal = new VtTerminalEmulator(32, 120);
@@ -26,12 +27,15 @@ final class TerminalTextRenderer {
     private final LinkedHashMap<String, SessionState> sessions =
             new LinkedHashMap<>(8, 0.75f, true);
     private String selectedProjectId = "";
+    private boolean synchronizedRefreshPosted;
+    private final Runnable synchronizedRefresh = this::flushSynchronizedOutput;
 
     TerminalTextRenderer(TerminalView view) {
         this.view = view;
     }
 
     synchronized void selectSession(String projectId) {
+        cancelSynchronizedRefresh();
         saveViewport();
         selectedProjectId = projectId == null ? "" : projectId;
         if (selectedProjectId.isEmpty()) {
@@ -44,12 +48,14 @@ final class TerminalTextRenderer {
     }
 
     synchronized void detach() {
+        cancelSynchronizedRefresh();
         saveViewport();
         selectedProjectId = "";
         view.setTerminal(null, 0, 0, true);
     }
 
     synchronized void clearAll() {
+        cancelSynchronizedRefresh();
         sessions.clear();
         selectedProjectId = "";
         view.setTerminal(null, 0, 0, true);
@@ -93,7 +99,12 @@ final class TerminalTextRenderer {
         state.terminal.feed(data == null ? "" : data);
         state.sequence = sequence;
         state.followBottom = follow;
-        if (!state.terminal.synchronizedOutput()) view.terminalChanged(follow);
+        if (state.terminal.synchronizedOutput()) {
+            scheduleSynchronizedRefresh();
+        } else {
+            cancelSynchronizedRefresh();
+            view.terminalChanged(follow);
+        }
         return StreamResult.APPLIED;
     }
 
@@ -117,6 +128,35 @@ final class TerminalTextRenderer {
         state.terminal.feed("\r\n" + line + "\r\n");
         state.followBottom = follow;
         view.terminalChanged(follow);
+    }
+
+    /**
+     * Claude and other TUIs use DECSET 2026 to apply a screen update as one
+     * frame. A dropped or delayed closing sequence must not leave the Android
+     * view frozen indefinitely. Keep the normal atomic refresh, but cap its
+     * latency just like a native terminal renderer does.
+     */
+    private synchronized void scheduleSynchronizedRefresh() {
+        if (synchronizedRefreshPosted) return;
+        synchronizedRefreshPosted = true;
+        view.postDelayed(synchronizedRefresh, SYNCHRONIZED_REFRESH_DELAY_MS);
+    }
+
+    private void flushSynchronizedOutput() {
+        boolean follow;
+        synchronized (this) {
+            synchronizedRefreshPosted = false;
+            SessionState state = sessions.get(selectedProjectId);
+            if (state == null) return;
+            follow = state.followBottom;
+        }
+        view.terminalChanged(follow);
+    }
+
+    private synchronized void cancelSynchronizedRefresh() {
+        if (!synchronizedRefreshPosted) return;
+        synchronizedRefreshPosted = false;
+        view.removeCallbacks(synchronizedRefresh);
     }
 
     private StreamResult validate(SessionState state, String sessionId, long sequence) {

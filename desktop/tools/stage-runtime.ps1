@@ -4,9 +4,14 @@ param(
     [string]$ConptyPackage = 'F:\deps\aicli\Microsoft.Windows.Console.ConPTY.1.24.260710001\package',
     [string]$WorkingRoot = 'F:\codex_tool-target\desktop\runtime-stage',
     [string]$Configuration = 'Debug',
-    [string]$Platform = 'x64'
+    [string]$Platform = 'x64',
+    [string]$PackageIdentityName = 'AiCli.Desktop.Dev'
 )
 $ErrorActionPreference = 'Stop'
+
+if ($PackageIdentityName -notmatch '^[A-Za-z0-9.-]+$') {
+    throw "Invalid package identity name: $PackageIdentityName"
+}
 
 function Get-MakePriPath {
     $kitsRoot = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -ErrorAction Stop).KitsRoot10
@@ -91,7 +96,8 @@ $terminalPriXml = Join-Path $workingFull 'terminal-resources.xml'
 & $makePri dump /if $terminalPri /of $terminalPriXml /dt Detailed /o | Out-Null
 if ($LASTEXITCODE) { throw "Failed to dump Windows Terminal resources.pri: $LASTEXITCODE" }
 
-[xml]$terminalResources = Get-Content -Raw -LiteralPath $terminalPriXml
+$utf8NoBom = [Text.UTF8Encoding]::new($false, $true)
+[xml]$terminalResources = [IO.File]::ReadAllText($terminalPriXml, $utf8NoBom)
 $requiredXbf = @('SearchBoxControl.xbf', 'TermControl.xbf')
 foreach ($name in $requiredXbf) {
     $node = $terminalResources.SelectSingleNode("//NamedResource[@name='$name' and contains(@uri, '/Files/Microsoft.Terminal.Control/')]")
@@ -121,12 +127,31 @@ if (Test-Path -LiteralPath $xamlResources) {
 $packageRoot = Join-Path $PSScriptRoot '..\package'
 $assets = Join-Path $Output 'Assets'
 New-Item -ItemType Directory -Force -Path $assets | Out-Null
-Copy-Item (Join-Path $packageRoot 'AppxManifest.xml') $Output -Force
+$manifestTemplate = Join-Path $packageRoot 'AppxManifest.xml'
+$manifestOutput = Join-Path $Output 'AppxManifest.xml'
+$manifestText = [IO.File]::ReadAllText($manifestTemplate)
+$manifestText = [Text.RegularExpressions.Regex]::Replace(
+    $manifestText,
+    '(<Identity\s+Name=")[^"]+("[^>]*>)',
+    { param($match) $match.Groups[1].Value + $PackageIdentityName + $match.Groups[2].Value },
+    [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+[IO.File]::WriteAllText($manifestOutput, $manifestText, [Text.UTF8Encoding]::new($false))
 Copy-Item (Join-Path $PSScriptRoot 'configure-agent-firewall.ps1') $Output -Force
 Copy-Item (Join-Path $xaml 'logo.png') (Join-Path $assets 'Logo.png') -Force
 $openssl = 'F:\deps\aicli\openssl'
 Copy-Item (Join-Path $openssl 'libssl-4-x64.dll'), (Join-Path $openssl 'libcrypto-4-x64.dll') $Output -Force
-$controlHashes = Get-FileHash (Join-Path $controlResourceFull '*.xbf') -Algorithm SHA256
+$sha256 = [Security.Cryptography.SHA256]::Create()
+$controlHashes = Get-ChildItem -LiteralPath $controlResourceFull -Filter '*.xbf' |
+    ForEach-Object {
+        $stream = [IO.File]::OpenRead($_.FullName)
+        try {
+            $hash = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '')
+            [pscustomobject]@{ Path = $_.FullName; Hash = $hash }
+        } finally {
+            $stream.Dispose()
+        }
+    }
+$sha256.Dispose()
 Write-Host "Windows Terminal 1.24.11911.0 runtime staged to $Output"
 Write-Host "Microsoft ConPTY 1.24.260710001 runtime staged with x64 OpenConsole"
 $controlHashes | ForEach-Object { Write-Host "  $([IO.Path]::GetFileName($_.Path))  $($_.Hash)" }

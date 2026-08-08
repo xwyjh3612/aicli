@@ -1,6 +1,6 @@
 # AI CLI 桌面端与 Android 辅助端实现说明
 
-更新时间：2026-08-08
+更新时间：2026-08-09
 
 ## 1. 开发背景
 
@@ -22,7 +22,7 @@ AI CLI 主要在 Windows 电脑上使用。电脑端负责创建项目、运行 
 ## 2. 当前技术结构
 
 ```text
-Windows 原生桌面窗口
+Qt 6.8 Widgets 桌面窗口
     ├─ 项目、分组、设置、设备和绑定模态框
     ├─ Windows Terminal TermControl
     │      └─ 自建 ITerminalConnection
@@ -36,64 +36,75 @@ Windows 原生桌面窗口
         Android Java App
 ```
 
-桌面端使用 C++20、Win32/XAML Island、Windows Terminal 1.24 控件、同版本 Microsoft ConPTY、CivetWeb、OpenSSL 和系统 WinSQLite。Android 使用 Java 17、AndroidX、Material、OkHttp、Gson、ZXing 和 Android Keystore。
+桌面端使用 C++20、Qt 6.8 Widgets、Win32/XAML Island、Windows Terminal 1.24 控件、同版本 Microsoft ConPTY、CivetWeb、OpenSSL 和系统 WinSQLite。Android 使用 Java 17、AndroidX、Material、OkHttp、Gson、ZXing 和 Android Keystore。
 
 `TerminalConnection.dll` 和 `OpenConsoleProxy.dll` 不进入运行链路。桌面桥接层直接实现 Windows Terminal 要求的 `ITerminalConnection`，但进程传输固定使用官方 `Microsoft.Windows.Console.ConPTY 1.24.260710001` 包中的 `conpty.dll` 和 `x64/OpenConsole.exe`；Windows Terminal Control 只负责原生终端渲染、输入和 scrollback。
 
-### 2.1 桌面 UI 整体架构（2026-08-08 重构基线）
+### 2.1 桌面 UI 整体架构（Qt 重构基线）
 
-主题切换、标题栏和模态层不再采用逐个控件修补的方式，固定按下面三层实现：
+桌面业务、终端后端和远程 Agent 保持原 C++ 实现，界面层改为成熟的 Qt Widgets。Qt 只负责桌面控件和布局，不替换 Windows Terminal，不引入 WebView。
 
 ```text
-DesktopFrame（唯一窗口边界和标题栏所有者）
-├─ TitleBarHost       // 自绘左侧信息 + 三个系统风格按钮
-├─ WorkspaceHost      // 项目列表、详情、TermControl、状态栏
-└─ ModalHost          // 只覆盖 WorkspaceHost，标题栏始终保留
-   └─ ModalSurface     // 设置/绑定/项目/二层编辑模态
+QApplication
+└─ MainWindow（无系统 caption 的 QMainWindow）
+   ├─ TitleBarWidget       // 分组、绑定、状态、设置和窗口按钮
+   ├─ Sidebar              // QLineEdit + 可拖动 ProjectListWidget
+   ├─ WorkspaceStack
+   │  ├─ TerminalHostWidget（原生 HWND）
+   │  │     └─ XAML Island → Windows Terminal TermControl
+   │  └─ ProjectPrestart   // 未启动项目的目录、命令和立即开始
+   ├─ Footer               // 状态、git、Agent、内存和公网信息
+   └─ WorkspaceScrim + frameless QDialog
+         // 项目、设置、绑定、项目类型和分组模态
+
+DesktopController
+├─ DataStore / GitRepository / RemoteAgent
+└─ XamlIslandAdapter / 多项目 ConPTY 会话
 ```
+
+旧 Win32 owner-draw、`StyledInput`、`ModalHost` 和 GDI 项目列表不再链接进 `aicli` 目标；后续桌面 UI 功能直接使用 Qt 的输入框、下拉框、列表、布局、对话框和样式系统。
 
 #### 2.1.1 单一主题源
 
-- `ThemeManager` 持有唯一 `ThemePalette`，主题只有 `Dark` 和 `Light` 两个状态；默认 `Dark`。
-- 调色板 token 统一包含窗口、面板、输入框、边框、正文、弱化文字、选中、悬停、按下、标题栏、危险/警告/成功等颜色。
-- 主窗口、设置窗口、二层模态、StyledInput 和 TermControl 都从同一份 palette 更新；视图不再保存自己的 RGB 常量。
-- 切换主题采用一次事务：写入 SQLite → 更新 `ThemeManager` → 更新 DWM 边框/TermControl palette → 更新控件 → 一次性无擦除重绘根窗口。设置模态保持打开时，标题栏、工作区、原生终端和设置页必须在同一次操作中生效，不能延迟到关闭模态框。
-- Codex TUI 的输入区域由终端单元格组成，不是独立输入框。Codex 固定的输入区真彩背景必须在进入 TermControl 前转换为 ANSI 色表索引 0，使主题色表更新能够同时重绘当前编辑区和 scrollback 中的历史输入块；不得按主题写入另一种固定 RGB，否则历史单元格只能重启后更新。主题更新后仍通过真实 ConPTY 行列变化要求当前 TUI 重绘；探测尺寸和恢复尺寸必须跨两个时间片发送，禁止连续同步调用后被 ConPTY 合并。其他 VT 序列和供手机同步的原始输出保持不变。
-- 新建/编辑项目页的面板、输入框、下拉框和按钮全部读取同一 `ThemePalette`，禁止保留只适用于夜间模式的硬编码背景色。
+- `ThemeManager` 持有唯一 `ThemePalette`，主题只有 `Dark` 和 `Light`，默认 `Dark`；
+- `MainWindow::applyTheme()` 一次更新 `QApplication` 的 `QPalette`、全局 QSS、DWM 边框/圆角以及 TermControl 主题；
+- 主窗口、项目卡片、输入框、下拉框、按钮、设置页和二层模态都读取同一组颜色 token，不在各页面保存独立 RGB；
+- 设置模态打开时切换主题必须立即刷新底层窗口、当前模态和原生终端，不要求关闭设置或重启项目；
+- Codex TUI 输入区属于终端单元格。终端桥接仍把可主题化背景映射到 ANSI 色表，主题切换后通过真实 ConPTY 尺寸变化请求 TUI 重绘；原始 VT 数据继续原样推送给 Android。
 
-#### 2.1.2 标题栏唯一所有者
+#### 2.1.2 自定义标题栏与系统窗口行为
 
-- 根窗口使用无系统 caption 的客户区；保留 `WS_THICKFRAME` 负责调整大小。
-- 左侧标题、分组下拉、绑定设备、设置等内容和右侧最小化/最大化/关闭 glyph 全部由 `DesktopFrame` 绘制和命中测试。
-- 不调用 `DwmDefWindowProc` 处理 caption 按钮。根窗口只通过 `DwmExtendFrameIntoClientArea` 保留四周 1 像素合成边缘，让 DWM 提供原生窗口阴影和系统圆角；不得把 frame 扩展成第二条 caption，也不得让 DWM 覆盖自定义标题栏。
-- 标题栏按钮的 hover/pressed/active 状态来自同一 palette，最大化时只切换 glyph，不创建第二套按钮 HWND。
-- 非最大化窗口必须有清晰的 DWM 阴影和主题边框，使深色窗口叠在深色内容上时仍能辨认边界。
+- `MainWindow` 使用 `Qt::FramelessWindowHint`，同时给 HWND 保留 `WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU`；
+- 标题栏左侧和中间区域由 Qt 控件构成，右侧最小化、最大化/还原和关闭按钮使用 Windows 风格交互；
+- `WM_NCHITTEST` 提供窗口拖动和四边缩放，最大化、还原、最小化、Win+方向键和系统阴影继续由 Windows 完成；
+- DWM 只扩展四周 1 像素边缘，提供系统阴影、主题边框和圆角，不生成第二层 caption；
+- `nativeEvent()` 只使用当前消息携带的 `MSG.hwnd`，禁止在本机事件回调中再次调用 `winId()`，避免 HWND 创建和布局重入导致 `TextShaping.dll` 崩溃。
 
-#### 2.1.3 ModalHost 生命周期
+#### 2.1.3 Qt 模态层
 
-- 模态由两个线程内 owned popup 组成：一层 `WS_EX_LAYERED` 半透明 scrim 和一层不透明内容窗口；设置页从标题栏下方开始，标题栏始终只保留一套按钮。
-- `ModalHost` 自己绘制确定性的 scrim 和面板，不使用 `BitBlt` 截屏，不依赖桌面当前前台窗口，也不通过截图恢复背景。透明度统一由 `ThemePalette::scrim_opacity` 管理，日间为 `0.34`，夜间为 `0.54`。
-- 打开模态时保留底层 WorkspaceHost 和 TermControl，不销毁 TermControl、不重启 ConPTY；关闭时暂停一次宿主重绘，销毁两层窗口后只合并刷新其覆盖区域。
-- 二层项目类型/分组编辑沿用同一 ModalHost 生命周期，不能再创建独立顶层窗口或嵌套 DWM caption。
-- 窗口最小化、最大化、恢复和 `WM_DPICHANGED` 都只重新计算统一 `LayoutMetrics`，不改变模态状态。
-- 项目列表的 owner-draw 行使用离屏双缓冲；列表 `WM_ERASEBKGND` 必须用当前主题的侧栏色填满整个客户区，包括最后一项以下的空白区域，禁止露出桌面或其他应用。
+- 项目、设置和绑定内容使用 owned、frameless `QDialog`，不再创建传统 Win32 新窗口；
+- 打开模态时先显示独立 `WorkspaceScrim`，遮罩从 52 像素标题栏下方开始，只覆盖工作区和状态栏；夜间和日间使用不同半透明度；
+- 模态内容保持不透明和可交互，scrim 不抢焦点；关闭模态不会销毁 `TerminalHostWidget`、XAML Island、TermControl 或 ConPTY；
+- 项目类型和分组编辑作为设置页之上的二层 Qt 模态，仍使用同一主题和输入组件；
+- 模态定位、最小化、最大化和 DPI 变化由 Qt 布局与窗口事件统一处理，不使用截屏、`BitBlt` 或透明恢复技巧。
 
-#### 2.1.4 统一几何指标
+#### 2.1.4 Qt 与原生终端边界
 
-`LayoutMetrics::ForWindow()` 按 DPI 计算标题栏高度、底部状态栏高度、侧栏宽度、caption 按钮宽度、模态圆角和输入框圆角。布局函数只能读取这组指标，禁止在不同文件再次写入 `52/30/286` 等 magic number。
+- `TerminalHostWidget` 设置 `WA_NativeWindow`，只提供稳定的子 HWND 和尺寸事件；
+- XAML Island、TermControl、键盘输入、光标、选择、复制和 scrollback 全部留在 Windows Terminal 控件内部；
+- Qt 不绘制假终端、不放置外部聊天输入框，也不把滚轮转换为方向键；
+- `DesktopController` 是 UI 与业务的唯一中介，Qt 页面不直接管理 SQLite、Agent 或 ConPTY 生命周期；
+- 多个项目仍各自持有独立终端会话，切换左侧项目只更换当前显示会话，不结束后台项目。
 
 #### 2.1.5 验收条件
 
-每次 UI 重构必须一次性验证以下序列，而不是只验证某个颜色：
-
-1. 夜间 → 白天 → 夜间，标题栏、设置、输入框、TermControl 同步变化；
-2. 设置打开时最小化 → 恢复、最大化 → 还原、关闭，模态仍在且标题栏按钮只有一套；
-3. 关闭设置后，项目列表、详情和原生终端焦点恢复，已运行 ConPTY 不退出；
-4. 100% 和高 DPI 下标题栏按钮、模态面板、滚动区域不重叠；
-5. TermControl 仍支持输入、复制、原生滚动和 Codex 全屏 TUI。
-6. 设置框保持打开时切换夜间/日间，已有 Codex 会话的输入区背景和新增项目页控件立即采用新主题，不允许要求重启项目或关闭设置框。
-
-本节是后续桌面 UI 开发的约束。若新功能需要改变标题栏所有权、模态生命周期或主题 token，必须先修改本节设计，再实现代码，禁止在旧绘制路径上继续叠加补丁。
+1. 夜间 → 白天 → 夜间时，标题栏、设置、输入框、项目列表和 TermControl 同步变化；
+2. 设置打开时可切换主题，关闭后终端内容和焦点仍存在；
+3. 最小化、恢复、最大化、还原、拖边缩放和系统快捷键正常；
+4. 100% 与高 DPI 下标题栏、项目列表、模态和终端不重叠；
+5. TermControl 支持输入、选择、复制、原生滚动、Codex inline TUI 和 Claude TUI；
+6. 双击独立 Qt 入口后能通过包身份激活，并启动 `OpenConsole.exe → powershell.exe → 项目命令`；
+7. Qt UI 崩溃日志中不得再出现因 HWND 重入引起的 `TextShaping.dll / 0xc000041d`。
 
 ## 3. 电脑端功能
 
@@ -102,7 +113,7 @@ DesktopFrame（唯一窗口边界和标题栏所有者）
 电脑端入口：
 
 ```text
-C:\project\aitest\codex_tool\desktop\bin\Debug\aicli.exe
+C:\project\aitest\codex_tool\desktop\bin\Qt\Debug\aicli.exe
 ```
 
 主窗口默认夜间模式，支持白天/夜间主题切换。窗口使用系统原生最小化、最大化/还原和关闭按钮，中央终端使用原生滚动、选择、复制粘贴和键盘焦点。
@@ -119,11 +130,11 @@ C:\project\aitest\codex_tool\desktop\bin\Debug\aicli.exe
 
 左侧显示当前分组中的项目，支持：
 
-- 使用公共 `StyledInput` 搜索项目名称和项目类型；
+- 使用 Qt `QLineEdit` 搜索项目名称和项目类型；
 - 搜索提示使用类似 HTML `placeholder` 的灰色占位文字；
 - 每个项目只用一行显示项目名称，不在列表里重复显示项目类型和分组；
 - 状态只显示紧凑图标：运行中为绿色环形点、暂停为黄橙色双竖线、停止/取消/失败为黄色警告三角、未运行为灰色空心圆；
-- 项目卡片使用 GDI+ 抗锯齿圆角，鼠标经过时改变背景色和边框色；
+- 项目卡片由 Qt item delegate 绘制 2 像素圆角，鼠标经过时改变背景色和边框色；
 - 项目支持上下拖动排序，但只有按住卡片左侧的三横线把手才会开始拖动；其他区域点击只选中项目；
 - 双击项目或点击“立即开始”启动项目；
 - 右键菜单包含打开项目文件夹、项目详情、移动分组、重新启动、暂停、继续、取消和删除；
@@ -133,7 +144,7 @@ C:\project\aitest\codex_tool\desktop\bin\Debug\aicli.exe
 
 ### 3.3 新建和编辑项目
 
-新建/编辑使用主窗口内模态层，不创建独立顶级窗口。模态框背景使用半透明遮罩；关闭模态框后恢复同一个终端控件，不把终端区域清空。
+新建/编辑使用主窗口拥有的 frameless Qt 模态框，不显示独立任务栏窗口。模态框背景使用半透明 `WorkspaceScrim`；关闭模态框后恢复同一个终端控件，不把终端区域清空。
 
 项目字段：
 
@@ -265,18 +276,35 @@ Android App 使用 Java/XML，当前最低 Android 版本为 API 26。
 - 顶部栏主标题显示当前项目名称，副标题固定显示 `项目分组 · 项目类型`；不显示 `AI CLI` 品牌字样和会话数量，并保留会话抽屉、扫码和设置入口；电脑连接状态只显示在会话抽屉底部；
 - 会话列表默认折叠，通过顶部按钮从左侧展开，项目根据运行、暂停、取消/失败和就绪状态使用不同颜色；
 - 不再写死 Codex/Claude 两个页面或过滤按钮，项目类型、分组、目录和状态全部读取电脑端动态数据；
-- 终端实时快照使用单一可编辑文本缓冲区，同一绘制帧只消费最新快照，并只替换变化的字符区间；禁止每次收到 `terminal.snapshot` 都重新调用整段 `TextView.setText()`。只有用户原本停留在底部时才跟随新输出，用户向上查看历史时不得强制滚回底部；
+- 终端显示使用 Java VT 模拟器和自定义 `TerminalView`，直接消费按序号推送的 VT 数据；普通 `terminal.snapshot` 只作为旧版本和 HTTP 恢复兼容数据，不能混入实时屏幕造成重复内容；
 - 分组使用下拉框切换，每项显示 `分组名 (项目数)`，并提供“全部”视图；
 - 选择项目后加载 SQLite 历史事件；
 - 建立 WSS 获取实时终端输出和状态；
-- WSS 断线后按最后 `eventId` 补发遗漏事件并自动重连；
+- WSS 断线后按最后 `eventId`、`terminalSessionId` 和 `sequence` 补发遗漏事件并自动重连；
 - 可输入文字或终端命令，回车后写入电脑同一个 PTY；
 - 主页面不提供暂停、继续、取消和重启按钮，会话控制以电脑端为主；
 - 终端显示面占满会话页除顶部栏和消息输入区之外的剩余高度；消息输入栏是终端下方的正常布局节点，不作为浮层，也不覆盖终端内容；
 - 未绑定、连接失败、分组为空等状态使用独立空状态页面，不显示失效的终端控件；
-- 本地只保留有限长度的显示文本，CLI 和模型密钥始终留在电脑端。
+- 每个最近访问项目保留独立终端状态和滚动位置，最多缓存 6 个项目，屏幕历史限制约 1000 行；CLI 和模型密钥始终留在电脑端。
 
-### 4.2 扫码和设置
+### 4.2 终端实时同步
+
+电脑到手机的实时终端协议固定为：
+
+```text
+terminal.reset  // terminalSessionId、baseSequence、rows、columns
+terminal.data   // terminalSessionId、递增 sequence、原始 VT data
+terminal.resize // terminalSessionId、递增 sequence、rows、columns
+```
+
+- Android 对每个项目保存 `terminalSessionId` 和最后已应用 `sequence`；只接受同一会话且严格连续的下一条事件；
+- 发现序号间隙时，手机重新建立 WSS，并把当前 session 和 sequence 发给电脑，请求只补发缺少的尾部数据；重复或旧序号直接忽略，因此补发不会造成内容重复；
+- 手机发送聊天成功后，在 220ms 和 900ms 各执行一次带当前 sequence 的轻量 WSS 重连，覆盖“最后一帧丢失后没有下一帧触发 gap 检测”的情况；该机制适用于 Claude、Codex 和自定义 CLI；
+- Claude 等 TUI 会使用 DECSET 2026 同步绘制。Android 正常等待同步绘制结束序列，但设置 180ms 最大刷新等待，避免结束序列延迟或丢失后页面永久停在旧画面；
+- 只有用户原本接近底部时才自动跟随最新输出；用户正在上翻历史时保留滚动位置，不因模型思考输出被强制拉回底部；
+- 切换项目时保存原项目横向、纵向滚动位置，恢复目标项目自己的终端状态，不重新拼接整段文本。
+
+### 4.3 扫码和设置
 
 - App 首次打开即生成随机 `phoneId`；
 - P-256 私钥在 Android Keystore 内生成，不能从 App data 导出；
@@ -463,19 +491,22 @@ Codex/Claude 默认命令已经关闭 AI CLI 自身的逐条高风险确认。�
 
 ```powershell
 $cmake='C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
-& $cmake -S desktop -B desktop\build -G 'Visual Studio 17 2022' -A x64
-& $cmake --build desktop\build --config Debug --target aicli -- /m:2
-.\desktop\tools\stage-runtime.ps1
-.\desktop\bin\Debug\aicli.exe
+& $cmake -S desktop -B desktop\build-qt -G 'Visual Studio 17 2022' -A x64 `
+  -DCMAKE_RUNTIME_OUTPUT_DIRECTORY='C:/project/aitest/codex_tool/desktop/bin/Qt' `
+  -DAICLI_APPLICATION_USER_MODEL_ID='AiCli.Desktop.QtDev_jw3zr00rmb0ym!App' `
+  -DAICLI_PACKAGE_IDENTITY_NAME='AiCli.Desktop.QtDev'
+& $cmake --build desktop\build-qt --config Debug --target aicli -- /m:2
+.\desktop\tools\register-runtime.ps1 -Output .\desktop\bin\Qt\Debug
+.\desktop\bin\Qt\Debug\aicli.exe
 ```
 
-构建前必须停止正在运行的 `aicli.exe`，否则链接器会因文件锁定报 `LNK1168`。
+Qt 6.8.3 MSVC x64 位于 `F:\Qt\6.8.3\msvc2022_64`。CMake 构建后会自动执行 `windeployqt` 和 `stage-runtime.ps1`，部署 Qt、Windows Terminal、WinUI、ConPTY、OpenSSL、PRI、XBF、清单与资源。`register-runtime.ps1` 使用独立 QtDev 包身份注册目录；直接双击 `aicli.exe` 会转发到有包身份的实例，以满足 WinUI/XAML Island 初始化要求。构建前只需停止正在使用同一输出目录的 `aicli.exe`，旧版 `desktop\bin\Debug` 与 QtDev 输出可以并存。
 
 ### 11.2 数据层测试
 
 ```powershell
-& $cmake --build desktop\build --config Debug --target aicli_data_store_tests -- /m:2
-.\desktop\bin\Debug\aicli_data_store_tests.exe F:\codex_tool-target\desktop\tests\aicli-data-store-test.db
+& $cmake --build desktop\build-qt --config Debug --target aicli_data_store_tests -- /m:2
+.\desktop\bin\Qt\Debug\aicli_data_store_tests.exe F:\codex_tool-target\desktop\tests\aicli-data-store-test.db
 ```
 
 ### 11.3 Android
@@ -505,9 +536,13 @@ F:\android\sdk\platform-tools\adb.exe -s 607faa8d reverse tcp:4280 tcp:4280
 
 ## 12. 已完成验证
 
-2026-08-07 已完成：
+截至 2026-08-09 已完成：
 
-- 桌面端 Debug 构建成功；
+- Qt 6.8 Widgets 桌面端 Debug clean build 成功，运行环境自动部署成功；
+- 独立 `AiCli.Desktop.QtDev` 包身份注册成功，双击 Qt 入口可以启动有包身份的实例；
+- Qt 主窗口、XAML Island、TermControl、匹配版 `OpenConsole.exe`、PowerShell 和 Codex 完整启动链路通过；
+- 设置/项目/绑定 frameless Qt 模态与标题栏下方半透明 scrim 层级验证通过；
+- Qt 本机事件 HWND 重入崩溃已修复，启动检查期间 Windows 应用日志无新增相关崩溃；
 - Android 主 APK 和 AndroidTest APK 构建成功；
 - 原生 TermControl、ConPTY、Codex 启动、键盘输入和滚动可用；
 - PowerShell 200 行原生缓冲验证为 `buffer=205 / view=33 / scrollbar_max=172`；
@@ -524,6 +559,7 @@ F:\android\sdk\platform-tools\adb.exe -s 607faa8d reverse tcp:4280 tcp:4280
 - 管理端标题栏分组下拉会显示每组项目数量并可直接切换；
 - 设置页四个左侧导航、右侧独立滚动、分组/项目类型二层模态框和主题即时切换已完成启动检查；
 - Android 主页面已改为动态分组和动态项目类型，Material 3 新页面 Debug APK 构建并覆盖安装成功；
+- Android 已按 `terminalSessionId + sequence` 消费实时 VT 流，手机发送后主动补发尾部事件；Claude DECSET 2026 同步绘制增加 180ms 最大刷新等待，避免发送后看不到最新内容；
 - requestId、sequence 重复请求和撤销设备请求被拒绝；
 - TLS PEM ACL 只允许文件所有者和 `SYSTEM` 完全访问。
 

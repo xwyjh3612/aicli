@@ -3,8 +3,9 @@
 The desktop application is the primary AI CLI workspace described in
 [`../ai-cli-mobile-architecture.md`](../ai-cli-mobile-architecture.md).
 
-It is a native C++ Windows application with:
+It is a native C++/Qt Widgets Windows application with:
 
+- a Qt 6.8 desktop shell for the title bar, project list, settings, dialogs, and themes;
 - an embedded Windows Terminal `TermControl` hosted through a XAML Island;
 - an in-process `ITerminalConnection` implementation backed by the matching
   Microsoft ConPTY 1.24 side-by-side runtime;
@@ -21,29 +22,37 @@ ConPTY `1.24.260710001`.
 
 ## Build
 
-Stop any running `aicli.exe` before linking, then run:
+Qt 6.8.3 MSVC x64 is installed under `F:\Qt\6.8.3\msvc2022_64`.
+The Qt development package has its own identity, so it can be tested without
+overwriting the legacy development package:
 
 ```powershell
 $cmake = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
-& $cmake -S desktop -B desktop\build -G 'Visual Studio 17 2022' -A x64
-& $cmake --build desktop\build --config Debug --target aicli -- /m:2
-& .\desktop\tools\stage-runtime.ps1
+& $cmake -S desktop -B desktop\build-qt -G 'Visual Studio 17 2022' -A x64 `
+    -DCMAKE_RUNTIME_OUTPUT_DIRECTORY='C:/project/aitest/codex_tool/desktop/bin/Qt' `
+    -DAICLI_APPLICATION_USER_MODEL_ID='AiCli.Desktop.QtDev_jw3zr00rmb0ym!App' `
+    -DAICLI_PACKAGE_IDENTITY_NAME='AiCli.Desktop.QtDev'
+& $cmake --build desktop\build-qt --config Debug --target aicli -- /m:2
+& .\desktop\tools\register-runtime.ps1 -Output .\desktop\bin\Qt\Debug
 ```
 
 The executable is:
 
 ```text
-desktop\bin\Debug\aicli.exe
+desktop\bin\Qt\Debug\aicli.exe
 ```
 
-Large dependencies and generated Windows Terminal metadata remain on `F:`.
-The runnable application stays inside this workspace.
+The build automatically runs `windeployqt` and `stage-runtime.ps1`. The latter
+stages Windows Terminal, WinUI, ConPTY, OpenSSL, resources, and the package
+manifest. Directly launching `aicli.exe` forwards to the registered packaged
+instance required by WinUI/XAML Island. Large dependencies and generated
+Windows Terminal metadata remain on `F:`; the runnable app stays in the workspace.
 
 ## Data-store tests
 
 ```powershell
-& $cmake --build desktop\build --config Debug --target aicli_data_store_tests -- /m:2
-& .\desktop\bin\Debug\aicli_data_store_tests.exe F:\codex_tool-target\desktop\tests\aicli-data-store-test.db
+& $cmake --build desktop\build-qt --config Debug --target aicli_data_store_tests -- /m:2
+& .\desktop\bin\Qt\Debug\aicli_data_store_tests.exe F:\codex_tool-target\desktop\tests\aicli-data-store-test.db
 ```
 
 The test covers built-in project-type/group protection, dynamic type and group

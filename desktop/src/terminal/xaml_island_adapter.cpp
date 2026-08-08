@@ -31,6 +31,7 @@
 #include <windows.ui.xaml.hosting.desktopwindowxamlsource.h>
 
 #include "app/runtime_components.h"
+#include "core/text_utils.h"
 #include "terminal/conpty_connection_bridge.h"
 
 namespace aicli::terminal {
@@ -135,14 +136,20 @@ LRESULT CALLBACK XamlIslandSubclassProc(
 struct XamlIslandAdapter::Impl {
 public:
     bool Attach(HWND parent, RECT rc) {
+        std::wstring stage = L"prepare";
         try {
             parent_ = parent;
+            stage = L"create XAML application";
             application_ = winrt::make_self<HostXamlApplication>();
+            stage = L"initialize WindowsXamlManager";
             manager_=winrt::Windows::UI::Xaml::Hosting::WindowsXamlManager::InitializeForCurrentThread();
+            stage = L"create DesktopWindowXamlSource";
             source_=winrt::Windows::UI::Xaml::Hosting::DesktopWindowXamlSource();
+            stage = L"attach XAML source to Qt host";
             auto interop=source_.as<::IDesktopWindowXamlSourceNative>();
             winrt::check_hresult(interop->AttachToWindow(parent));
             interop->get_WindowHandle(&hwnd_);
+            stage = L"subclass XAML island";
             if (!SetWindowSubclass(
                     hwnd_,
                     XamlIslandSubclassProc,
@@ -163,9 +170,26 @@ public:
                 // The terminal still works with its compiled resources when WinUI theme resources are unavailable.
             }
             source_.Content(grid_);
+            stage = L"size XAML island";
             Resize(rc);
-            ShowWindow(hwnd_,SW_HIDE); return true;
-        } catch (...) { return false; }
+            ShowWindow(hwnd_,SW_HIDE);
+            last_error_.clear();
+            return true;
+        } catch (const winrt::hresult_error& error) {
+            wchar_t code[16]{};
+            swprintf_s(code, L"%08X", static_cast<unsigned>(error.code().value));
+            last_error_ = stage + L": 0x" + code + L" " + error.message().c_str();
+            OutputDebugStringW((L"AI CLI XAML attach: " + last_error_ + L"\n").c_str());
+            return false;
+        } catch (const std::exception& error) {
+            last_error_ = stage + L": " + aicli::text::WideText(error.what());
+            OutputDebugStringW((L"AI CLI XAML attach: " + last_error_ + L"\n").c_str());
+            return false;
+        } catch (...) {
+            last_error_ = stage + L": unknown error";
+            OutputDebugStringW((L"AI CLI XAML attach: " + last_error_ + L"\n").c_str());
+            return false;
+        }
     }
     bool Start(const std::wstring& project_id, const std::wstring& command,
                const std::wstring& cwd, const std::wstring& title, HWND owner, HWND status,

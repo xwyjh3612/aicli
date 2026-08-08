@@ -35,6 +35,7 @@ public final class MainActivity extends AppCompatActivity {
     private static final String BASE_URL_KEY = "baseUrl";
     private static final String APP_PREFS = "app_settings";
     private static final String ALL_GROUPS = "__all__";
+    private static final long[] POST_SEND_REPLAY_DELAYS_MS = {220L, 900L};
 
     private final List<AicliClient.Conversation> allConversations = new ArrayList<>();
     private final List<String> displayedGroups = new ArrayList<>();
@@ -66,6 +67,7 @@ public final class MainActivity extends AppCompatActivity {
     private EditText messageInput;
     private RecyclerView conversationList;
     private boolean terminalReconnectScheduled;
+    private long postSendReplayGeneration;
 
     private void initializeDeviceIdentity() {
         SharedPreferences preferences = getSharedPreferences("device_identity", MODE_PRIVATE);
@@ -339,13 +341,36 @@ public final class MainActivity extends AppCompatActivity {
         if (selectedConversationId == null || client == null) return;
         String input = messageInput.getText().toString();
         if (input.isEmpty()) return;
+        String conversationId = selectedConversationId;
         messageInput.setText("");
-        client.sendMessage(selectedConversationId, input, new AicliClient.ActionCallback() {
-            @Override public void onSuccess() { }
+        client.sendMessage(conversationId, input, new AicliClient.ActionCallback() {
+            @Override public void onSuccess() {
+                runOnUiThread(() -> schedulePostSendTerminalReplay(conversationId));
+            }
             @Override public void onError(String message) {
                 runOnUiThread(() -> appendOutput("[发送失败] " + message));
             }
         });
+    }
+
+    /**
+     * Terminal data is replayed by sequence over WebSocket rather than by the
+     * SQLite history endpoint. If the last live frame is lost there is no
+     * later frame that can reveal the sequence gap, so reconnect briefly after
+     * an accepted submission and ask the desktop to resume from our last
+     * rendered sequence. Two passes also cover output racing with the first
+     * WebSocket handshake without duplicating terminal content.
+     */
+    private void schedulePostSendTerminalReplay(String conversationId) {
+        if (conversationId == null || !conversationId.equals(selectedConversationId)) return;
+        final long generation = ++postSendReplayGeneration;
+        for (long delay : POST_SEND_REPLAY_DELAYS_MS) {
+            terminalView.postDelayed(() -> {
+                if (generation != postSendReplayGeneration || client == null ||
+                        !conversationId.equals(selectedConversationId)) return;
+                connectRealtime(conversationId);
+            }, delay);
+        }
     }
 
     private void sendTerminalKey(String key) {

@@ -1,11 +1,35 @@
 cmake_minimum_required(VERSION 3.26)
 project(aicli LANGUAGES C CXX)
 
+option(AICLI_SKIP_PACKAGED_ACTIVATION "Run the desktop executable directly for local UI smoke tests" OFF)
+set(AICLI_APPLICATION_USER_MODEL_ID "AiCli.Desktop.Dev_jw3zr00rmb0ym!App"
+    CACHE STRING "Application user model ID used for packaged activation")
+set(AICLI_PACKAGE_IDENTITY_NAME "AiCli.Desktop.Dev"
+    CACHE STRING "Identity Name written to the staged AppxManifest.xml")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
+set(CMAKE_AUTOMOC ON)
+if (NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
+endif()
+if (NOT CMAKE_LIBRARY_OUTPUT_DIRECTORY)
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
+endif()
+if (NOT CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
+endif()
+
+if (EXISTS "F:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6")
+    list(PREPEND CMAKE_PREFIX_PATH "F:/Qt/6.8.3/msvc2022_64")
+endif()
+find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/build_identity.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/aicli_build_identity.h"
+    @ONLY
+)
 
 add_executable(aicli WIN32
     src/agent/conversation_bridge.cpp
@@ -13,7 +37,8 @@ add_executable(aicli WIN32
     src/agent/terminal_snapshot_publisher.cpp
     src/agent/terminal_stream_publisher.cpp
     src/app/application_activation.cpp
-    src/app/main.cpp
+    src/app/desktop_controller.cpp
+    src/app/qt_main.cpp
     src/app/runtime_components.cpp
     src/core/process_metrics.cpp
     src/core/text_utils.cpp
@@ -23,13 +48,12 @@ add_executable(aicli WIN32
     "F:/deps/aicli/qrcodegen/qrcodegen.cpp"
     src/terminal/conpty_connection_bridge.cpp
     src/terminal/xaml_island_adapter.cpp
-    src/ui/drawing_utils.cpp
-    src/ui/footer_status.cpp
-    src/ui/main_window_renderer.cpp
+    src/ui/qt_binding_dialog.cpp
+    src/ui/qt_main_window.cpp
+    src/ui/qt_project_dialog.cpp
+    src/ui/qt_settings_dialog.cpp
+    src/ui/qt_widgets.cpp
     src/ui/theme.cpp
-    src/ui/styled_input.cpp
-    src/ui/management_dialog.cpp
-    src/ui/window_chrome.cpp
 )
 
 add_executable(aicli_data_store_tests
@@ -40,6 +64,9 @@ add_executable(aicli_data_store_tests
 target_compile_definitions(aicli PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN USE_WEBSOCKET NO_SSL_DL OPENSSL_API_3_0
 )
+if (AICLI_SKIP_PACKAGED_ACTIVATION)
+    target_compile_definitions(aicli PRIVATE AICLI_SKIP_PACKAGED_ACTIVATION)
+endif()
 
 target_compile_definitions(aicli_data_store_tests PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
@@ -49,6 +76,7 @@ set_source_files_properties("F:/deps/aicli/civetweb-1.16/src/civetweb.c" PROPERT
 
 target_include_directories(aicli PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "F:/deps/aicli/Microsoft.Windows.Console.ConPTY.1.24.260710001/package/inc"
     "F:/deps/cppwinrt-2.0.230207.1/sdkplus"
     "F:/deps/cppwinrt-2.0.230207.1/sdk"
@@ -68,6 +96,8 @@ target_include_directories(aicli_data_store_tests PRIVATE
 )
 
 target_link_libraries(aicli PRIVATE
+    Qt6::Widgets
+    comctl32
     user32
     gdi32
     gdiplus
@@ -87,18 +117,21 @@ target_link_libraries(aicli PRIVATE
     "$<$<NOT:$<CONFIG:Debug>>:F:/deps/aicli/openssl/lib/VC/x64/MD/libcrypto.lib>"
 )
 
-# Use the same side-by-side ConPTY/OpenConsole build as Windows Terminal
-# 1.24. The x64 host is deliberately placed in the architecture subfolder
-# expected by Microsoft's conpty.dll package.
 add_custom_command(TARGET aicli POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "F:/deps/aicli/Microsoft.Windows.Console.ConPTY.1.24.260710001/package/runtimes/win-x64/native/conpty.dll"
-        "$<TARGET_FILE_DIR:aicli>/conpty.dll"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-        "$<TARGET_FILE_DIR:aicli>/x64"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "F:/deps/aicli/Microsoft.Windows.Console.ConPTY.1.24.260710001/package/build/native/runtimes/x64/OpenConsole.exe"
-        "$<TARGET_FILE_DIR:aicli>/x64/OpenConsole.exe"
+    COMMAND "F:/Qt/6.8.3/msvc2022_64/bin/windeployqt.exe"
+        "$<$<CONFIG:Debug>:--debug>"
+        "$<$<NOT:$<CONFIG:Debug>>:--release>"
+        --no-translations
+        --no-system-d3d-compiler
+        --no-opengl-sw
+        --no-compiler-runtime
+        "$<TARGET_FILE:aicli>"
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/stage-runtime.ps1"
+        -Output "$<TARGET_FILE_DIR:aicli>"
+        -Configuration "$<CONFIG>"
+        -Platform x64
+        -PackageIdentityName "${AICLI_PACKAGE_IDENTITY_NAME}"
 )
 
 target_link_libraries(aicli_data_store_tests PRIVATE
@@ -108,6 +141,6 @@ target_link_libraries(aicli_data_store_tests PRIVATE
 )
 
 if (MSVC)
-    target_compile_options(aicli PRIVATE /W4 /EHsc /utf-8)
-    target_compile_options(aicli_data_store_tests PRIVATE /W4 /EHsc /utf-8)
+    target_compile_options(aicli PRIVATE /W4 /EHsc /utf-8 /FS)
+    target_compile_options(aicli_data_store_tests PRIVATE /W4 /EHsc /utf-8 /FS)
 endif()
