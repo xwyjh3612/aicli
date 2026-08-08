@@ -61,7 +61,6 @@ constexpr ULONG kFilePipeByteStreamMode = 0;
 constexpr ULONG kFilePipeQueueOperation = 0;
 constexpr std::wstring_view kCodexInputBackgroundParameters = L"48;2;41;41;41";
 constexpr std::wstring_view kLightInputBackgroundParameters = L"48;2;232;235;239";
-constexpr std::wstring_view kIndexedInputBackgroundParameters = L"40";
 
 bool NtSucceeded(NTSTATUS status) noexcept {
     return status >= 0;
@@ -429,6 +428,10 @@ void ConPtyConnectionBridge::Resize(uint32_t rows, uint32_t columns) {
     ConptyResizePseudoConsole(pseudo_console_, dimensions);
 }
 
+void ConPtyConnectionBridge::SetLightTheme(bool light_theme) noexcept {
+    light_theme_.store(light_theme, std::memory_order_relaxed);
+}
+
 void ConPtyConnectionBridge::ReadLoop() {
     // Windows Terminal's ConptyConnection reads 128 KiB at a time. Keeping
     // the same batch size prevents one Codex TUI repaint from being presented
@@ -537,6 +540,7 @@ std::wstring ConPtyConnectionBridge::TransformDisplayOutput(
     display_pending_.append(output);
     std::wstring rendered;
     rendered.reserve(display_pending_.size());
+    const bool light = light_theme_.load(std::memory_order_relaxed);
 
     size_t position = 0;
     while (position < display_pending_.size()) {
@@ -575,6 +579,9 @@ std::wstring ConPtyConnectionBridge::TransformDisplayOutput(
             // only an entire exact sequence misses those real-world cases and
             // leaves an immutable dark RGB block after switching to light.
             std::wstring parameters{sequence.substr(2, sequence.size() - 3)};
+            const auto target_background = light
+                ? kLightInputBackgroundParameters
+                : kCodexInputBackgroundParameters;
             bool changed = false;
             for (const auto fixed_background : {
                      kCodexInputBackgroundParameters,
@@ -582,9 +589,9 @@ std::wstring ConPtyConnectionBridge::TransformDisplayOutput(
                 size_t background = parameters.find(fixed_background);
                 while (background != std::wstring::npos) {
                     parameters.replace(background, fixed_background.size(),
-                                       kIndexedInputBackgroundParameters);
+                                       target_background);
                     background = parameters.find(fixed_background,
-                                                 background + kIndexedInputBackgroundParameters.size());
+                                                 background + target_background.size());
                     changed = true;
                 }
             }
