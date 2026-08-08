@@ -44,6 +44,7 @@ public:
     std::wstring ReadEntireBuffer(std::wstring_view project_id = {}) const;
     bool WriteInput(const std::wstring& value);
     bool WriteInput(std::wstring_view project_id, const std::wstring& value);
+    bool SubmitInput(std::wstring_view project_id, const std::wstring& value);
     void UpdateNativeScrollbarHover();
     void CollapseNativeScrollbar();
     const std::wstring& LastError() const;

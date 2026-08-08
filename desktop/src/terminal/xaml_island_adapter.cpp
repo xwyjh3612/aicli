@@ -37,6 +37,36 @@ namespace aicli::terminal {
 using aicli::app::LocalActivationFactory;
 constexpr UINT kXamlIslandSubclassId = 0xA1C11;
 
+namespace {
+
+// Match Windows Terminal's paste filtering rules: normalize all line endings
+// to CR and remove C0/C1 control characters except tab and line endings. This
+// also prevents remote text from prematurely terminating bracketed paste.
+std::wstring FilterRemotePasteText(std::wstring_view value) {
+    std::wstring filtered;
+    filtered.reserve(value.size());
+    for (size_t index = 0; index < value.size(); ++index) {
+        const wchar_t ch = value[index];
+        if (ch == L'\r') {
+            filtered.push_back(L'\r');
+            if (index + 1 < value.size() && value[index + 1] == L'\n') ++index;
+            continue;
+        }
+        if (ch == L'\n') {
+            filtered.push_back(L'\r');
+            continue;
+        }
+        const bool printable_ascii = ch >= L'\x20' && ch < L'\x7f';
+        const bool non_control_unicode = ch > L'\x9f';
+        if (printable_ascii || non_control_unicode || ch == L'\t') {
+            filtered.push_back(ch);
+        }
+    }
+    return filtered;
+}
+
+} // namespace
+
 struct HostXamlApplication :
     winrt::Windows::UI::Xaml::ApplicationT<
         HostXamlApplication,
@@ -412,6 +442,53 @@ public:
             return true;
         }catch(...){return false;}
     }
+    bool SubmitInput(std::wstring_view project_id, const std::wstring& value) {
+        auto* session = FindSession(project_id);
+        if (!session || !session->control || value.empty()) return false;
+        try {
+            auto filtered = FilterRemotePasteText(value);
+            if (filtered.empty()) return false;
+
+            // A phone message is semantically a paste followed by a real Enter
+            // key. Sending the whole string and a raw CR directly to ConPTY
+            // makes Codex classify the stream as a paste burst and reinterpret
+            // Enter as an embedded newline.
+            const bool bracketed_paste = session->control.BracketedPasteEnabled();
+            if (bracketed_paste) {
+                filtered.insert(0, L"\x1b[200~");
+                filtered.append(L"\x1b[201~");
+            }
+            session->control.RawWriteString(winrt::hstring{filtered});
+
+            // This application nests TermControl over ConPTY. Even when the
+            // outer terminal reports bracketed-paste support, the inner Windows
+            // console can still surface the pasted payload to Codex as a rapid
+            // KEY_EVENT burst. Codex deliberately treats Enter as an embedded
+            // newline for 120 ms after such a burst. Cross that window before
+            // generating the real Enter event, otherwise phone Send only adds a
+            // line break to the composer.
+            Sleep(150);
+
+            const auto scan_code = static_cast<uint16_t>(
+                MapVirtualKeyW(VK_RETURN, MAPVK_VK_TO_VSC));
+            const winrt::Microsoft::Terminal::Core::ControlKeyStates modifiers{0};
+
+            // Mirror TermControl's native keyboard pipeline. A non-character
+            // protocol (including enhanced keyboard reporting) handles keydown
+            // directly; otherwise the following character event emits Enter.
+            bool handled = session->control.RawWriteKeyEvent(
+                VK_RETURN, scan_code, modifiers, true);
+            if (!handled) {
+                handled = session->control.RawWriteChar(
+                    L'\r', scan_code, modifiers);
+            }
+            (void)session->control.RawWriteKeyEvent(
+                VK_RETURN, scan_code, modifiers, false);
+            return handled;
+        } catch (...) {
+            return false;
+        }
+    }
     void OnIslandDestroyed(HWND window) noexcept {
         if (hwnd_ == window) hwnd_ = nullptr;
     }
@@ -721,6 +798,11 @@ bool XamlIslandAdapter::WriteInput(const std::wstring& value) {
 bool XamlIslandAdapter::WriteInput(std::wstring_view project_id,
                                     const std::wstring& value) {
     return impl_ && impl_->WriteInput(project_id, value);
+}
+
+bool XamlIslandAdapter::SubmitInput(std::wstring_view project_id,
+                                    const std::wstring& value) {
+    return impl_ && impl_->SubmitInput(project_id, value);
 }
 
 void XamlIslandAdapter::UpdateNativeScrollbarHover() {

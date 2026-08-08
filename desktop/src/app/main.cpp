@@ -794,10 +794,15 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
             return 0;
         }
         std::wstring text=request->input;
-        while(!text.empty()&&(text.back()==L'\r'||text.back()==L'\n'))text.pop_back();
-        const bool typed=text.empty()||g_island.WriteInput(request->project_id,text);
-        const bool submitted=typed&&g_island.WriteInput(request->project_id,L"\r");
-        if(submitted){
+        bool submit=false;
+        while(!text.empty()&&(text.back()==L'\r'||text.back()==L'\n')){
+            submit=true;
+            text.pop_back();
+        }
+        const bool accepted=submit
+            ? g_island.SubmitInput(request->project_id,text)
+            : g_island.WriteInput(request->project_id,text);
+        if(accepted){
             RecordAndBroadcastEvent(request->project_id,L"terminal.input",
                 nlohmann::json{{"input",Utf8Text(text)},{"phoneId",Utf8Text(request->phone_id)}});
             complete(true);

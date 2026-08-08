@@ -36,7 +36,6 @@ public final class MainActivity extends AppCompatActivity {
     private static final String APP_PREFS = "app_settings";
     private static final String ALL_GROUPS = "__all__";
 
-    private final StringBuilder terminalText = new StringBuilder();
     private final List<AicliClient.Conversation> allConversations = new ArrayList<>();
     private final List<String> displayedGroups = new ArrayList<>();
     private AicliClient client;
@@ -53,11 +52,13 @@ public final class MainActivity extends AppCompatActivity {
     private View emptyState;
     private TextView emptyStateTitle;
     private TextView emptyStateMessage;
-    private TextView connectionStatus;
+    private TextView currentProjectTitle;
+    private TextView currentProjectMeta;
     private TextView drawerConnectionStatus;
     private TextView drawerGroupLabel;
     private TextView terminalOutput;
     private ScrollView terminalScroll;
+    private TerminalTextRenderer terminalRenderer;
     private View inputBar;
     private EditText messageInput;
     private RecyclerView conversationList;
@@ -88,11 +89,13 @@ public final class MainActivity extends AppCompatActivity {
         emptyState = findViewById(R.id.emptyState);
         emptyStateTitle = findViewById(R.id.emptyStateTitle);
         emptyStateMessage = findViewById(R.id.emptyStateMessage);
-        connectionStatus = findViewById(R.id.connectionStatus);
+        currentProjectTitle = findViewById(R.id.currentProjectTitle);
+        currentProjectMeta = findViewById(R.id.currentProjectMeta);
         drawerConnectionStatus = findViewById(R.id.drawerConnectionStatus);
         drawerGroupLabel = findViewById(R.id.drawerGroupLabel);
         terminalOutput = findViewById(R.id.terminalOutput);
         terminalScroll = findViewById(R.id.terminalScroll);
+        terminalRenderer = new TerminalTextRenderer(terminalOutput, terminalScroll);
         inputBar = findViewById(R.id.inputBar);
         messageInput = findViewById(R.id.messageInput);
         conversationList = findViewById(R.id.conversationList);
@@ -272,6 +275,7 @@ public final class MainActivity extends AppCompatActivity {
             }
         }
         if (selected == null) selected = filtered.get(0);
+        updateProjectHeader(selected);
         if (!selected.id.equals(selectedConversationId)) selectConversation(selected);
         else {
             conversationAdapter.select(selected.id);
@@ -283,11 +287,11 @@ public final class MainActivity extends AppCompatActivity {
         if (client == null) return;
         client.closeEvents();
         selectedConversationId = conversation.id;
+        updateProjectHeader(conversation);
         conversationAdapter.select(conversation.id);
         drawerLayout.closeDrawer(GravityCompat.START);
         lastEventId = 0L;
-        terminalText.setLength(0);
-        terminalOutput.setText("");
+        terminalRenderer.clear();
         terminalScroll.setVisibility(View.VISIBLE);
         inputBar.setVisibility(View.VISIBLE);
         hideEmptyState();
@@ -404,21 +408,11 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void appendOutput(String line) {
-        if (line == null || line.isEmpty()) return;
-        if (terminalText.length() > 64 * 1024) {
-            terminalText.delete(0, terminalText.length() - 48 * 1024);
-        }
-        if (terminalText.length() > 0) terminalText.append('\n');
-        terminalText.append(line);
-        terminalOutput.setText(terminalText.toString());
-        terminalOutput.post(() -> terminalScroll.fullScroll(View.FOCUS_DOWN));
+        terminalRenderer.appendLine(line);
     }
 
     private void setTerminalSnapshot(String text) {
-        terminalText.setLength(0);
-        if (text != null) terminalText.append(text);
-        terminalOutput.setText(terminalText.toString());
-        terminalOutput.post(() -> terminalScroll.fullScroll(View.FOCUS_DOWN));
+        terminalRenderer.submitSnapshot(text);
     }
 
     private String formatEvent(String eventJson) {
@@ -448,8 +442,19 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void setConnectionStatus(String value) {
-        connectionStatus.setText(value);
         drawerConnectionStatus.setText(value);
+    }
+
+    private void updateProjectHeader(AicliClient.Conversation conversation) {
+        if (conversation == null) {
+            currentProjectTitle.setText("未选择项目");
+            currentProjectMeta.setText("项目分组 · 项目类型");
+            return;
+        }
+        String group = conversation.group.isEmpty() ? "默认分组" : conversation.group;
+        String type = conversation.type.isEmpty() ? conversation.provider : conversation.type;
+        currentProjectTitle.setText(conversation.name.isEmpty() ? "未命名项目" : conversation.name);
+        currentProjectMeta.setText(group + " · " + (type.isEmpty() ? "未设置类型" : type));
     }
 
     private void showEmptyState(String title, String message) {
@@ -464,6 +469,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private void hideConversation() {
         if (client != null) client.closeEvents();
+        updateProjectHeader(null);
+        terminalRenderer.clear();
         terminalScroll.setVisibility(View.GONE);
         inputBar.setVisibility(View.GONE);
     }

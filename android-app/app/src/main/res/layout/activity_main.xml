@@ -39,19 +39,24 @@
                 android:paddingStart="8dp">
 
                 <TextView
+                    android:id="@+id/currentProjectTitle"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="AI CLI"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="未选择项目"
                     android:textColor="@color/aicli_text"
                     android:textSize="18sp"
                     android:textStyle="bold" />
 
                 <TextView
-                    android:id="@+id/connectionStatus"
-                    android:layout_width="wrap_content"
+                    android:id="@+id/currentProjectMeta"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="未绑定电脑"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="项目分组 · 项目类型"
                     android:textColor="@color/aicli_text_secondary"
                     android:textSize="12sp" />
             </LinearLayout>
