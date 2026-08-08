@@ -153,7 +153,9 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     FillRect(item->hDC,&row,rowBackground);
     DeleteObject(rowBackground);
 
-    RECT card{row.left+3,row.top+3,row.right-4,row.bottom-3};
+    // Two physical pixels between adjacent project cards, with only a subtle
+    // two-pixel corner radius as requested for the compact sidebar.
+    RECT card{row.left+1,row.top+1,row.right-1,row.bottom-1};
     COLORREF cardFill=g_light_theme?RGB(250,251,253):RGB(22,25,32);
     COLORREF cardStroke=g_light_theme?RGB(222,227,234):RGB(38,43,52);
     if(sourceDragging){
@@ -166,7 +168,7 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         cardFill=g_light_theme?RGB(243,247,252):RGB(29,34,43);
         cardStroke=g_light_theme?RGB(193,207,224):RGB(55,65,79);
     }
-    DrawSmoothRoundedRect(item->hDC,card,9.0f,cardFill,cardStroke,1.0f,sourceDragging);
+    DrawSmoothRoundedRect(item->hDC,card,2.0f,cardFill,cardStroke,1.0f,sourceDragging);
 
     COLORREF stateColor=g_light_theme?RGB(100,113,131):RGB(139,157,183);
     enum class StateIcon{Idle,Running,Paused,Warning};
@@ -232,7 +234,7 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     }
 
     SetBkMode(item->hDC,TRANSPARENT);
-    auto oldFont=SelectObject(item->hDC,g_font);
+    auto oldFont=SelectObject(item->hDC,g_font_project_list);
     wchar_t name[256]{};
     SendMessageW(item->hwndItem,LB_GETTEXT,item->itemID,(LPARAM)name);
     SetTextColor(item->hDC,sourceDragging?muted:fg);

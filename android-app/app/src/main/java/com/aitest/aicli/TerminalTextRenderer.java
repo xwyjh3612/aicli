@@ -1,150 +1,160 @@
 package com.aitest.aicli;
 
-import android.text.Editable;
-import android.view.ViewTreeObserver;
-import android.widget.ScrollView;
-import android.widget.TextView;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
- * Applies terminal snapshots without replacing the complete TextView buffer.
- * Codex repaints its TUI frequently while thinking; replacing the full text on
- * every snapshot forces Android to rebuild and redraw the whole layout.
+ * Owns one VT screen state per recently visited project and attaches the
+ * selected state to the native TerminalView.
  */
 final class TerminalTextRenderer {
-    private static final int MAX_CHARACTERS = 64 * 1024;
-    private static final int RETAIN_CHARACTERS = 48 * 1024;
+    enum StreamResult { APPLIED, IGNORED, GAP }
 
-    private final TextView output;
-    private final ScrollView scroll;
-    private final Editable buffer;
-    private String renderedText = "";
-    private String pendingSnapshot;
-    private boolean snapshotFramePosted;
-    private boolean scrollPosted;
+    private static final int MAX_CACHED_PROJECTS = 6;
 
-    TerminalTextRenderer(TextView output, ScrollView scroll) {
-        this.output = output;
-        this.scroll = scroll;
-        output.setText("", TextView.BufferType.EDITABLE);
-        Editable editable = output.getEditableText();
-        if (editable == null) {
-            throw new IllegalStateException("terminal output requires an editable text buffer");
+    private static final class SessionState {
+        final VtTerminalEmulator terminal = new VtTerminalEmulator(32, 120);
+        String terminalSessionId = "";
+        long sequence;
+        int scrollX;
+        int scrollY;
+        boolean followBottom = true;
+    }
+
+    private final TerminalView view;
+    private final LinkedHashMap<String, SessionState> sessions =
+            new LinkedHashMap<>(8, 0.75f, true);
+    private String selectedProjectId = "";
+
+    TerminalTextRenderer(TerminalView view) {
+        this.view = view;
+    }
+
+    synchronized void selectSession(String projectId) {
+        saveViewport();
+        selectedProjectId = projectId == null ? "" : projectId;
+        if (selectedProjectId.isEmpty()) {
+            view.setTerminal(null, 0, 0, true);
+            return;
         }
-        buffer = editable;
+        SessionState state = state(selectedProjectId);
+        view.setTerminal(state.terminal, state.scrollX, state.scrollY, state.followBottom);
+        trimCache();
     }
 
-    void clear() {
-        pendingSnapshot = null;
-        applyText("", false);
-        scroll.scrollTo(0, 0);
+    synchronized void detach() {
+        saveViewport();
+        selectedProjectId = "";
+        view.setTerminal(null, 0, 0, true);
     }
 
-    void appendLine(String line) {
-        if (line == null || line.isEmpty()) return;
-        String base = pendingSnapshot != null ? pendingSnapshot : renderedText;
-        StringBuilder next = new StringBuilder(base.length() + line.length() + 1);
-        next.append(base);
-        if (next.length() > 0) next.append('\n');
-        next.append(line);
-        if (next.length() > MAX_CHARACTERS) {
-            int start = next.length() - RETAIN_CHARACTERS;
-            int lineBreak = next.indexOf("\n", start);
-            next.delete(0, lineBreak >= 0 ? lineBreak + 1 : start);
+    synchronized void clearAll() {
+        sessions.clear();
+        selectedProjectId = "";
+        view.setTerminal(null, 0, 0, true);
+    }
+
+    synchronized String currentTerminalSessionId() {
+        SessionState state = sessions.get(selectedProjectId);
+        return state == null ? "" : state.terminalSessionId;
+    }
+
+    synchronized long currentSequence() {
+        SessionState state = sessions.get(selectedProjectId);
+        return state == null ? 0L : state.sequence;
+    }
+
+    synchronized StreamResult reset(String terminalSessionId, long baseSequence,
+                                    int rows, int columns) {
+        SessionState state = selectedState();
+        if (state == null || terminalSessionId == null || terminalSessionId.isEmpty()) {
+            return StreamResult.IGNORED;
         }
-        pendingSnapshot = null;
-        applyText(next.toString(), true);
-    }
-
-    void submitSnapshot(String text) {
-        String next = text == null ? "" : text;
-        if (next.equals(pendingSnapshot)) return;
-        if (pendingSnapshot == null && next.equals(renderedText)) return;
-        pendingSnapshot = next;
-        if (snapshotFramePosted) return;
-        snapshotFramePosted = true;
-        output.postOnAnimation(this::drainSnapshot);
-    }
-
-    private void drainSnapshot() {
-        snapshotFramePosted = false;
-        String next = pendingSnapshot;
-        pendingSnapshot = null;
-        if (next != null) applyText(next, true);
-        // If a snapshot arrived from another callback while this frame was
-        // being applied, publish only the newest value on the next frame.
-        if (pendingSnapshot != null && !snapshotFramePosted) {
-            snapshotFramePosted = true;
-            output.postOnAnimation(this::drainSnapshot);
+        if (terminalSessionId.equals(state.terminalSessionId) &&
+                state.sequence > baseSequence) {
+            return StreamResult.IGNORED;
         }
+        state.terminalSessionId = terminalSessionId;
+        state.sequence = Math.max(0L, baseSequence);
+        state.terminal.reset(rows, columns);
+        state.scrollX = 0;
+        state.scrollY = 0;
+        state.followBottom = true;
+        view.setTerminal(state.terminal, 0, 0, true);
+        return StreamResult.APPLIED;
     }
 
-    private void applyText(String next, boolean followOutput) {
-        String previous = renderedText;
-        if (next.equals(previous)) return;
-        boolean wasNearBottom = followOutput && isNearBottom();
-
-        int prefix = commonPrefix(previous, next);
-        int suffix = commonSuffix(previous, next, prefix);
-        int previousEnd = previous.length() - suffix;
-        int nextEnd = next.length() - suffix;
-
-        // Keep the TextView's existing buffer and replace only the changed
-        // range. Unchanged transcript rows retain their layout and no longer
-        // flash whenever Codex updates Working/model/composer rows.
-        buffer.replace(prefix, previousEnd, next, prefix, nextEnd);
-        renderedText = next;
-        if (wasNearBottom) requestScrollToBottom();
+    synchronized StreamResult data(String terminalSessionId, long sequence, String data) {
+        SessionState state = selectedState();
+        StreamResult validation = validate(state, terminalSessionId, sequence);
+        if (validation != StreamResult.APPLIED) return validation;
+        boolean follow = view.isNearBottom();
+        state.terminal.feed(data == null ? "" : data);
+        state.sequence = sequence;
+        state.followBottom = follow;
+        if (!state.terminal.synchronizedOutput()) view.terminalChanged(follow);
+        return StreamResult.APPLIED;
     }
 
-    private static int commonPrefix(String left, String right) {
-        int limit = Math.min(left.length(), right.length());
-        int index = 0;
-        while (index < limit && left.charAt(index) == right.charAt(index)) index++;
-        if (index > 0 && index < left.length() && index < right.length()
-                && Character.isHighSurrogate(left.charAt(index - 1))) {
-            index--;
+    synchronized StreamResult resize(String terminalSessionId, long sequence,
+                                      int rows, int columns) {
+        SessionState state = selectedState();
+        StreamResult validation = validate(state, terminalSessionId, sequence);
+        if (validation != StreamResult.APPLIED) return validation;
+        boolean follow = view.isNearBottom();
+        state.terminal.resize(rows, columns);
+        state.sequence = sequence;
+        state.followBottom = follow;
+        view.terminalChanged(follow);
+        return StreamResult.APPLIED;
+    }
+
+    synchronized void appendLine(String line) {
+        SessionState state = selectedState();
+        if (state == null || line == null || line.isEmpty()) return;
+        boolean follow = view.isNearBottom();
+        state.terminal.feed("\r\n" + line + "\r\n");
+        state.followBottom = follow;
+        view.terminalChanged(follow);
+    }
+
+    private StreamResult validate(SessionState state, String sessionId, long sequence) {
+        if (state == null || sessionId == null || sessionId.isEmpty() || sequence <= 0) {
+            return StreamResult.IGNORED;
         }
-        return index;
+        if (!sessionId.equals(state.terminalSessionId)) return StreamResult.GAP;
+        if (sequence <= state.sequence) return StreamResult.IGNORED;
+        return sequence == state.sequence + 1 ? StreamResult.APPLIED : StreamResult.GAP;
     }
 
-    private static int commonSuffix(String left, String right, int prefix) {
-        int leftIndex = left.length();
-        int rightIndex = right.length();
-        int suffix = 0;
-        while (leftIndex - suffix > prefix && rightIndex - suffix > prefix
-                && left.charAt(leftIndex - suffix - 1)
-                == right.charAt(rightIndex - suffix - 1)) {
-            suffix++;
+    private SessionState selectedState() {
+        return selectedProjectId.isEmpty() ? null : state(selectedProjectId);
+    }
+
+    private SessionState state(String projectId) {
+        SessionState value = sessions.get(projectId);
+        if (value == null) {
+            value = new SessionState();
+            sessions.put(projectId, value);
         }
-        return suffix;
+        return value;
     }
 
-    private boolean isNearBottom() {
-        int viewport = Math.max(0, scroll.getHeight()
-                - scroll.getPaddingTop() - scroll.getPaddingBottom());
-        int bottom = Math.max(0, output.getHeight() - viewport);
-        int threshold = Math.round(48 * output.getResources().getDisplayMetrics().density);
-        return bottom - scroll.getScrollY() <= threshold;
+    private void saveViewport() {
+        SessionState current = sessions.get(selectedProjectId);
+        if (current == null) return;
+        current.scrollX = view.getScrollX();
+        current.scrollY = view.getScrollY();
+        current.followBottom = view.followsBottom();
     }
 
-    private void requestScrollToBottom() {
-        if (scrollPosted) return;
-        scrollPosted = true;
-        scroll.getViewTreeObserver().addOnPreDrawListener(
-                new ViewTreeObserver.OnPreDrawListener() {
-            @Override public boolean onPreDraw() {
-                ViewTreeObserver observer = scroll.getViewTreeObserver();
-                if (observer.isAlive()) observer.removeOnPreDrawListener(this);
-                scrollPosted = false;
-                int viewport = Math.max(0, scroll.getHeight()
-                        - scroll.getPaddingTop() - scroll.getPaddingBottom());
-                int target = Math.max(0, output.getHeight() - viewport);
-                if (Math.abs(scroll.getScrollY() - target) > 1) {
-                    scroll.scrollTo(0, target);
-                }
-                return true;
-            }
-        });
-        scroll.invalidate();
+    private void trimCache() {
+        if (sessions.size() <= MAX_CACHED_PROJECTS) return;
+        Iterator<Map.Entry<String, SessionState>> iterator = sessions.entrySet().iterator();
+        while (sessions.size() > MAX_CACHED_PROJECTS && iterator.hasNext()) {
+            Map.Entry<String, SessionState> entry = iterator.next();
+            if (!entry.getKey().equals(selectedProjectId)) iterator.remove();
+        }
     }
 }

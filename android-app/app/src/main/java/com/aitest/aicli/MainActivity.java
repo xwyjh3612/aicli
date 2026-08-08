@@ -9,7 +9,6 @@ import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
 import android.widget.EditText;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -56,12 +55,12 @@ public final class MainActivity extends AppCompatActivity {
     private TextView currentProjectMeta;
     private TextView drawerConnectionStatus;
     private TextView drawerGroupLabel;
-    private TextView terminalOutput;
-    private ScrollView terminalScroll;
+    private TerminalView terminalView;
     private TerminalTextRenderer terminalRenderer;
     private View inputBar;
     private EditText messageInput;
     private RecyclerView conversationList;
+    private boolean terminalReconnectScheduled;
 
     private void initializeDeviceIdentity() {
         SharedPreferences preferences = getSharedPreferences("device_identity", MODE_PRIVATE);
@@ -93,9 +92,8 @@ public final class MainActivity extends AppCompatActivity {
         currentProjectMeta = findViewById(R.id.currentProjectMeta);
         drawerConnectionStatus = findViewById(R.id.drawerConnectionStatus);
         drawerGroupLabel = findViewById(R.id.drawerGroupLabel);
-        terminalOutput = findViewById(R.id.terminalOutput);
-        terminalScroll = findViewById(R.id.terminalScroll);
-        terminalRenderer = new TerminalTextRenderer(terminalOutput, terminalScroll);
+        terminalView = findViewById(R.id.terminalView);
+        terminalRenderer = new TerminalTextRenderer(terminalView);
         inputBar = findViewById(R.id.inputBar);
         messageInput = findViewById(R.id.messageInput);
         conversationList = findViewById(R.id.conversationList);
@@ -176,6 +174,7 @@ public final class MainActivity extends AppCompatActivity {
             if (client != null) client.close();
             client = new AicliClient(this, baseUrl);
             configuredConnectionKey = connectionKey;
+            terminalRenderer.clearAll();
         }
         if (baseUrl.isEmpty()) {
             setConnectionStatus("未绑定电脑");
@@ -291,8 +290,8 @@ public final class MainActivity extends AppCompatActivity {
         conversationAdapter.select(conversation.id);
         drawerLayout.closeDrawer(GravityCompat.START);
         lastEventId = 0L;
-        terminalRenderer.clear();
-        terminalScroll.setVisibility(View.VISIBLE);
+        terminalRenderer.selectSession(conversation.id);
+        terminalView.setVisibility(View.VISIBLE);
         inputBar.setVisibility(View.VISIBLE);
         hideEmptyState();
         client.listEvents(conversation.id, 0, new AicliClient.HistoryCallback() {
@@ -348,8 +347,9 @@ public final class MainActivity extends AppCompatActivity {
     private boolean consumeEvent(String eventJson) {
         String type = "";
         JsonObject payload = null;
+        JsonObject event = null;
         try {
-            JsonObject event = JsonParser.parseString(eventJson).getAsJsonObject();
+            event = JsonParser.parseString(eventJson).getAsJsonObject();
             type = event.has("event_type") ? event.get("event_type").getAsString()
                     : event.has("type") ? event.get("type").getAsString() : "";
             payload = event.has("payload") && event.get("payload").isJsonObject()
@@ -360,14 +360,37 @@ public final class MainActivity extends AppCompatActivity {
                 lastEventId = Math.max(lastEventId, eventId);
             }
         } catch (Exception ignored) { }
-        if ("terminal.snapshot".equals(type) && payload != null && payload.has("text")) {
-            setTerminalSnapshot(payload.get("text").getAsString());
+        if ("terminal.reset".equals(type) && event != null && payload != null) {
+            String sessionId = stringValue(event, "terminalSessionId");
+            long baseSequence = longValue(event, "baseSequence", 0L);
+            int rows = intValue(payload, "rows", 32);
+            int columns = intValue(payload, "columns", 120);
+            terminalRenderer.reset(sessionId, baseSequence, rows, columns);
             return true;
         }
-        // Legacy desktop builds emitted every TUI repaint as a separate text
-        // event. They are intentionally ignored once screen snapshots are
-        // supported, otherwise Working/composer/status rows accumulate.
-        if ("terminal.output".equals(type) || "terminal.input".equals(type)
+        if (("terminal.data".equals(type) || "terminal.resize".equals(type)) &&
+                event != null && payload != null) {
+            String sessionId = stringValue(event, "terminalSessionId");
+            long sequence = longValue(event, "sequence", 0L);
+            TerminalTextRenderer.StreamResult result;
+            if ("terminal.data".equals(type)) {
+                result = terminalRenderer.data(sessionId, sequence,
+                        stringValue(payload, "data"));
+            } else {
+                result = terminalRenderer.resize(sessionId, sequence,
+                        intValue(payload, "rows", 32),
+                        intValue(payload, "columns", 120));
+            }
+            if (result == TerminalTextRenderer.StreamResult.GAP) {
+                requestTerminalReplay();
+            }
+            return true;
+        }
+        // Plain snapshots remain an HTTP recovery artifact for SQLite and old
+        // desktop builds. The native terminal must never mix them into the VT
+        // screen or the same Codex repaint appears twice.
+        if ("terminal.snapshot".equals(type) || "terminal.output".equals(type) ||
+                "terminal.input".equals(type)
                 || type.startsWith("conversation.")) return true;
         appendOutput(formatEvent(eventJson));
         return true;
@@ -386,7 +409,28 @@ public final class MainActivity extends AppCompatActivity {
                     recoverMissedEvents();
                 });
             }
+
+            @Override public String terminalSessionId() {
+                return terminalRenderer.currentTerminalSessionId();
+            }
+
+            @Override public long terminalSequence() {
+                return terminalRenderer.currentSequence();
+            }
         });
+    }
+
+    private void requestTerminalReplay() {
+        if (terminalReconnectScheduled) return;
+        terminalReconnectScheduled = true;
+        String conversationId = selectedConversationId;
+        setConnectionStatus("终端数据补发中…");
+        terminalView.postDelayed(() -> {
+            terminalReconnectScheduled = false;
+            if (conversationId != null && conversationId.equals(selectedConversationId)) {
+                connectRealtime(conversationId);
+            }
+        }, 180L);
     }
 
     private void recoverMissedEvents() {
@@ -409,10 +453,6 @@ public final class MainActivity extends AppCompatActivity {
 
     private void appendOutput(String line) {
         terminalRenderer.appendLine(line);
-    }
-
-    private void setTerminalSnapshot(String text) {
-        terminalRenderer.submitSnapshot(text);
     }
 
     private String formatEvent(String eventJson) {
@@ -470,8 +510,29 @@ public final class MainActivity extends AppCompatActivity {
     private void hideConversation() {
         if (client != null) client.closeEvents();
         updateProjectHeader(null);
-        terminalRenderer.clear();
-        terminalScroll.setVisibility(View.GONE);
+        terminalRenderer.detach();
+        terminalView.setVisibility(View.GONE);
         inputBar.setVisibility(View.GONE);
+    }
+
+    private static String stringValue(JsonObject object, String name) {
+        return object != null && object.has(name) && !object.get(name).isJsonNull()
+                ? object.get(name).getAsString() : "";
+    }
+
+    private static long longValue(JsonObject object, String name, long fallback) {
+        try {
+            return object != null && object.has(name) ? object.get(name).getAsLong() : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
+    }
+
+    private static int intValue(JsonObject object, String name, int fallback) {
+        try {
+            return object != null && object.has(name) ? object.get(name).getAsInt() : fallback;
+        } catch (Exception ignored) {
+            return fallback;
+        }
     }
 }

@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -22,7 +23,8 @@ struct ConPtyConnectionBridge :
     ConPtyConnectionBridge(
         std::wstring working_directory,
         std::wstring startup_command,
-        std::function<void(std::wstring_view)> output_observer = {});
+        std::function<void(std::wstring_view)> output_observer = {},
+        std::function<void(std::uint32_t, std::uint32_t)> resize_observer = {});
     ~ConPtyConnectionBridge();
 
     void Initialize(const winrt::Windows::Foundation::Collections::ValueSet& settings);
@@ -58,6 +60,7 @@ private:
     std::wstring startup_command_;
     std::wstring shell_command_line_;
     std::function<void(std::wstring_view)> output_observer_;
+    std::function<void(std::uint32_t, std::uint32_t)> resize_observer_;
     uint32_t rows_{32};
     uint32_t columns_{120};
     DWORD pseudo_console_flags_{};

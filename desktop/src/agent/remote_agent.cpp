@@ -186,7 +186,10 @@ struct RemoteAgent::WsClient {
     mg_connection* connection{};
     std::wstring phone_id;
     std::wstring project_id;
+    std::wstring terminal_session_id;
+    std::uint64_t after_sequence{};
     std::atomic_bool closed{false};
+    std::atomic_bool ready{false};
     std::mutex write_mutex;
     std::shared_ptr<WsClient>* connection_handle{};
 };
@@ -277,6 +280,7 @@ void RemoteAgent::SetInputCallback(InputCallback callback) { std::scoped_lock l(
 void RemoteAgent::SetControlCallback(ControlCallback callback) { std::scoped_lock l(mutex_); control_callback_=std::move(callback); }
 void RemoteAgent::SetConversationsCallback(ConversationsCallback callback) { std::scoped_lock l(mutex_); conversations_callback_=std::move(callback); }
 void RemoteAgent::SetEventsCallback(EventsCallback callback) { std::scoped_lock l(mutex_); events_callback_=std::move(callback); }
+void RemoteAgent::SetTerminalReplayCallback(TerminalReplayCallback callback) { std::scoped_lock l(mutex_); terminal_replay_callback_=std::move(callback); }
 void RemoteAgent::SetStatusCallback(StatusCallback callback) { std::scoped_lock l(mutex_); status_callback_=std::move(callback); }
 
 PairingInfo RemoteAgent::CreatePairing(std::int64_t lifetime_seconds) {
@@ -334,7 +338,7 @@ bool RemoteAgent::RevokeDevice(const std::wstring& phone_id) {
 void RemoteAgent::BroadcastEvent(const std::wstring& project_id, const std::string& event_json) {
     std::vector<std::shared_ptr<WsClient>> clients;
     {std::scoped_lock l(mutex_);clients=websocket_clients_;}
-    for(const auto& client:clients){if(!client||client->closed||(!client->project_id.empty()&&client->project_id!=project_id))continue;std::scoped_lock write(client->write_mutex);if(client->closed||!client->connection)continue;if(mg_websocket_write(client->connection,MG_WEBSOCKET_OPCODE_TEXT,event_json.data(),event_json.size())<=0)client->closed=true;}
+    for(const auto& client:clients){if(!client||client->closed||!client->ready||(!client->project_id.empty()&&client->project_id!=project_id))continue;std::scoped_lock write(client->write_mutex);if(client->closed||!client->ready||!client->connection)continue;if(mg_websocket_write(client->connection,MG_WEBSOCKET_OPCODE_TEXT,event_json.data(),event_json.size())<=0)client->closed=true;}
     std::scoped_lock l(mutex_);websocket_clients_.erase(std::remove_if(websocket_clients_.begin(),websocket_clients_.end(),[](const auto& c){return !c||c->closed.load();}),websocket_clients_.end());
 }
 
@@ -414,10 +418,29 @@ int RemoteAgent::OnHttp(struct mg_connection* connection) {
 }
 
 int RemoteAgent::OnWsConnect(const struct mg_connection* connection) {
-    const auto* info=mg_get_request_info(connection);if(!info)return 1;std::wstring phone,error;if(!AuthenticateRequest(connection,"GET",info->local_uri?info->local_uri:"",{},phone,&error))return 1;auto client=std::make_shared<WsClient>();client->phone_id=phone;client->project_id=Wide(QueryValue(info,"conversationId"));client->connection=const_cast<mg_connection*>(connection);auto* handle=new(std::nothrow) std::shared_ptr<WsClient>(client);if(!handle)return 1;client->connection_handle=handle;mg_set_user_connection_data(connection,handle);{std::scoped_lock l(mutex_);websocket_clients_.push_back(client);}return 0;
+    const auto* info=mg_get_request_info(connection);if(!info)return 1;std::wstring phone,error;if(!AuthenticateRequest(connection,"GET",info->local_uri?info->local_uri:"",{},phone,&error))return 1;auto client=std::make_shared<WsClient>();client->phone_id=phone;client->project_id=Wide(QueryValue(info,"conversationId"));client->terminal_session_id=Wide(QueryValue(info,"terminalSessionId"));std::int64_t after=0;if(ParseInt64(QueryValue(info,"afterSequence"),after)&&after>0)client->after_sequence=static_cast<std::uint64_t>(after);client->connection=const_cast<mg_connection*>(connection);auto* handle=new(std::nothrow) std::shared_ptr<WsClient>(client);if(!handle)return 1;client->connection_handle=handle;mg_set_user_connection_data(connection,handle);{std::scoped_lock l(mutex_);websocket_clients_.push_back(client);}return 0;
 }
 
-void RemoteAgent::OnWsReady(struct mg_connection* connection){auto* handle=static_cast<std::shared_ptr<WsClient>*>(mg_get_user_connection_data(connection));if(!handle||!*handle)return;const auto client=*handle;const std::string hello=JsonString(json{{"type","hello"},{"computerId",Utf8(computer_id_)},{"certificateSha256",Utf8(certificate_fingerprint_)}});std::scoped_lock write(client->write_mutex);if(!client->closed)mg_websocket_write(connection,MG_WEBSOCKET_OPCODE_TEXT,hello.data(),hello.size());}
+void RemoteAgent::OnWsReady(struct mg_connection* connection){
+    auto* handle=static_cast<std::shared_ptr<WsClient>*>(mg_get_user_connection_data(connection));if(!handle||!*handle)return;const auto client=*handle;
+    TerminalReplayCallback replay_callback;{std::scoped_lock l(mutex_);replay_callback=terminal_replay_callback_;}
+    const std::string hello=JsonString(json{{"type","hello"},{"computerId",Utf8(computer_id_)},{"certificateSha256",Utf8(certificate_fingerprint_)},{"terminalProtocol",1}});
+    auto send=[&](const std::string& value){if(client->closed||!client->connection)return false;if(mg_websocket_write(connection,MG_WEBSOCKET_OPCODE_TEXT,value.data(),value.size())<=0){client->closed=true;return false;}return true;};
+    std::scoped_lock write(client->write_mutex);
+    if(!send(hello))return;
+    TerminalReplayBatch first;
+    if(replay_callback&&!client->project_id.empty())first=replay_callback(client->project_id,client->terminal_session_id,client->after_sequence);
+    for(const auto& event:first.events)if(!send(event))return;
+    client->ready=true;
+    // Output produced while the first replay was being serialized was retained
+    // by TerminalStreamPublisher while this client was still hidden from live
+    // broadcasts. A second replay closes that small handshake gap. Events that
+    // race with it can be duplicated, but sequence numbers make them harmless.
+    if(replay_callback&&!client->project_id.empty()){
+        const auto second=replay_callback(client->project_id,first.session_id,first.last_sequence);
+        for(const auto& event:second.events)if(!send(event))return;
+    }
+}
 
 int RemoteAgent::OnWsData(struct mg_connection* connection,int bits,char*,size_t){if((bits&0x0f)==MG_WEBSOCKET_OPCODE_PING)return 1;auto* handle=static_cast<std::shared_ptr<WsClient>*>(mg_get_user_connection_data(connection));if(!handle||!*handle)return 0;const auto client=*handle;const auto device=store_?store_->FindDevice(client->phone_id):std::nullopt;if(!device.has_value()||!device->active){client->closed=true;return 0;}/* WebSocket is event-only. Remote input/control uses individually signed HTTP requests. */return 1;}
 

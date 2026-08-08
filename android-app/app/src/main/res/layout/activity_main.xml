@@ -113,33 +113,21 @@
                     android:layout_height="0dp"
                     android:layout_weight="1">
 
-                    <ScrollView
-                        android:id="@+id/terminalScroll"
+                    <com.aitest.aicli.TerminalView
+                        android:id="@+id/terminalView"
                         android:layout_width="match_parent"
                         android:layout_height="match_parent"
                         android:background="@drawable/bg_terminal"
                         android:clipToOutline="true"
-                        android:fillViewport="true"
-                        android:overScrollMode="ifContentScrolls"
-                        android:scrollbars="vertical"
-                        android:visibility="gone">
-
-                        <TextView
-                            android:id="@+id/terminalOutput"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:fontFamily="monospace"
-                            android:gravity="start|top"
-                            android:lineSpacingExtra="2dp"
-                            android:minHeight="280dp"
-                            android:paddingStart="14dp"
-                            android:paddingTop="10dp"
-                            android:paddingEnd="14dp"
-                            android:paddingBottom="14dp"
-                            android:textColor="#D7D7D7"
-                            android:textIsSelectable="true"
-                            android:textSize="13sp" />
-                    </ScrollView>
+                        android:fadeScrollbars="false"
+                        android:overScrollMode="never"
+                        android:paddingStart="14dp"
+                        android:paddingTop="10dp"
+                        android:paddingEnd="14dp"
+                        android:paddingBottom="14dp"
+                        android:scrollbarStyle="insideOverlay"
+                        android:scrollbars="horizontal|vertical"
+                        android:visibility="gone" />
                 </FrameLayout>
 
                 <LinearLayout

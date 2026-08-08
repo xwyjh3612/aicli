@@ -39,15 +39,10 @@ void ConversationBridge::PublishTerminalSnapshot(
     const std::wstring& project_id, const std::wstring& snapshot) {
     if (project_id.empty() || snapshot.empty()) return;
     store_.SaveTerminalSnapshot(project_id, snapshot);
-    nlohmann::json event{
-        {"conversationId", aicli::text::Utf8Text(project_id)},
-        {"event_type", "terminal.snapshot"},
-        {"type", "terminal.snapshot"},
-        {"payload", {{"text", aicli::text::Utf8Text(snapshot)}, {"replace", true}}},
-    };
-    agent_.BroadcastEvent(
-        project_id,
-        event.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+    // SQLite keeps a bounded plain-text recovery snapshot, but live phones
+    // receive the original VT stream. Broadcasting the complete flattened
+    // buffer on every TUI repaint caused duplicate content, large frames and
+    // Android layout flashes.
 }
 
 void ConversationBridge::RefreshConversations(

@@ -241,10 +241,12 @@ std::vector<wchar_t> BuildTerminalEnvironment() {
 ConPtyConnectionBridge::ConPtyConnectionBridge(
     std::wstring working_directory,
     std::wstring startup_command,
-    std::function<void(std::wstring_view)> output_observer) :
+    std::function<void(std::wstring_view)> output_observer,
+    std::function<void(std::uint32_t, std::uint32_t)> resize_observer) :
     working_directory_(std::move(working_directory)),
     startup_command_(std::move(startup_command)),
-    output_observer_(std::move(output_observer)) {
+    output_observer_(std::move(output_observer)),
+    resize_observer_(std::move(resize_observer)) {
     wchar_t system_directory[MAX_PATH]{};
     const UINT length = GetSystemDirectoryW(system_directory, MAX_PATH);
     std::filesystem::path shell = length > 0 && length < MAX_PATH
@@ -418,15 +420,28 @@ void ConPtyConnectionBridge::WriteInput(winrt::array_view<const char16_t> data) 
 }
 
 void ConPtyConnectionBridge::Resize(uint32_t rows, uint32_t columns) {
-    std::scoped_lock lock(lifecycle_mutex_);
-    rows_ = rows;
-    columns_ = columns;
-    ++resize_generation_;
-    if (!pseudo_console_) return;
-    const COORD dimensions{
-        static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
-        static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
-    ConptyResizePseudoConsole(pseudo_console_, dimensions);
+    const auto bounded_rows = std::clamp<uint32_t>(rows, 5, SHRT_MAX);
+    const auto bounded_columns = std::clamp<uint32_t>(columns, 20, SHRT_MAX);
+    bool changed = false;
+    {
+        std::scoped_lock lock(lifecycle_mutex_);
+        changed = rows_ != bounded_rows || columns_ != bounded_columns;
+        rows_ = bounded_rows;
+        columns_ = bounded_columns;
+        ++resize_generation_;
+        if (pseudo_console_) {
+            const COORD dimensions{
+                static_cast<SHORT>(bounded_columns),
+                static_cast<SHORT>(bounded_rows)};
+            ConptyResizePseudoConsole(pseudo_console_, dimensions);
+        }
+    }
+    if (changed && resize_observer_) {
+        try {
+            resize_observer_(bounded_rows, bounded_columns);
+        } catch (...) {
+        }
+    }
 }
 
 void ConPtyConnectionBridge::SetLightTheme(bool light_theme) noexcept {

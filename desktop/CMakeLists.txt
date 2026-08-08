@@ -11,6 +11,7 @@ add_executable(aicli WIN32
     src/agent/conversation_bridge.cpp
     src/agent/remote_agent.cpp
     src/agent/terminal_snapshot_publisher.cpp
+    src/agent/terminal_stream_publisher.cpp
     src/app/application_activation.cpp
     src/app/main.cpp
     src/app/runtime_components.cpp

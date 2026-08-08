@@ -2,6 +2,7 @@
 
 #include "core/models.h"
 #include "data/data_store.h"
+#include "agent/terminal_stream_protocol.h"
 
 #include <windows.h>
 
@@ -57,6 +58,10 @@ public:
     using ConversationsCallback = std::function<std::string()>;
     using EventsCallback = std::function<std::string(const std::wstring& project_id,
                                                      std::int64_t after_event_id)>;
+    using TerminalReplayCallback =
+        std::function<TerminalReplayBatch(const std::wstring& project_id,
+                                          const std::wstring& terminal_session_id,
+                                          std::uint64_t after_sequence)>;
     using StatusCallback = std::function<void(bool online, const std::wstring& message)>;
 
     RemoteAgent() = default;
@@ -73,6 +78,7 @@ public:
     void SetControlCallback(ControlCallback callback);
     void SetConversationsCallback(ConversationsCallback callback);
     void SetEventsCallback(EventsCallback callback);
+    void SetTerminalReplayCallback(TerminalReplayCallback callback);
     void SetStatusCallback(StatusCallback callback);
 
     PairingInfo CreatePairing(std::int64_t lifetime_seconds = 300);
@@ -157,6 +163,7 @@ private:
     ControlCallback control_callback_;
     ConversationsCallback conversations_callback_;
     EventsCallback events_callback_;
+    TerminalReplayCallback terminal_replay_callback_;
     StatusCallback status_callback_;
 };
 

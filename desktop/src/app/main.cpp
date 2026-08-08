@@ -26,6 +26,7 @@
 #include "agent/conversation_bridge.h"
 #include "agent/remote_agent.h"
 #include "agent/terminal_snapshot_publisher.h"
+#include "agent/terminal_stream_publisher.h"
 #include "app/application_activation.h"
 #include "app/runtime_components.h"
 #include "core/models.h"
@@ -129,7 +130,7 @@ struct AgentStatusMessage { bool online{}; std::wstring text; };
 HWND g_hwnd{}, g_list{}, g_status{}, g_new_project{}, g_settings{}, g_group{}, g_group_add{}, g_bind{}, g_devices{}, g_cli_tab{}, g_sidebar_title{}, g_search{}, g_terminal_title{};
 HWND g_detail_title{}, g_detail_folder{}, g_detail_command{}, g_detail_state{}, g_start_project{}, g_edit_project{};
 WNDPROC g_button_proc{}; HWND g_hover_button{};
-HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_modal_title{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
+HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_sidebar_title{}, g_font_project_list{}, g_font_modal_title{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
 aicli::DataStore g_store;
 aicli::agent::RemoteAgent g_remote_agent;
 aicli::agent::ConversationBridge g_conversation_bridge(g_store,g_remote_agent);
@@ -166,6 +167,7 @@ RECT g_d_name_rect{}, g_d_type_rect{}, g_d_group_rect{}, g_d_folder_rect{}, g_d_
 aicli::ui::WindowChrome g_window_chrome({ID_MINIMIZE,ID_MAXIMIZE,ID_CLOSE});
 aicli::ui::FooterStatusController g_footer_status;
 aicli::agent::TerminalSnapshotPublisher g_terminal_snapshots;
+aicli::agent::TerminalStreamPublisher g_terminal_streams;
 bool g_terminal_snapshot_timer_active{};
 int g_project_drag_source=-1;
 int g_project_drag_insert=-1;
@@ -399,18 +401,18 @@ void Layout(){
     MoveMainChild(g_devices,std::max(700,settingsX-116),10,106,32);
     MoveMainChild(g_settings,settingsX,10,72,32);
 
-    RECT search_rect{14,top+16,left-14,top+54};aicli::ui::LayoutStyledInput(g_search,search_rect,2,9);
-    MoveMainChild(g_sidebar_title,18,top+70,200,24);
-    MoveMainChild(g_new_project,left-50,top+64,36,34);
+    RECT search_rect{6,top+6,left-6,top+44};aicli::ui::LayoutStyledInput(g_search,search_rect,2,9);
+    MoveMainChild(g_sidebar_title,6,top+54,200,24);
+    MoveMainChild(g_new_project,left-42,top+48,36,34);
     SetWindowPos(g_new_project,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
     const int footer_top=r.bottom-bottom;
     g_footer_status.Layout(r,bottom);
     const int git_left=g_footer_status.git_bounds().left;
-    MoveMainChild(g_list,12,top+104,left-24,std::max(80,footer_top-(top+104)-8));
+    MoveMainChild(g_list,6,top+88,left-12,std::max(80,footer_top-(top+88)-6));
 
     MoveMainChild(g_cli_tab,left+16,top+12,96,34);
     MoveMainChild(g_terminal_title,left+132,top+19,r.right-left-150,22);
-    RECT terminal{left+16,top+58,r.right-14,r.bottom-bottom-10};
+    RECT terminal{left,top+52,r.right,r.bottom-bottom};
     const int selectedIndex=SelectedProjectIndex();
     const bool selectedRunning=selectedIndex>=0&&selectedIndex<(int)g_projects.size()&&
         g_island.HasSession(g_projects[selectedIndex].id);
@@ -475,6 +477,7 @@ void DeleteProject(){
     if(deletingRunning){
         g_island.Stop(project.id);
     }
+    g_terminal_streams.RemoveSession(project.id);
     g_store.DeleteProject(project.id);
     g_projects.erase(g_projects.begin()+index);
     RefreshProjectList();
@@ -485,16 +488,22 @@ void DeleteProject(){
 #include "ui/internal/project_context_menu_section.inl"
 bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const std::wstring& title,const std::wstring& sessionAgent,const std::wstring& project_id){
     SetText(g_terminal_title,title+L"   /   "+sessionAgent);
+    g_terminal_streams.BeginSession(project_id);
     if(g_island.Start(
            project_id,cmd,cwd,title,g_hwnd,g_status,
-           [project_id](std::wstring_view){
+           [project_id](std::wstring_view output){
+               g_terminal_streams.PublishOutput(project_id,output);
                g_terminal_snapshots.Queue(project_id);
+           },
+           [project_id](std::uint32_t rows,std::uint32_t columns){
+               g_terminal_streams.PublishResize(project_id,rows,columns);
            })){
         SetText(g_status,L"原生终端已连接    |    "+sessionAgent);
         Layout();
         return true;
     }
     const std::wstring error=g_island.LastError().empty()?L"无法创建原生终端控件":g_island.LastError();
+    g_terminal_streams.RemoveSession(project_id);
     SetText(g_detail_state,L"状态: 启动失败");
     SetText(g_status,L"原生终端启动失败: "+error);
     Layout(); return false;
@@ -528,6 +537,15 @@ void UpdateHeaderTelemetry(){
         !g_store.GetSetting(L"remote_address").empty());
 }
 void ConfigureRemoteAgent(){
+    g_terminal_streams.SetBroadcastCallback([](const std::wstring& project,
+                                                const std::string& event){
+        g_remote_agent.BroadcastEvent(project,event);
+    });
+    g_remote_agent.SetTerminalReplayCallback(
+        [](const std::wstring& project,const std::wstring& session,
+           std::uint64_t after){
+            return g_terminal_streams.Replay(project,session,after);
+        });
     g_remote_agent.SetConversationsCallback([]{return ConversationsJson();});
     g_remote_agent.SetEventsCallback([](const std::wstring& project,std::int64_t after){return EventsJson(project,after);});
     g_remote_agent.SetInputCallback([](const std::wstring& project,const std::wstring& phone,
@@ -647,10 +665,10 @@ void ResizeModalHosts(HWND owner){
 LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     if(g_project_drag_message&&m==g_project_drag_message)return HandleProjectDragListMessage(h,l);
     switch(m){
-    case WM_CREATE:{g_hwnd=h;g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY); g_font=CreateFontW(-15,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_medium=CreateFontW(-17,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_small=CreateFontW(-13,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_modal_title=CreateFontW(-21,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_icon_font=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe MDL2 Assets");
+    case WM_CREATE:{g_hwnd=h;g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY); g_font=CreateFontW(-15,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_medium=CreateFontW(-17,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_small=CreateFontW(-13,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_sidebar_title=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_project_list=CreateFontW(-14,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_modal_title=CreateFontW(-21,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_icon_font=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe MDL2 Assets");
         g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);g_cli_tab=CreateWindowW(L"BUTTON",L"AI 终端",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,302,72,100,30,h,(HMENU)(INT_PTR)ID_CLI_TAB,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings,g_cli_tab};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
-        g_sidebar_title=CreateWindowW(L"STATIC",L"项目与会话",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_medium,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");
-        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font,TRUE);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);RefreshProjectList();
+        g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputFocusBorderOnly(g_search);
+        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);RefreshProjectList();
         g_detail_title=CreateWindowW(L"STATIC",L"选择一个项目",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         g_detail_folder=CreateWindowW(L"STATIC",L"文件夹: 未设置",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         g_detail_command=CreateWindowW(L"STATIC",L"启动命令: 未设置",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -841,7 +859,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         EndPaint(h,&ps);
         return 0;
     }
-    case WM_DESTROY:g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_DESTROY:g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}PostQuitMessage(0);return 0; }
     return DefWindowProcW(h,m,w,l);
 }
 }

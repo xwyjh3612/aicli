@@ -13,6 +13,9 @@ constexpr wchar_t kStyledInputProperty[] = L"Aicli.StyledInput";
 struct StyledInputState {
     std::wstring placeholder;
     COLORREF placeholder_color{RGB(126, 136, 151)};
+    COLORREF focus_border_color{RGB(72, 137, 224)};
+    bool focus_border_only{};
+    int radius{5};
 };
 
 StyledInputState* State(HWND control) {
@@ -99,6 +102,22 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
                 ReleaseDC(control, dc);
             }
         }
+        if (state && state->focus_border_only && GetFocus() == control) {
+            HDC dc = GetDC(control);
+            if (dc) {
+                RECT rect{};
+                GetClientRect(control, &rect);
+                HPEN pen = CreatePen(PS_SOLID, 1, state->focus_border_color);
+                const auto old_pen = SelectObject(dc, pen);
+                const auto old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+                RoundRect(dc, 0, 0, std::max(1L, rect.right),
+                          std::max(1L, rect.bottom), state->radius, state->radius);
+                SelectObject(dc, old_brush);
+                SelectObject(dc, old_pen);
+                DeleteObject(pen);
+                ReleaseDC(control, dc);
+            }
+        }
         return result;
     }
     case WM_NCDESTROY: {
@@ -159,12 +178,21 @@ void SetStyledInputText(HWND control, const std::wstring& value) {
 void SetStyledInputTheme(HWND control, const ThemePalette& palette) {
     if (auto* state = State(control)) {
         state->placeholder_color = palette.muted;
+        state->focus_border_color = palette.accent;
         RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE);
+    }
+}
+
+void SetStyledInputFocusBorderOnly(HWND control, bool enabled) {
+    if (auto* state = State(control)) {
+        state->focus_border_only = enabled;
+        InvalidateRect(control, nullptr, FALSE);
     }
 }
 
 void LayoutStyledInput(HWND control, const RECT& outer, int inset, int radius) {
     if (!control) return;
+    if (auto* state = State(control)) state->radius = radius;
     const int width = std::max(1L, outer.right - outer.left - inset * 2);
     const int height = std::max(1L, outer.bottom - outer.top - inset * 2);
     RECT current{};

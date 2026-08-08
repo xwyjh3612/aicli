@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -30,7 +31,8 @@ public:
                const std::wstring& title,
                HWND owner,
                HWND status,
-               std::function<void(std::wstring_view)> output_observer = {});
+               std::function<void(std::wstring_view)> output_observer = {},
+               std::function<void(std::uint32_t, std::uint32_t)> resize_observer = {});
     bool HasSession(std::wstring_view project_id) const;
     bool Activate(std::wstring_view project_id, bool focus = true);
     void Stop(std::wstring_view project_id);

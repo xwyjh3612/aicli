@@ -25,6 +25,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
@@ -75,7 +76,12 @@ public final class AicliClient {
 
     public interface ConversationCallback { void onSuccess(List<Conversation> conversations); void onError(String message); }
     public interface ActionCallback { void onSuccess(); void onError(String message); }
-    public interface EventCallback { void onEvent(String eventJson); void onClosed(); }
+    public interface EventCallback {
+        void onEvent(String eventJson);
+        void onClosed();
+        default String terminalSessionId() { return ""; }
+        default long terminalSequence() { return 0L; }
+    }
     public interface HistoryCallback { void onSuccess(List<String> events); void onError(String message); }
 
     public interface PairingCallback {
@@ -103,6 +109,7 @@ public final class AicliClient {
     private volatile WebSocket eventsSocket;
     private volatile EventCallback eventsCallback;
     private volatile String eventsConversationId = "";
+    private final AtomicLong eventsGeneration = new AtomicLong();
     private ScheduledFuture<?> reconnectTask;
     private volatile boolean closed;
 
@@ -246,37 +253,57 @@ public final class AicliClient {
 
     public void connectEvents(String conversationId, EventCallback callback) {
         closeEvents();
+        final long generation = eventsGeneration.incrementAndGet();
         eventsCallback = callback;
         eventsConversationId = conversationId == null ? "" : conversationId;
         closed = false;
         executor.execute(() -> {
+            if (generation != eventsGeneration.get() || closed) return;
             try {
                 ensureAuthenticated();
                 String path = "/api/events";
                 String safeConversation = safePath(conversationId);
-                if (!safeConversation.isEmpty()) path += "?conversationId=" + safeConversation;
+                String safeTerminalSession = safePath(callback == null
+                        ? "" : callback.terminalSessionId());
+                long afterSequence = callback == null
+                        ? 0L : Math.max(0L, callback.terminalSequence());
+                StringBuilder query = new StringBuilder();
+                if (!safeConversation.isEmpty()) {
+                    query.append("conversationId=").append(safeConversation);
+                }
+                if (!safeTerminalSession.isEmpty()) {
+                    if (query.length() > 0) query.append('&');
+                    query.append("terminalSessionId=").append(safeTerminalSession);
+                }
+                if (afterSequence > 0L) {
+                    if (query.length() > 0) query.append('&');
+                    query.append("afterSequence=").append(afterSequence);
+                }
+                if (query.length() > 0) path += "?" + query;
                 Request request = signedBuilder("GET", path, "", true)
                         .url(webSocketUrl(path)).build();
                 eventsSocket = http.newWebSocket(request, new WebSocketListener() {
                     @Override public void onMessage(@NonNull WebSocket socket, @NonNull String text) {
+                        if (generation != eventsGeneration.get()) return;
                         EventCallback current = eventsCallback;
                         if (current != null) current.onEvent(text);
                     }
                     @Override public void onClosed(@NonNull WebSocket socket, int code, @NonNull String reason) {
-                        scheduleReconnect();
+                        scheduleReconnect(generation, conversationId, callback);
                     }
                     @Override public void onFailure(@NonNull WebSocket socket, @NonNull Throwable error, Response response) {
-                        scheduleReconnect();
+                        scheduleReconnect(generation, conversationId, callback);
                     }
                 });
             } catch (Exception exception) {
                 switchToAlternateAddress();
-                scheduleReconnect();
+                scheduleReconnect(generation, conversationId, callback);
             }
         });
     }
 
     public void closeEvents() {
+        eventsGeneration.incrementAndGet();
         closed = true;
         eventsCallback = null;
         if (reconnectTask != null) reconnectTask.cancel(false);
@@ -549,14 +576,17 @@ public final class AicliClient {
         };
     }
 
-    private void scheduleReconnect() {
-        EventCallback callback = eventsCallback;
-        String conversationId = eventsConversationId;
-        if (closed || callback == null) return;
+    private void scheduleReconnect(long generation, String conversationId,
+                                   EventCallback callback) {
+        if (generation != eventsGeneration.get() || closed || callback == null) return;
         callback.onClosed();
         if (reconnectTask == null || reconnectTask.isDone()) {
             reconnectTask = executor.schedule(
-                    () -> connectEvents(conversationId, callback), 2, TimeUnit.SECONDS);
+                    () -> {
+                        if (generation == eventsGeneration.get() && !closed) {
+                            connectEvents(conversationId, callback);
+                        }
+                    }, 2, TimeUnit.SECONDS);
         }
     }
 

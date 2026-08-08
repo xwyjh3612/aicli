@@ -59,19 +59,12 @@ void PaintMainWindow(HDC target_dc,
     SelectObject(dc, previous_pen);
     DeleteObject(separator);
 
-    const COLORREF search_border = GetFocus() == search
-        ? theme.accent
-        : theme.border;
-    DrawRoundedOutline(dc, RECT{14, 68, 272, 108}, search_border, 10);
-    RECT search_line{
-        22, 105, 264, GetFocus() == search ? 107 : 106};
-    HBRUSH search_brush = CreateSolidBrush(
-        GetFocus() == search ? theme.accent : theme.muted);
-    FillRect(dc, &search_line, search_brush);
-    DeleteObject(search_brush);
-    DrawRoundedOutline(
-        dc, RECT{302, 110, client.right - 14, client.bottom - 40},
-        theme.border, 10);
+    // The EDIT already owns the exact requested field surface and changes its
+    // fill on focus. Do not paint a second, larger outline/underline behind it;
+    // that old fixed geometry became visibly offset after the sidebar was
+    // tightened to six pixels. The native terminal also fills its complete
+    // work area now, so it no longer needs a surrounding decorative frame.
+    (void)search;
 
     HBRUSH logo = CreateSolidBrush(theme.accent_strong);
     HPEN logo_pen = CreatePen(PS_SOLID, 1, RGB(75, 143, 244));
