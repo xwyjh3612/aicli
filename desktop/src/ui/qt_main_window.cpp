@@ -6,6 +6,7 @@
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QEventLoop>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -432,13 +433,39 @@ void MainWindow::projectSelectionChanged() {
 }
 
 void MainWindow::startSelectedProject() {
-    const auto id = controller_.selectedProjectId();
+    auto id = selectedProjectIdFromList();
+    if (id.empty()) id = controller_.selectedProjectId();
     if (id.empty()) return;
+
+    // Keep the action tied to the row the user actually clicked. State-change
+    // notifications rebuild the list asynchronously, so relying only on the
+    // controller's previous selection can briefly start another project.
+    if (id != controller_.selectedProjectId()) controller_.SetSelectedProject(id);
+
+    start_project_->setEnabled(false);
+    start_project_->setText(QStringLiteral("正在启动…"));
     setStatus(L"正在启动终端…");
-    if (!controller_.StartProject(id)) {
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+    const bool started = controller_.StartProject(id);
+    QApplication::restoreOverrideCursor();
+
+    if (!started) {
         QMessageBox::warning(this, QStringLiteral("启动项目"),
                              QStringLiteral("终端启动失败，请查看底部状态。"));
+        refreshAll();
+        return;
     }
+
+    // A successful StartProject already owns a real TermControl/ConPTY
+    // session. Switch the Qt stack immediately instead of waiting for a
+    // queued state refresh; otherwise the process starts behind the prestart
+    // page and the button appears to have done nothing.
+    workspace_->setCurrentWidget(terminal_host_);
+    controller_.ActivateProject(id, true);
+    controller_.SetTerminalVisible(true);
+    controller_.ResizeTerminal(terminal_host_->width(), terminal_host_->height());
+    setStatus(L"原生终端已连接");
     refreshAll();
 }
 
@@ -716,6 +743,20 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
     // HWND from the event handler; use the handle supplied by Windows.
     const HWND window = native->hwnd;
     switch (native->message) {
+    case WM_NCCALCSIZE:
+        if (native->wParam) {
+            // Qt's FramelessWindowHint initially creates a full-client HWND.
+            // applyNativeWindowStyle later restores WS_THICKFRAME for native
+            // resize/snap behavior. Without owning NCCALCSIZE, Windows then
+            // inserts a 7 px non-client frame while Qt still lays out against
+            // the old full size: the right edge and footer end up outside the
+            // visible window, and the XAML island overlaps the footer. Keep
+            // the complete outer rectangle as client space and use our
+            // WM_NCHITTEST implementation for resize borders.
+            *result = 0;
+            return true;
+        }
+        break;
     case WM_NCHITTEST: {
         const POINT screen{GET_X_LPARAM(native->lParam), GET_Y_LPARAM(native->lParam)};
         RECT rect{};
@@ -753,6 +794,15 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
         auto* info = reinterpret_cast<MINMAXINFO*>(native->lParam);
         info->ptMinTrackSize.x = 900;
         info->ptMinTrackSize.y = 600;
+        const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO monitor_info{sizeof(monitor_info)};
+        if (monitor && GetMonitorInfoW(monitor, &monitor_info)) {
+            info->ptMaxPosition.x = monitor_info.rcWork.left - monitor_info.rcMonitor.left;
+            info->ptMaxPosition.y = monitor_info.rcWork.top - monitor_info.rcMonitor.top;
+            info->ptMaxSize.x = monitor_info.rcWork.right - monitor_info.rcWork.left;
+            info->ptMaxSize.y = monitor_info.rcWork.bottom - monitor_info.rcWork.top;
+            info->ptMaxTrackSize = info->ptMaxSize;
+        }
         break;
     }
     case WM_DWMCOMPOSITIONCHANGED:
