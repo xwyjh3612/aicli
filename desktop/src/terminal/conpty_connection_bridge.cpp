@@ -59,8 +59,9 @@ using NtCreateNamedPipeFileFunction = NTSTATUS(NTAPI*)(
 constexpr ULONG kFilePipeByteStreamType = 0;
 constexpr ULONG kFilePipeByteStreamMode = 0;
 constexpr ULONG kFilePipeQueueOperation = 0;
-constexpr std::wstring_view kCodexInputBackground = L"\x1b[48;2;41;41;41m";
-constexpr std::wstring_view kLightInputBackground = L"\x1b[48;2;232;235;239m";
+constexpr std::wstring_view kCodexInputBackgroundParameters = L"48;2;41;41;41";
+constexpr std::wstring_view kLightInputBackgroundParameters = L"48;2;232;235;239";
+constexpr std::wstring_view kIndexedInputBackgroundParameters = L"40";
 
 bool NtSucceeded(NTSTATUS status) noexcept {
     return status >= 0;
@@ -421,66 +422,11 @@ void ConPtyConnectionBridge::Resize(uint32_t rows, uint32_t columns) {
     std::scoped_lock lock(lifecycle_mutex_);
     rows_ = rows;
     columns_ = columns;
-    ++resize_generation_;
     if (!pseudo_console_) return;
     const COORD dimensions{
         static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
         static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
     ConptyResizePseudoConsole(pseudo_console_, dimensions);
-}
-
-void ConPtyConnectionBridge::SetLightTheme(bool light_theme) noexcept {
-    light_theme_.store(light_theme, std::memory_order_relaxed);
-}
-
-void ConPtyConnectionBridge::RefreshViewport() {
-    // A settings-only update changes TermControl's palette, but a full-screen
-    // TUI such as Codex owns the colors already stored in the terminal cells.
-    // Keep the probe and restore in separate frames. Two immediate resize
-    // calls are coalesced by ConPTY/Codex and the TUI never observes a change.
-    uint32_t rows{};
-    uint32_t columns{};
-    uint64_t generation{};
-    {
-        std::scoped_lock lock(lifecycle_mutex_);
-        if (!pseudo_console_ || closing_) return;
-        rows = rows_;
-        columns = columns_;
-        generation = resize_generation_.load(std::memory_order_relaxed);
-    }
-    const uint32_t probe_columns = columns > 20 ? columns - 1 : columns + 1;
-    {
-        std::scoped_lock lock(lifecycle_mutex_);
-        if (!pseudo_console_ || closing_) return;
-        const COORD probe{
-            static_cast<SHORT>(std::clamp<uint32_t>(probe_columns, 20, SHRT_MAX)),
-            static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
-        ConptyResizePseudoConsole(pseudo_console_, probe);
-    }
-
-    auto strong = get_strong();
-    try {
-        std::thread([strong = std::move(strong), rows, columns, generation] {
-            Sleep(75);
-            std::scoped_lock lock(strong->lifecycle_mutex_);
-            if (!strong->pseudo_console_ || strong->closing_ ||
-                strong->resize_generation_.load(std::memory_order_relaxed) != generation) {
-                return;
-            }
-            const COORD original{
-                static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
-                static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
-            ConptyResizePseudoConsole(strong->pseudo_console_, original);
-        }).detach();
-    } catch (...) {
-        std::scoped_lock lock(lifecycle_mutex_);
-        if (pseudo_console_ && !closing_) {
-            const COORD original{
-                static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
-                static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
-            ConptyResizePseudoConsole(pseudo_console_, original);
-        }
-    }
 }
 
 void ConPtyConnectionBridge::ReadLoop() {
@@ -591,7 +537,6 @@ std::wstring ConPtyConnectionBridge::TransformDisplayOutput(
     display_pending_.append(output);
     std::wstring rendered;
     rendered.reserve(display_pending_.size());
-    const bool light = light_theme_.load(std::memory_order_relaxed);
 
     size_t position = 0;
     while (position < display_pending_.size()) {
@@ -624,10 +569,32 @@ std::wstring ConPtyConnectionBridge::TransformDisplayOutput(
 
         const std::wstring_view sequence{
             display_pending_.data() + escape, final - escape + 1};
-        if (light && sequence == kCodexInputBackground) {
-            rendered.append(kLightInputBackground);
-        } else if (!light && sequence == kLightInputBackground) {
-            rendered.append(kCodexInputBackground);
+        if (sequence.back() == L'm') {
+            // Codex often combines the composer background with foreground,
+            // underline and reset parameters in one SGR sequence. Rewriting
+            // only an entire exact sequence misses those real-world cases and
+            // leaves an immutable dark RGB block after switching to light.
+            std::wstring parameters{sequence.substr(2, sequence.size() - 3)};
+            bool changed = false;
+            for (const auto fixed_background : {
+                     kCodexInputBackgroundParameters,
+                     kLightInputBackgroundParameters}) {
+                size_t background = parameters.find(fixed_background);
+                while (background != std::wstring::npos) {
+                    parameters.replace(background, fixed_background.size(),
+                                       kIndexedInputBackgroundParameters);
+                    background = parameters.find(fixed_background,
+                                                 background + kIndexedInputBackgroundParameters.size());
+                    changed = true;
+                }
+            }
+            if (changed) {
+                rendered.append(L"\x1b[");
+                rendered.append(parameters);
+                rendered.push_back(L'm');
+            } else {
+                rendered.append(sequence);
+            }
         } else {
             rendered.append(sequence);
         }

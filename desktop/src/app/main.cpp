@@ -503,7 +503,6 @@ public:
             session->conpty_connection =
                 winrt::make_self<aicli::terminal::ConPtyConnectionBridge>(
                     cwd, command, std::move(output_observer));
-            session->conpty_connection->SetLightTheme(light_theme_);
             session->connection = session->conpty_connection.as<
                 winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection>();
             set_stage(L"create TermControl");
@@ -643,14 +642,10 @@ public:
             }
             for (auto& [_, session] : sessions_) {
                 if (!session->control || !session->control_settings) continue;
-                if (session->conpty_connection)
-                    session->conpty_connection->SetLightTheme(light);
                 ApplyPalette(session->control_settings, light);
                 if (session->unfocused_settings) ApplyPalette(session->unfocused_settings, light);
                 session->control.UpdateControlSettings(
                     session->control_settings, session->unfocused_settings);
-                if (session->conpty_connection)
-                    session->conpty_connection->RefreshViewport();
                 session->control.UpdateLayout();
             }
             if (grid_) grid_.UpdateLayout();
