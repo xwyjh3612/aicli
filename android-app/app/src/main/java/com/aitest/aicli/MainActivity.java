@@ -118,10 +118,6 @@ public final class MainActivity extends AppCompatActivity {
         findViewById(R.id.closeDrawerButton).setOnClickListener(view ->
                 drawerLayout.closeDrawer(GravityCompat.START));
         findViewById(R.id.sendButton).setOnClickListener(view -> sendInput());
-        findViewById(R.id.pauseButton).setOnClickListener(view -> sendControl("pause"));
-        findViewById(R.id.continueButton).setOnClickListener(view -> sendControl("continue"));
-        findViewById(R.id.cancelButton).setOnClickListener(view -> sendControl("cancel"));
-        findViewById(R.id.restartButton).setOnClickListener(view -> sendControl("restart"));
 
         messageInput.setOnEditorActionListener((view, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEND ||
@@ -294,7 +290,6 @@ public final class MainActivity extends AppCompatActivity {
         terminalOutput.setText("");
         terminalScroll.setVisibility(View.VISIBLE);
         inputBar.setVisibility(View.VISIBLE);
-        setControlsVisible(true);
         hideEmptyState();
         client.listEvents(conversation.id, 0, new AicliClient.HistoryCallback() {
             @Override public void onSuccess(List<String> events) {
@@ -324,18 +319,6 @@ public final class MainActivity extends AppCompatActivity {
             @Override public void onSuccess() { }
             @Override public void onError(String message) {
                 runOnUiThread(() -> appendOutput("[发送失败] " + message));
-            }
-        });
-    }
-
-    private void sendControl(String action) {
-        if (client == null || selectedConversationId == null) return;
-        client.control(selectedConversationId, action, new AicliClient.ActionCallback() {
-            @Override public void onSuccess() {
-                runOnUiThread(() -> setConnectionStatus("操作已发送 · " + action));
-            }
-            @Override public void onError(String message) {
-                runOnUiThread(() -> Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show());
             }
         });
     }
@@ -456,10 +439,6 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void setControlsVisible(boolean visible) {
-        findViewById(R.id.controlBar).setVisibility(visible ? View.VISIBLE : View.GONE);
-    }
-
     private void toggleConversationList() {
         if (drawerLayout.isDrawerOpen(GravityCompat.START)) {
             drawerLayout.closeDrawer(GravityCompat.START);
@@ -487,6 +466,5 @@ public final class MainActivity extends AppCompatActivity {
         if (client != null) client.closeEvents();
         terminalScroll.setVisibility(View.GONE);
         inputBar.setVisibility(View.GONE);
-        setControlsVisible(false);
     }
 }

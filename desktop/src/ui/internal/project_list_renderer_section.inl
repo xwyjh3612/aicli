@@ -1,0 +1,292 @@
+// Shared owner-draw buttons and project-list row rendering. Included by
+// app/main.cpp inside its private namespace while the Win32 view state is
+// progressively converted to explicit controllers.
+
+LRESULT CALLBACK ButtonProc(HWND h,UINT m,WPARAM w,LPARAM l){
+    if(m==WM_ERASEBKGND)return 1;
+    if(m==WM_MOUSEMOVE){if(g_hover_button!=h){HWND old=g_hover_button;g_hover_button=h;if(old)InvalidateRect(old,nullptr,FALSE);InvalidateRect(h,nullptr,FALSE);TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,h,0};TrackMouseEvent(&t);}}
+    else if(m==WM_MOUSELEAVE){if(g_hover_button==h)g_hover_button=nullptr;InvalidateRect(h,nullptr,FALSE);}
+    else if(m==WM_LBUTTONDOWN||m==WM_LBUTTONUP||m==WM_SETFOCUS||m==WM_KILLFOCUS){InvalidateRect(h,nullptr,FALSE);}
+    return CallWindowProcW(g_button_proc,h,m,w,l);
+}
+void InvalidateProjectRow(HWND list,int row){
+    if(!list||row<0)return;
+    RECT item{};
+    if(SendMessageW(list,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))!=LB_ERR)
+        InvalidateRect(list,&item,FALSE);
+}
+LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
+                                         UINT_PTR,DWORD_PTR){
+    if(m==WM_ERASEBKGND){
+        // Owner-drawn rows paint their complete cards.  Hover invalidations
+        // use erase=FALSE, so they never pass through a blank frame.  A real
+        // background erase (initial show/resize) still has to fill the empty
+        // area below the last project, otherwise the LISTBOX appears
+        // transparent and exposes windows behind the application.
+        HDC dc=reinterpret_cast<HDC>(w);
+        if(dc){
+            RECT client{};GetClientRect(h,&client);
+            HBRUSH brush=g_list_brush?g_list_brush:CreateSolidBrush(panel);
+            FillRect(dc,&client,brush);
+            if(!g_list_brush)DeleteObject(brush);
+        }
+        return 1;
+    }else if(m==WM_MOUSEMOVE){
+        const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
+        const int next=HIWORD(hit)?-1:static_cast<int>(LOWORD(hit));
+        if(next!=g_project_hover_row){
+            const int previous=g_project_hover_row;
+            g_project_hover_row=next;
+            InvalidateProjectRow(h,previous);
+            InvalidateProjectRow(h,next);
+        }
+        TRACKMOUSEEVENT tracking{sizeof(tracking),TME_LEAVE,h,0};
+        TrackMouseEvent(&tracking);
+    }else if(m==WM_MOUSELEAVE){
+        const int previous=g_project_hover_row;
+        g_project_hover_row=-1;
+        InvalidateProjectRow(h,previous);
+    }else if(m==WM_SETCURSOR&&LOWORD(l)==HTCLIENT&&
+             aicli::ui::GetStyledInputText(g_search).empty()){
+        POINT point{};
+        GetCursorPos(&point);
+        ScreenToClient(h,&point);
+        const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,MAKELPARAM(point.x,point.y));
+        if(!HIWORD(hit)){
+            RECT item{};
+            const int row=static_cast<int>(LOWORD(hit));
+            if(SendMessageW(h,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))!=LB_ERR){
+                const RECT handle{item.left+3,item.top+3,item.left+31,item.bottom-3};
+                if(PtInRect(&handle,point)){
+                    SetCursor(LoadCursorW(nullptr,IDC_SIZEALL));
+                    return TRUE;
+                }
+            }
+        }
+    }else if(m==WM_SETFOCUS||m==WM_KILLFOCUS){
+        const LRESULT result=DefSubclassProc(h,m,w,l);
+        const LRESULT selected=SendMessageW(h,LB_GETCURSEL,0,0);
+        if(selected!=LB_ERR)InvalidateProjectRow(h,static_cast<int>(selected));
+        return result;
+    }else if(m==WM_NCDESTROY){
+        g_project_hover_row=-1;
+        RemoveWindowSubclass(h,ProjectListSubclassProc,kProjectListSubclassId);
+    }
+    return DefSubclassProc(h,m,w,l);
+}
+void DrawModernButton(const DRAWITEMSTRUCT* item){
+    RECT r=item->rcItem;const bool down=(item->itemState&ODS_SELECTED)!=0;const bool disabled=(item->itemState&ODS_DISABLED)!=0;const bool hover=item->hwndItem==g_hover_button;const bool focused=GetFocus()==item->hwndItem;HWND parentWindow=GetParent(item->hwndItem);
+    const bool projectDropDown=parentWindow==g_project_dialog&&(item->CtlID==ID_D_TYPE||item->CtlID==ID_D_GROUP);
+    const bool projectButton=parentWindow==g_project_dialog;
+    COLORREF under=panel;
+    bool onMainTitleBar=false;
+    if(parentWindow==g_hwnd){POINT pos{};ClientToScreen(item->hwndItem,&pos);ScreenToClient(parentWindow,&pos);onMainTitleBar=pos.y<g_layout_metrics.title_bar_height;under=onMainTitleBar?TitleBarBackground():(pos.x<g_layout_metrics.sidebar_width?panel:bg);}
+    HBRUSH clear=CreateSolidBrush(under);FillRect(item->hDC,&r,clear);DeleteObject(clear);
+    wchar_t text[256]{};GetWindowTextW(item->hwndItem,text,256);SetBkMode(item->hDC,TRANSPARENT);
+    const bool title_button=parentWindow==g_hwnd&&
+        (item->CtlID==ID_MINIMIZE||item->CtlID==ID_MAXIMIZE||item->CtlID==ID_CLOSE);
+    if(title_button){
+        COLORREF fill=TitleBarBackground();
+        if(hover){
+            if(item->CtlID==ID_CLOSE)fill=g_theme.titlebar_close_hover;
+            else fill=g_theme.titlebar_hover;
+        }
+        if(down){
+            if(item->CtlID==ID_CLOSE)fill=g_theme.titlebar_close_pressed;
+            else fill=g_theme.titlebar_pressed;
+        }
+        HBRUSH button_brush=CreateSolidBrush(fill);FillRect(item->hDC,&r,button_brush);DeleteObject(button_brush);
+        const COLORREF glyph=(item->CtlID==ID_CLOSE&&hover)?RGB(255,255,255):TitleBarText();
+        HPEN glyph_pen=CreatePen(PS_SOLID,1,glyph);auto old_pen=SelectObject(item->hDC,glyph_pen);
+        const int cx=(r.left+r.right)/2,cy=(r.top+r.bottom)/2;
+        if(item->CtlID==ID_MINIMIZE){MoveToEx(item->hDC,cx-7,cy+1,nullptr);LineTo(item->hDC,cx+7,cy+1);}
+        else if(item->CtlID==ID_MAXIMIZE){
+            if(IsZoomed(g_hwnd)){MoveToEx(item->hDC,cx-4,cy-6,nullptr);LineTo(item->hDC,cx+7,cy-6);LineTo(item->hDC,cx+7,cy+5);MoveToEx(item->hDC,cx-7,cy-3,nullptr);LineTo(item->hDC,cx+4,cy-3);LineTo(item->hDC,cx+4,cy+8);LineTo(item->hDC,cx-7,cy+8);LineTo(item->hDC,cx-7,cy-3);}
+            else{Rectangle(item->hDC,cx-7,cy-6,cx+7,cy+7);}
+        }else{MoveToEx(item->hDC,cx-6,cy-6,nullptr);LineTo(item->hDC,cx+6,cy+6);MoveToEx(item->hDC,cx+6,cy-6,nullptr);LineTo(item->hDC,cx-6,cy+6);}
+        SelectObject(item->hDC,old_pen);DeleteObject(glyph_pen);return;
+    }
+    if(projectDropDown){
+        const COLORREF fill=down?g_theme.pressed:
+            (focused?g_theme.field_focus:(hover?g_theme.hover:g_theme.field));
+        HBRUSH brush=CreateSolidBrush(fill);auto oldBrush=SelectObject(item->hDC,brush);auto oldPen=SelectObject(item->hDC,GetStockObject(NULL_PEN));RoundRect(item->hDC,r.left,r.top,r.right,r.bottom,7,7);SelectObject(item->hDC,oldBrush);SelectObject(item->hDC,oldPen);DeleteObject(brush);
+        SetTextColor(item->hDC,fg);SelectObject(item->hDC,g_font);RECT textRect{r.left+10,r.top,r.right-34,r.bottom};DrawTextW(item->hDC,text,-1,&textRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        SetTextColor(item->hDC,focused?accent:muted);SelectObject(item->hDC,g_icon_font?g_icon_font:g_font);RECT arrow{r.right-30,r.top,r.right-7,r.bottom};DrawTextW(item->hDC,L"\xE70D",-1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);return;
+    }
+    COLORREF fill=under,stroke=RGB(52,59,70);
+    if(projectButton){
+        const bool primary=item->CtlID==ID_D_OK;
+        if(primary){fill=disabled?g_theme.surface:(down?g_theme.accent_strong:(hover?g_theme.accent:g_theme.accent_strong));stroke=hover?g_theme.accent:g_theme.accent_strong;}
+        else{fill=disabled?g_theme.surface:(down?g_theme.pressed:(hover?g_theme.hover:g_theme.field));stroke=hover?g_theme.accent:g_theme.border;}
+    }else{
+        if(item->CtlID==ID_CLI_TAB||item->CtlID==ID_D_CANCEL||item->CtlID==ID_EDIT_PROJECT)fill=elevated;
+        if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)fill=accent2;
+        if(disabled)fill=g_light_theme?RGB(235,238,243):RGB(33,37,45);
+        else if(down){
+            // Header actions already provide a hover cue.  A bright blue
+            // pressed frame is perceived as a flash when a modal opens on
+            // the next compositor frame, especially on the fast second open.
+            // Keep the pressed surface identical to hover for these actions.
+            fill=onMainTitleBar
+                ?(g_light_theme?RGB(229,235,243):RGB(34,40,51))
+                :(g_light_theme?RGB(205,220,241):RGB(37,91,174));
+        }else if(hover)fill=g_light_theme?RGB(229,235,243):RGB(34,40,51);
+        if(item->CtlID==ID_CLOSE)fill=down?RGB(157,44,55):(hover?RGB(120,38,47):panel);if(item->CtlID==ID_MINIMIZE)fill=hover?RGB(37,42,51):panel;
+        stroke=disabled?(g_light_theme?RGB(218,223,231):RGB(43,48,57)):(hover?(g_light_theme?RGB(164,181,205):RGB(78,104,142)):border);if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)stroke=hover?RGB(117,177,255):RGB(64,128,225);
+    }
+    HBRUSH brush=CreateSolidBrush(fill);HPEN pen=CreatePen(PS_SOLID,1,stroke);auto oldBrush=SelectObject(item->hDC,brush);auto oldPen=SelectObject(item->hDC,pen);RoundRect(item->hDC,r.left+1,r.top+1,r.right-1,r.bottom-1,9,9);SelectObject(item->hDC,oldBrush);SelectObject(item->hDC,oldPen);DeleteObject(brush);DeleteObject(pen);
+    const bool primary_button=item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT;COLORREF text_color=disabled?muted:((primary_button||(!g_light_theme&&hover))?RGB(255,255,255):fg);HFONT text_font=g_font;UINT text_format=DT_CENTER|DT_VCENTER|DT_SINGLELINE;if(onMainTitleBar&&!g_window_chrome.active()&&!hover&&!down){text_color=TitleBarText();}SetTextColor(item->hDC,text_color);SelectObject(item->hDC,text_font);DrawTextW(item->hDC,text,-1,&r,text_format);
+}
+void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
+    if(item->itemID==(UINT)-1)return;
+    const int projectIndex=static_cast<int>(
+        SendMessageW(item->hwndItem,LB_GETITEMDATA,item->itemID,0));
+    if(projectIndex<0||projectIndex>=static_cast<int>(g_projects.size()))return;
+
+    const auto& project=g_projects[projectIndex];
+    const bool selected=(item->itemState&ODS_SELECTED)!=0;
+    const bool hovered=static_cast<int>(item->itemID)==g_project_hover_row;
+    const bool sourceDragging=g_project_dragging&&
+        static_cast<int>(item->itemID)==g_project_drag_source;
+    RECT row=item->rcItem;
+    HBRUSH rowBackground=CreateSolidBrush(panel);
+    FillRect(item->hDC,&row,rowBackground);
+    DeleteObject(rowBackground);
+
+    RECT card{row.left+3,row.top+3,row.right-4,row.bottom-3};
+    COLORREF cardFill=g_light_theme?RGB(250,251,253):RGB(22,25,32);
+    COLORREF cardStroke=g_light_theme?RGB(222,227,234):RGB(38,43,52);
+    if(sourceDragging){
+        cardFill=panel;
+        cardStroke=g_light_theme?RGB(169,181,197):RGB(72,84,102);
+    }else if(selected){
+        cardFill=g_light_theme?RGB(238,245,254):RGB(25,37,54);
+        cardStroke=g_light_theme?RGB(119,163,218):RGB(61,102,157);
+    }else if(hovered){
+        cardFill=g_light_theme?RGB(243,247,252):RGB(29,34,43);
+        cardStroke=g_light_theme?RGB(193,207,224):RGB(55,65,79);
+    }
+    DrawSmoothRoundedRect(item->hDC,card,9.0f,cardFill,cardStroke,1.0f,sourceDragging);
+
+    COLORREF stateColor=g_light_theme?RGB(100,113,131):RGB(139,157,183);
+    enum class StateIcon{Idle,Running,Paused,Warning};
+    StateIcon stateIcon=StateIcon::Idle;
+    if(g_island.HasSession(project.id)){
+        stateIcon=StateIcon::Running;
+        stateColor=g_light_theme?RGB(28,139,91):RGB(73,203,145);
+    }else if(project.status==L"paused"){
+        stateIcon=StateIcon::Paused;
+        stateColor=g_light_theme?RGB(177,113,16):RGB(245,178,72);
+    }else if(project.status==L"cancelled"||project.status==L"error"){
+        // A stopped project is a recoverable state, so use a warm warning
+        // triangle instead of a red close/cancel glyph.
+        stateIcon=StateIcon::Warning;
+        stateColor=g_light_theme?RGB(190,132,26):RGB(244,187,72);
+    }
+    if(sourceDragging)stateColor=muted;
+
+    {
+        Gdiplus::Graphics graphics(item->hDC);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+        Gdiplus::Pen grip(SmoothColor(
+            hovered&&!sourceDragging
+                ?(g_light_theme?RGB(111,128,150):RGB(131,145,165))
+                :(g_light_theme?RGB(157,166,178):RGB(91,101,116))),1.25f);
+        grip.SetStartCap(Gdiplus::LineCapRound);
+        grip.SetEndCap(Gdiplus::LineCapRound);
+        const float gripCenter=(card.top+card.bottom)/2.0f;
+        for(float offset=-4.0f;offset<=4.0f;offset+=4.0f)
+            graphics.DrawLine(&grip,static_cast<float>(card.left+11),gripCenter+offset,
+                              static_cast<float>(card.left+20),gripCenter+offset);
+
+        const float iconSize=20.0f;
+        const float iconX=static_cast<float>(card.right)-iconSize-11.0f;
+        const float iconY=(card.top+card.bottom-iconSize)/2.0f;
+        Gdiplus::RectF iconBounds{iconX,iconY,iconSize,iconSize};
+        Gdiplus::SolidBrush halo(SmoothColor(stateColor,30));
+        graphics.FillEllipse(&halo,iconBounds);
+        Gdiplus::Pen iconPen(SmoothColor(stateColor),1.65f);
+        iconPen.SetStartCap(Gdiplus::LineCapRound);
+        iconPen.SetEndCap(Gdiplus::LineCapRound);
+        Gdiplus::SolidBrush iconBrush(SmoothColor(stateColor));
+        const float cx=iconX+iconSize/2.0f,cy=iconY+iconSize/2.0f;
+        if(stateIcon==StateIcon::Running){
+            graphics.DrawEllipse(&iconPen,iconX+2.0f,iconY+2.0f,iconSize-4.0f,iconSize-4.0f);
+            graphics.FillEllipse(&iconBrush,cx-3.0f,cy-3.0f,6.0f,6.0f);
+        }else if(stateIcon==StateIcon::Paused){
+            graphics.DrawLine(&iconPen,cx-2.5f,cy-4.0f,cx-2.5f,cy+4.0f);
+            graphics.DrawLine(&iconPen,cx+2.5f,cy-4.0f,cx+2.5f,cy+4.0f);
+        }else if(stateIcon==StateIcon::Warning){
+            Gdiplus::PointF triangle[3]{
+                {cx,iconY+3.0f},
+                {iconX+3.0f,iconY+iconSize-3.0f},
+                {iconX+iconSize-3.0f,iconY+iconSize-3.0f}};
+            graphics.DrawPolygon(&iconPen,triangle,3);
+            graphics.DrawLine(&iconPen,cx,cy-2.5f,cx,cy+1.5f);
+            graphics.FillEllipse(&iconBrush,cx-0.9f,cy+3.0f,1.8f,1.8f);
+        }else{
+            graphics.DrawEllipse(&iconPen,cx-4.0f,cy-4.0f,8.0f,8.0f);
+        }
+    }
+
+    SetBkMode(item->hDC,TRANSPARENT);
+    auto oldFont=SelectObject(item->hDC,g_font);
+    wchar_t name[256]{};
+    SendMessageW(item->hwndItem,LB_GETTEXT,item->itemID,(LPARAM)name);
+    SetTextColor(item->hDC,sourceDragging?muted:fg);
+    RECT title{card.left+29,card.top,card.right-39,card.bottom};
+    DrawTextW(item->hDC,name,-1,&title,
+              DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+    SelectObject(item->hDC,oldFont);
+
+    if(g_project_dragging){
+        const int count=static_cast<int>(SendMessageW(item->hwndItem,LB_GETCOUNT,0,0));
+        int markerY=-1;
+        if(g_project_drag_insert==static_cast<int>(item->itemID))markerY=row.top+2;
+        else if(g_project_drag_insert==count&&static_cast<int>(item->itemID)==count-1)
+            markerY=row.bottom-3;
+        if(markerY>=0){
+            Gdiplus::Graphics graphics(item->hDC);
+            graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            Gdiplus::Pen glow(SmoothColor(accent,70),4.0f);
+            Gdiplus::Pen marker(SmoothColor(accent),2.0f);
+            glow.SetStartCap(Gdiplus::LineCapRound);glow.SetEndCap(Gdiplus::LineCapRound);
+            marker.SetStartCap(Gdiplus::LineCapRound);marker.SetEndCap(Gdiplus::LineCapRound);
+            graphics.DrawLine(&glow,static_cast<float>(row.left+10),static_cast<float>(markerY),
+                              static_cast<float>(row.right-8),static_cast<float>(markerY));
+            graphics.DrawLine(&marker,static_cast<float>(row.left+10),static_cast<float>(markerY),
+                              static_cast<float>(row.right-8),static_cast<float>(markerY));
+            Gdiplus::SolidBrush markerDot(SmoothColor(accent));
+            graphics.FillEllipse(&markerDot,static_cast<float>(row.left+6),
+                                  static_cast<float>(markerY-3),6.0f,6.0f);
+        }
+    }
+}
+void DrawProjectItem(const DRAWITEMSTRUCT* item){
+    if(!item||!item->hDC||item->itemID==(UINT)-1)return;
+    const RECT row=item->rcItem;
+    const int width=std::max(1L,row.right-row.left);
+    const int height=std::max(1L,row.bottom-row.top);
+    HDC buffer=CreateCompatibleDC(item->hDC);
+    HBITMAP bitmap=buffer?CreateCompatibleBitmap(item->hDC,width,height):nullptr;
+    if(!buffer||!bitmap){
+        if(bitmap)DeleteObject(bitmap);
+        if(buffer)DeleteDC(buffer);
+        DrawProjectItemContent(item);
+        return;
+    }
+    const HGDIOBJ previous=SelectObject(buffer,bitmap);
+    // Keep the original list coordinates so all card/icon geometry remains
+    // identical, but render into an off-screen row-sized surface first.
+    SetWindowOrgEx(buffer,row.left,row.top,nullptr);
+    DRAWITEMSTRUCT buffered=*item;
+    buffered.hDC=buffer;
+    DrawProjectItemContent(&buffered);
+    SetWindowOrgEx(buffer,0,0,nullptr);
+    BitBlt(item->hDC,row.left,row.top,width,height,buffer,0,0,SRCCOPY);
+    SelectObject(buffer,previous);
+    DeleteObject(bitmap);
+    DeleteDC(buffer);
+}

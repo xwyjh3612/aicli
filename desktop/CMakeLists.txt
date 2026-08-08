@@ -8,15 +8,27 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 
 add_executable(aicli WIN32
+    src/agent/conversation_bridge.cpp
     src/agent/remote_agent.cpp
+    src/agent/terminal_snapshot_publisher.cpp
+    src/app/application_activation.cpp
     src/app/main.cpp
+    src/app/runtime_components.cpp
+    src/core/process_metrics.cpp
+    src/core/text_utils.cpp
     src/data/data_store.cpp
+    src/features/git_repository.cpp
     "F:/deps/aicli/civetweb-1.16/src/civetweb.c"
     "F:/deps/aicli/qrcodegen/qrcodegen.cpp"
     src/terminal/conpty_connection_bridge.cpp
+    src/terminal/xaml_island_adapter.cpp
+    src/ui/drawing_utils.cpp
+    src/ui/footer_status.cpp
+    src/ui/main_window_renderer.cpp
     src/ui/theme.cpp
     src/ui/styled_input.cpp
     src/ui/management_dialog.cpp
+    src/ui/window_chrome.cpp
 )
 
 add_executable(aicli_data_store_tests

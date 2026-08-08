@@ -98,10 +98,9 @@
                 android:paddingBottom="6dp">
 
                 <!--
-                    The terminal owns the full remaining conversation height.
-                    Controls and the composer float over its bottom edge, so the
-                    command surface occupies a much larger share of the screen
-                    without shrinking terminal text.
+                    The terminal consumes the remaining height. The composer is
+                    a normal sibling below it, never a floating layer over the
+                    terminal content.
                 -->
                 <FrameLayout
                     android:id="@+id/terminalStage"
@@ -131,143 +130,58 @@
                             android:paddingStart="14dp"
                             android:paddingTop="10dp"
                             android:paddingEnd="14dp"
-                            android:paddingBottom="112dp"
+                            android:paddingBottom="14dp"
                             android:textColor="#D7D7D7"
                             android:textIsSelectable="true"
                             android:textSize="13sp" />
                     </ScrollView>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_gravity="bottom"
-                        android:orientation="vertical"
-                        android:paddingStart="8dp"
-                        android:paddingEnd="8dp"
-                        android:paddingBottom="8dp">
-
-                        <HorizontalScrollView
-                            android:id="@+id/controlBar"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginBottom="6dp"
-                            android:fillViewport="false"
-                            android:scrollbars="none"
-                            android:visibility="gone">
-
-                            <LinearLayout
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/pauseButton"
-                                    style="@style/Widget.Material3.Button.OutlinedButton"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="36dp"
-                                    android:text="暂停"
-                                    android:textColor="@color/aicli_text_secondary"
-                                    android:textSize="11sp"
-                                    app:cornerRadius="12dp"
-                                    app:icon="@drawable/ic_pause"
-                                    app:iconSize="15dp"
-                                    app:iconTint="@color/aicli_paused"
-                                    app:strokeColor="@color/aicli_outline" />
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/continueButton"
-                                    style="@style/Widget.Material3.Button.OutlinedButton"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="36dp"
-                                    android:layout_marginStart="6dp"
-                                    android:text="继续"
-                                    android:textColor="@color/aicli_text_secondary"
-                                    android:textSize="11sp"
-                                    app:cornerRadius="12dp"
-                                    app:icon="@drawable/ic_play"
-                                    app:iconSize="15dp"
-                                    app:iconTint="@color/aicli_running"
-                                    app:strokeColor="@color/aicli_outline" />
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/cancelButton"
-                                    style="@style/Widget.Material3.Button.OutlinedButton"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="36dp"
-                                    android:layout_marginStart="6dp"
-                                    android:text="取消"
-                                    android:textColor="@color/aicli_text_secondary"
-                                    android:textSize="11sp"
-                                    app:cornerRadius="12dp"
-                                    app:icon="@drawable/ic_stop"
-                                    app:iconSize="15dp"
-                                    app:iconTint="@color/aicli_stopped"
-                                    app:strokeColor="@color/aicli_outline" />
-
-                                <com.google.android.material.button.MaterialButton
-                                    android:id="@+id/restartButton"
-                                    style="@style/Widget.Material3.Button.OutlinedButton"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="36dp"
-                                    android:layout_marginStart="6dp"
-                                    android:text="重启"
-                                    android:textColor="@color/aicli_text_secondary"
-                                    android:textSize="11sp"
-                                    app:cornerRadius="12dp"
-                                    app:icon="@drawable/ic_restart"
-                                    app:iconSize="15dp"
-                                    app:iconTint="@color/aicli_text_secondary"
-                                    app:strokeColor="@color/aicli_outline" />
-                            </LinearLayout>
-                        </HorizontalScrollView>
-
-                        <LinearLayout
-                            android:id="@+id/inputBar"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:background="@drawable/bg_composer"
-                            android:gravity="bottom|center_vertical"
-                            android:minHeight="50dp"
-                            android:orientation="horizontal"
-                            android:visibility="gone">
-
-                            <EditText
-                                android:id="@+id/messageInput"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:background="@android:color/transparent"
-                                android:gravity="center_vertical"
-                                android:hint="给当前 AI CLI 发送消息…"
-                                android:imeOptions="actionSend"
-                                android:inputType="textMultiLine|textNoSuggestions"
-                                android:maxLines="5"
-                                android:minHeight="40dp"
-                                android:paddingStart="0dp"
-                                android:paddingTop="8dp"
-                                android:paddingEnd="8dp"
-                                android:paddingBottom="8dp"
-                                android:textColor="@color/aicli_text"
-                                android:textColorHint="@color/aicli_text_tertiary"
-                                android:textSize="15sp" />
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/sendButton"
-                                style="@style/Widget.Material3.Button.IconButton.Filled"
-                                android:layout_width="38dp"
-                                android:layout_height="38dp"
-                                android:contentDescription="发送"
-                                app:backgroundTint="@color/aicli_primary"
-                                app:cornerRadius="19dp"
-                                app:icon="@drawable/ic_send"
-                                app:iconGravity="textStart"
-                                app:iconPadding="0dp"
-                                app:iconSize="20dp"
-                                app:iconTint="@color/aicli_text" />
-                        </LinearLayout>
-                    </LinearLayout>
                 </FrameLayout>
+
+                <LinearLayout
+                    android:id="@+id/inputBar"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_composer"
+                    android:gravity="bottom|center_vertical"
+                    android:minHeight="50dp"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <EditText
+                        android:id="@+id/messageInput"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:background="@android:color/transparent"
+                        android:gravity="center_vertical"
+                        android:hint="给当前 AI CLI 发送消息…"
+                        android:imeOptions="actionSend"
+                        android:inputType="textMultiLine|textNoSuggestions"
+                        android:maxLines="5"
+                        android:minHeight="40dp"
+                        android:paddingStart="0dp"
+                        android:paddingTop="8dp"
+                        android:paddingEnd="8dp"
+                        android:paddingBottom="8dp"
+                        android:textColor="@color/aicli_text"
+                        android:textColorHint="@color/aicli_text_tertiary"
+                        android:textSize="15sp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/sendButton"
+                        style="@style/Widget.Material3.Button.IconButton.Filled"
+                        android:layout_width="38dp"
+                        android:layout_height="38dp"
+                        android:contentDescription="发送"
+                        app:backgroundTint="@color/aicli_primary"
+                        app:cornerRadius="19dp"
+                        app:icon="@drawable/ic_send"
+                        app:iconGravity="textStart"
+                        app:iconPadding="0dp"
+                        app:iconSize="20dp"
+                        app:iconTint="@color/aicli_text" />
+                </LinearLayout>
             </LinearLayout>
 
             <LinearLayout
