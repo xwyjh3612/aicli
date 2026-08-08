@@ -67,8 +67,7 @@ public:
         SetWindowPos(scrim_, HWND_TOP, bounds.left, bounds.top,
                      std::max(1L, bounds.right - bounds.left),
                      std::max(1L, bounds.bottom - bounds.top),
-                     SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-        UpdateWindow(scrim_);
+                     SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
 
     ModalWorkspaceScope(const ModalWorkspaceScope&) = delete;
@@ -116,11 +115,51 @@ public:
     void AttachSurface(HWND surface) {
         surface_ = surface;
         if (!surface_ || !IsWindow(surface_)) return;
+        // Keep the surface hidden while its controls, region and first themed
+        // frame are prepared. Present() will expose the scrim and surface in
+        // one deferred-window-position transaction.
         Reposition();
         SetWindowPos(surface_, HWND_TOP, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER |
-                         SWP_NOACTIVATE |
-                         SWP_SHOWWINDOW);
+                         SWP_NOACTIVATE);
+    }
+
+    void Present() noexcept {
+        if (presented_ || !scrim_ || !surface_ ||
+            !IsWindow(scrim_) || !IsWindow(surface_)) return;
+
+        const RECT bounds = WorkspaceScreenRect();
+        const int width = std::max(1L, bounds.right - bounds.left);
+        const int height = std::max(1L, bounds.bottom - bounds.top);
+
+        // Consume the initial invalid regions while both popups are hidden.
+        // This prevents a stock/default frame from becoming the first visible
+        // frame when the modal is opened.
+        RedrawWindow(scrim_, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        RedrawWindow(surface_, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN |
+                         RDW_NOERASE);
+
+        HDWP batch = BeginDeferWindowPos(2);
+        if (batch) {
+            batch = DeferWindowPos(
+                batch, scrim_, HWND_TOP, bounds.left, bounds.top, width, height,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+            if (batch) {
+                batch = DeferWindowPos(
+                    batch, surface_, scrim_, bounds.left, bounds.top, width, height,
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+            }
+            if (batch) EndDeferWindowPos(batch);
+        }
+        if (!IsWindowVisible(scrim_) || !IsWindowVisible(surface_)) {
+            SetWindowPos(scrim_, HWND_TOP, bounds.left, bounds.top, width, height,
+                         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+            SetWindowPos(surface_, scrim_, bounds.left, bounds.top, width, height,
+                         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        }
+        presented_ = IsWindowVisible(scrim_) && IsWindowVisible(surface_);
     }
 
     // Activate only within this GUI thread.  Unlike SetForegroundWindow this
@@ -193,6 +232,7 @@ private:
     const ThemePalette* palette_{};
     UINT_PTR subclass_id_{};
     bool active_{};
+    bool presented_{};
 };
 
 namespace detail {
@@ -305,6 +345,12 @@ inline bool HasAnyActiveModal() {
 
 inline void ActivateModalSurface(HWND surface, HWND focus = nullptr) {
     if (!surface || !IsWindow(surface)) return;
+    for (auto* host : detail::ModalHosts()) {
+        if (host && host->surface() == surface) {
+            host->Present();
+            break;
+        }
+    }
     SetActiveWindow(surface);
     if (focus && IsWindow(focus)) SetFocus(focus);
     else SetFocus(surface);

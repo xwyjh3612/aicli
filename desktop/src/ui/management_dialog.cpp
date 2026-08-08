@@ -269,10 +269,12 @@ LRESULT CALLBACK ManagementButtonProc(HWND control, UINT message, WPARAM wparam,
     State* state = FindState(control);
     switch (message) {
     case WM_ERASEBKGND:
-        // The close glyph is painted by WM_DRAWITEM.  Prevent the stock
-        // button class from erasing its rounded region with a white brush.
-        if (state && state->title_close == control) return 1;
-        break;
+        // Every button in the management surface is owner-drawn.  Letting
+        // the stock BUTTON class erase first briefly exposes its default
+        // white brush in the dark theme before WM_DRAWITEM paints the themed
+        // surface, which is visible as a one-frame flash while the modal
+        // opens or a button receives focus.
+        return 1;
     case WM_MOUSEMOVE:
         if (state && state->hovered_control != control) {
             HWND previous = state->hovered_control;

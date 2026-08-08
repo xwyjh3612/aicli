@@ -72,6 +72,10 @@ constexpr UINT WM_PAIRING_PENDING = WM_APP + 22;
 constexpr UINT WM_AGENT_STATUS = WM_APP + 23;
 constexpr UINT WM_RESTORE_LAST_SESSION = WM_APP + 24;
 constexpr UINT WM_TERMINAL_DIRTY = WM_APP + 25;
+// Do not enter a nested modal loop from a native BUTTON's synchronous
+// BN_CLICKED dispatch.  Posting this message lets WM_LBUTTONUP finish and
+// the owner-draw button paint its released state before the modal is shown.
+constexpr UINT WM_OPEN_SETTINGS = WM_APP + 26;
 constexpr int ID_PROJECT_LIST = 1001;
 constexpr int ID_NEW_PROJECT = 1004;
 constexpr int ID_SETTINGS = 1005;
@@ -977,6 +981,7 @@ COLORREF& muted = g_theme.muted;
 COLORREF& accent = g_theme.accent;
 COLORREF& accent2 = g_theme.accent_strong;
 HBRUSH g_edit_brush{},g_focus_brush{},g_list_brush{},g_bg_brush{};bool g_light_theme{};bool g_window_active=true;bool g_theme_workspace_dirty{};
+bool g_settings_open_posted{};
 HWND g_project_dialog{}, g_d_name{}, g_d_type{}, g_d_group{}, g_d_folder{}, g_d_folder_browse{}, g_d_command{}; bool g_project_dialog_ok{}; bool g_project_dialog_edit{}; Project g_project_draft{};
 HWND g_binding_dialog{},g_binding_refresh{},g_binding_close{},g_binding_approve{},g_binding_reject{};
 aicli::agent::PairingInfo g_binding_info{};
@@ -2781,12 +2786,25 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(id==ID_CTX_DELETE){DeleteProject();return 0;}
         if(id==ID_BIND_PHONE){ShowBindingDialog(h);return 0;}
         if(id==ID_DEVICES){OpenDevicesDialog();Layout();return 0;}
-        if(id==ID_SETTINGS){OpenSettingsDialog();ReloadPersistentModels();return 0;}
+        if(id==ID_SETTINGS){
+            if(!g_settings_open_posted){
+                g_settings_open_posted=true;
+                PostMessageW(h,WM_OPEN_SETTINGS,0,0);
+            }
+            return 0;
+        }
         if(id==ID_GROUP_DEFAULT){ShowGroupDropdown();return 0;}
         if(id==ID_GROUP_ADD){CreateGroupFromHeader();Layout();return 0;}
         if(id==ID_CLI_TAB){RefreshProjectDetails();Layout();return 0;}
         return 0;
     }
+    case WM_OPEN_SETTINGS:
+        g_settings_open_posted=false;
+        if(!aicli::ui::HasActiveModal(h)){
+            OpenSettingsDialog();
+            ReloadPersistentModels();
+        }
+        return 0;
     case WM_RESTORE_LAST_SESSION:if(!g_startup_project_id.empty()&&SelectProjectById(g_startup_project_id)){g_startup_project_id.clear();StartSession();}return 0;
     case WM_REMOTE_INPUT:{
         std::unique_ptr<std::shared_ptr<RemoteInputMessage>> envelope(
