@@ -418,8 +418,10 @@ void ConPtyConnectionBridge::WriteInput(winrt::array_view<const char16_t> data) 
 }
 
 void ConPtyConnectionBridge::Resize(uint32_t rows, uint32_t columns) {
+    std::scoped_lock lock(lifecycle_mutex_);
     rows_ = rows;
     columns_ = columns;
+    ++resize_generation_;
     if (!pseudo_console_) return;
     const COORD dimensions{
         static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
@@ -432,18 +434,53 @@ void ConPtyConnectionBridge::SetLightTheme(bool light_theme) noexcept {
 }
 
 void ConPtyConnectionBridge::RefreshViewport() {
-    if (!pseudo_console_) return;
-
     // A settings-only update changes TermControl's palette, but a full-screen
     // TUI such as Codex owns the colors already stored in the terminal cells.
-    // Send a real ConPTY size transition so the application receives the
-    // normal terminal resize notification and redraws without restarting the
-    // process or replacing the native TermControl input surface.
-    const uint32_t rows = rows_;
-    const uint32_t columns = columns_;
+    // Keep the probe and restore in separate frames. Two immediate resize
+    // calls are coalesced by ConPTY/Codex and the TUI never observes a change.
+    uint32_t rows{};
+    uint32_t columns{};
+    uint64_t generation{};
+    {
+        std::scoped_lock lock(lifecycle_mutex_);
+        if (!pseudo_console_ || closing_) return;
+        rows = rows_;
+        columns = columns_;
+        generation = resize_generation_.load(std::memory_order_relaxed);
+    }
     const uint32_t probe_columns = columns > 20 ? columns - 1 : columns + 1;
-    Resize(rows, probe_columns);
-    Resize(rows, columns);
+    {
+        std::scoped_lock lock(lifecycle_mutex_);
+        if (!pseudo_console_ || closing_) return;
+        const COORD probe{
+            static_cast<SHORT>(std::clamp<uint32_t>(probe_columns, 20, SHRT_MAX)),
+            static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
+        ConptyResizePseudoConsole(pseudo_console_, probe);
+    }
+
+    auto strong = get_strong();
+    try {
+        std::thread([strong = std::move(strong), rows, columns, generation] {
+            Sleep(75);
+            std::scoped_lock lock(strong->lifecycle_mutex_);
+            if (!strong->pseudo_console_ || strong->closing_ ||
+                strong->resize_generation_.load(std::memory_order_relaxed) != generation) {
+                return;
+            }
+            const COORD original{
+                static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
+                static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
+            ConptyResizePseudoConsole(strong->pseudo_console_, original);
+        }).detach();
+    } catch (...) {
+        std::scoped_lock lock(lifecycle_mutex_);
+        if (pseudo_console_ && !closing_) {
+            const COORD original{
+                static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
+                static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
+            ConptyResizePseudoConsole(pseudo_console_, original);
+        }
+    }
 }
 
 void ConPtyConnectionBridge::ReadLoop() {

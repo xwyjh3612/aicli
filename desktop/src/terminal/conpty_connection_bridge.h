@@ -74,6 +74,7 @@ private:
     std::mutex input_mutex_;
     std::atomic<bool> closing_{false};
     std::atomic<bool> light_theme_{false};
+    std::atomic<uint64_t> resize_generation_{0};
     std::wstring display_pending_;
     std::atomic<winrt::Microsoft::Terminal::TerminalConnection::ConnectionState> state_{
         winrt::Microsoft::Terminal::TerminalConnection::ConnectionState::NotConnected};
