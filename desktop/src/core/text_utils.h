@@ -7,6 +7,7 @@ namespace aicli::text {
 
 std::string Utf8Text(std::wstring_view value);
 std::wstring WideText(std::string_view value);
+std::wstring LocalComputerName();
 
 // Produces the bounded plain-text snapshot used by SQLite/mobile clients.
 // The native TermControl keeps its own larger scrollback independently.

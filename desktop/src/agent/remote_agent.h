@@ -37,6 +37,7 @@ struct PendingPairing {
 };
 
 struct AgentConfig {
+    std::wstring computer_name;
     std::wstring bind_address{L"0.0.0.0"};
     std::wstring port{L"4280"};
     std::wstring local_address;

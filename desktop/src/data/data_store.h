@@ -54,6 +54,8 @@ public:
     std::vector<DeviceRecord> LoadDevices(bool include_revoked = false);
     std::optional<DeviceRecord> FindDevice(const std::wstring& phone_id);
     bool UpsertDevice(const DeviceRecord& device, std::wstring* error = nullptr);
+    bool UpdateDeviceName(const std::wstring& phone_id, const std::wstring& name,
+                          std::wstring* error = nullptr);
     bool RevokeDevice(const std::wstring& phone_id);
     bool TouchDevice(const std::wstring& phone_id);
     bool AcceptSignedRequest(const std::wstring& phone_id, const std::wstring& request_id,

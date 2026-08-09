@@ -1,4 +1,5 @@
 #include "agent/remote_agent.h"
+#include "core/text_utils.h"
 
 #include <civetweb.h>
 #include <nlohmann/json.hpp>
@@ -207,6 +208,10 @@ bool RemoteAgent::Start(DataStore* store, const AgentConfig& config, std::wstrin
         if (error) *error = L"Agent 未连接 SQLite";
         return false;
     }
+    if (config_.computer_name.empty()) {
+        config_.computer_name = aicli::text::LocalComputerName();
+    }
+    store_->SetSetting(L"computer_name", config_.computer_name);
     computer_id_ = store_->GetSetting(L"computer_id");
     if (computer_id_.empty()) {
         computer_id_ = NewComputerId();
@@ -293,6 +298,7 @@ PairingInfo RemoteAgent::CreatePairing(std::int64_t lifetime_seconds) {
     info.certificate_fingerprint = certificate_fingerprint_;
     json payload{
         {"v", 1}, {"computerId", Utf8(computer_id_)},
+        {"computerName", Utf8(config_.computer_name)},
         {"pairingId", Utf8(info.pairing_id)}, {"challenge", Utf8(info.challenge)},
         {"expiresAt", info.expires_at}, {"certificateSha256", Utf8(info.certificate_fingerprint)},
         {"localAddress", Utf8(config_.local_address.empty() ? Wide(LocalAddress()) : config_.local_address)},
@@ -361,7 +367,13 @@ int RemoteAgent::OnHttp(struct mg_connection* connection) {
     const std::string path=info->local_uri;const std::string method=info->request_method?info->request_method:"GET";
     const std::string body=(method=="POST"||method=="PUT")?ReadBody(connection):std::string{};
     try {
-        if(path=="/api/health"){WriteJson(connection,200,JsonString(json{{"ok",true},{"computerId",Utf8(computer_id_)},{"certificateSha256",Utf8(certificate_fingerprint_)},{"online",online_}}));return 200;}
+        if(path=="/api/health"){
+            WriteJson(connection,200,JsonString(json{
+                {"ok",true},{"computerId",Utf8(computer_id_)},
+                {"computerName",Utf8(config_.computer_name)},
+                {"certificateSha256",Utf8(certificate_fingerprint_)},{"online",online_}}));
+            return 200;
+        }
         if(path=="/api/pair/request"&&method=="POST"){
             const auto value=json::parse(body);const auto pairing_id=Wide(value.value("pairingId",std::string{}));const auto phone_id=Wide(value.value("phoneId",std::string{}));const auto name=Wide(value.value("deviceName",std::string{}));const auto model=Wide(value.value("model",std::string{}));const auto pub=value.value("publicKey",std::string{});const auto sig=Wide(value.value("signature",std::string{}));
             if(pairing_id.empty()||phone_id.empty()||name.empty()||model.empty()||pub.empty()||sig.empty()){WriteError(connection,400,L"配对请求字段不完整");return 400;}
@@ -371,17 +383,34 @@ int RemoteAgent::OnHttp(struct mg_connection* connection) {
             it->second.device={phone_id,name,model,Wide(pub),true,Now(),Now(),0};it->second.submitted=true;const auto pending=it->second;NotifyPairing(pending);WriteJson(connection,202,JsonString(json{{"ok",true},{"status","pending"},{"pairingId",pairing_id}}));return 202;
         }
         if(path=="/api/pair/status"&&method=="GET"){
-            const auto pairing_id=Wide(QueryValue(info,"pairingId"));std::scoped_lock lock(mutex_);auto it=pending_pairings_.find(pairing_id);if(it==pending_pairings_.end()){WriteError(connection,404,L"配对请求不存在");return 404;}const auto& p=it->second;WriteJson(connection,200,JsonString(json{{"ok",true},{"status",p.authorized?"authorized":p.rejected?"rejected":p.submitted?"pending":"waiting"},{"computerId",Utf8(computer_id_)},{"certificateSha256",Utf8(certificate_fingerprint_)}}));return 200;
+            const auto pairing_id=Wide(QueryValue(info,"pairingId"));std::scoped_lock lock(mutex_);auto it=pending_pairings_.find(pairing_id);if(it==pending_pairings_.end()){WriteError(connection,404,L"配对请求不存在");return 404;}const auto& p=it->second;WriteJson(connection,200,JsonString(json{{"ok",true},{"status",p.authorized?"authorized":p.rejected?"rejected":p.submitted?"pending":"waiting"},{"computerId",Utf8(computer_id_)},{"computerName",Utf8(config_.computer_name)},{"certificateSha256",Utf8(certificate_fingerprint_)}}));return 200;
         }
         if(path=="/api/auth/challenge"&&method=="GET"){
-            const auto phone_id=Wide(QueryValue(info,"phoneId"));if(!store_||!store_->FindDevice(phone_id).has_value()){WriteError(connection,401,L"设备未绑定");return 401;}const auto id=RandomString(18),nonce=RandomString(32);{std::scoped_lock l(mutex_);auth_challenges_[id]={phone_id,nonce,Now()+120};}WriteJson(connection,200,JsonString(json{{"ok",true},{"computerId",Utf8(computer_id_)},{"challengeId",Utf8(id)},{"nonce",Utf8(nonce)},{"expiresAt",Now()+120},{"certificateSha256",Utf8(certificate_fingerprint_)}}));return 200;
+            const auto phone_id=Wide(QueryValue(info,"phoneId"));if(!store_||!store_->FindDevice(phone_id).has_value()){WriteError(connection,401,L"设备未绑定");return 401;}const auto id=RandomString(18),nonce=RandomString(32);{std::scoped_lock l(mutex_);auth_challenges_[id]={phone_id,nonce,Now()+120};}WriteJson(connection,200,JsonString(json{{"ok",true},{"computerId",Utf8(computer_id_)},{"computerName",Utf8(config_.computer_name)},{"challengeId",Utf8(id)},{"nonce",Utf8(nonce)},{"expiresAt",Now()+120},{"certificateSha256",Utf8(certificate_fingerprint_)}}));return 200;
         }
         if(path=="/api/auth/token"&&method=="POST"){
-            const auto value=json::parse(body);const auto phone_id=Wide(value.value("phoneId",std::string{}));const auto challenge_id=Wide(value.value("challengeId",std::string{}));const auto sig=Wide(value.value("signature",std::string{}));std::scoped_lock l(mutex_);auto ch=auth_challenges_.find(challenge_id);auto device=store_?store_->FindDevice(phone_id):std::nullopt;if(ch==auth_challenges_.end()||ch->second.phone_id!=phone_id||ch->second.expires_at<Now()||!device.has_value()||!device->active){WriteError(connection,401,L"认证挑战无效");return 401;}const std::string canonical=std::string{"AICLI-AUTH|"}+Utf8(computer_id_)+"|"+Utf8(phone_id)+"|"+Utf8(challenge_id)+"|"+Utf8(ch->second.nonce);if(!VerifySignature(device->public_key_base64,canonical,sig)){WriteError(connection,401,L"设备签名验证失败");return 401;}const auto token=RandomString(32);tokens_[token]={phone_id,Now()+900};auth_challenges_.erase(ch);WriteJson(connection,200,JsonString(json{{"ok",true},{"token",Utf8(token)},{"expiresAt",Now()+900},{"computerId",Utf8(computer_id_)},{"certificateSha256",Utf8(certificate_fingerprint_)}}));return 200;
+            const auto value=json::parse(body);const auto phone_id=Wide(value.value("phoneId",std::string{}));const auto challenge_id=Wide(value.value("challengeId",std::string{}));const auto sig=Wide(value.value("signature",std::string{}));std::scoped_lock l(mutex_);auto ch=auth_challenges_.find(challenge_id);auto device=store_?store_->FindDevice(phone_id):std::nullopt;if(ch==auth_challenges_.end()||ch->second.phone_id!=phone_id||ch->second.expires_at<Now()||!device.has_value()||!device->active){WriteError(connection,401,L"认证挑战无效");return 401;}const std::string canonical=std::string{"AICLI-AUTH|"}+Utf8(computer_id_)+"|"+Utf8(phone_id)+"|"+Utf8(challenge_id)+"|"+Utf8(ch->second.nonce);if(!VerifySignature(device->public_key_base64,canonical,sig)){WriteError(connection,401,L"设备签名验证失败");return 401;}const auto token=RandomString(32);tokens_[token]={phone_id,Now()+900};auth_challenges_.erase(ch);WriteJson(connection,200,JsonString(json{{"ok",true},{"token",Utf8(token)},{"expiresAt",Now()+900},{"computerId",Utf8(computer_id_)},{"computerName",Utf8(config_.computer_name)},{"certificateSha256",Utf8(certificate_fingerprint_)}}));return 200;
         }
         std::wstring phone_id,error;
         if(!AuthenticateRequest(connection,method.c_str(),path,body,phone_id,&error)){WriteError(connection,error==L"未授权"?401:403,error);return error==L"未授权"?401:403;}
-        if(path=="/api/conversations"&&method=="GET"){const auto callback=conversations_callback_;WriteJson(connection,200,callback?callback():"{\"items\":[]}");return 200;}
+        if(path=="/api/device/profile"&&method=="POST"){
+            const auto value=body.empty()?json::object():json::parse(body);
+            const auto name=Wide(value.value("name",std::string{}));
+            if(!store_||!store_->UpdateDeviceName(phone_id,name,&error)){
+                WriteError(connection,400,error.empty()?L"手机名称更新失败":error);return 400;
+            }
+            WriteJson(connection,200,JsonString(json{{"ok",true},{"name",Utf8(name)}}));
+            return 200;
+        }
+        if(path=="/api/conversations"&&method=="GET"){
+            const auto callback=conversations_callback_;
+            json response=json::object();
+            try { response=json::parse(callback?callback():"{\"items\":[]}"); }
+            catch(...) { response=json{{"items",json::array()}}; }
+            response["computerId"]=Utf8(computer_id_);
+            response["computerName"]=Utf8(config_.computer_name);
+            WriteJson(connection,200,JsonString(response));return 200;
+        }
         constexpr std::string_view prefix="/api/conversations/";
         if(path.rfind(prefix,0)==0){
             const auto rest=path.substr(prefix.size());
@@ -437,7 +466,7 @@ int RemoteAgent::OnWsConnect(const struct mg_connection* connection) {
 void RemoteAgent::OnWsReady(struct mg_connection* connection){
     auto* handle=static_cast<std::shared_ptr<WsClient>*>(mg_get_user_connection_data(connection));if(!handle||!*handle)return;const auto client=*handle;
     TerminalReplayCallback replay_callback;{std::scoped_lock l(mutex_);replay_callback=terminal_replay_callback_;}
-    const std::string hello=JsonString(json{{"type","hello"},{"computerId",Utf8(computer_id_)},{"certificateSha256",Utf8(certificate_fingerprint_)},{"terminalProtocol",1}});
+    const std::string hello=JsonString(json{{"type","hello"},{"computerId",Utf8(computer_id_)},{"computerName",Utf8(config_.computer_name)},{"certificateSha256",Utf8(certificate_fingerprint_)},{"terminalProtocol",1}});
     auto send=[&](const std::string& value){if(client->closed||!client->connection)return false;if(mg_websocket_write(connection,MG_WEBSOCKET_OPCODE_TEXT,value.data(),value.size())<=0){client->closed=true;return false;}return true;};
     std::scoped_lock write(client->write_mutex);
     if(!send(hello))return;

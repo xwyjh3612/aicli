@@ -4,6 +4,7 @@
 #include "ui/theme.h"
 #include "ui/layout_metrics.h"
 #include "ui/modal_host.h"
+#include "core/text_utils.h"
 
 #include <windows.h>
 #include <windowsx.h>
@@ -47,6 +48,7 @@ enum : int {
     kUnbind = 2316,
     kFirewall = 2317,
     kThemeLight = 2318,
+    kComputerName = 2319,
     kSettingsAppearance = 2320,
     kSettingsConnection = 2321,
     kSettingsProjectTypes = 2322,
@@ -105,6 +107,7 @@ struct State {
     HWND list{};
     HWND name{};
     HWND command{};
+    HWND computer_name{};
     HWND listen{};
     HWND port{};
     HWND local{};
@@ -320,7 +323,7 @@ void ApplyTheme(State& state, bool light) {
     state.field_brush = CreateSolidBrush(state.field_color);
     state.field_focus_brush = CreateSolidBrush(state.field_focus_color);
     state.list_brush = CreateSolidBrush(state.palette.list_surface);
-    for (HWND field : {state.name, state.command, state.listen, state.port,
+    for (HWND field : {state.name, state.command, state.computer_name, state.listen, state.port,
                        state.local, state.remote}) {
         if (field) SetStyledInputTheme(field, state.palette);
     }
@@ -1191,7 +1194,7 @@ void Paint(State& state, HDC dc) {
 int SettingsContentExtent(SettingsPage page) {
     switch (page) {
     case SettingsPage::Appearance: return 390;
-    case SettingsPage::Connection: return 590;
+    case SettingsPage::Connection: return 690;
     case SettingsPage::ProjectTypes: return 590;
     case SettingsPage::Groups: return 590;
     }
@@ -1252,12 +1255,13 @@ void LayoutSettingsContent(State& state) {
         button(state.theme, x + inset, 198, button_width, 36);
         button(state.theme_light, x + inset + button_width + gap, 198, button_width, 36);
     } else if (state.settings_page == SettingsPage::Connection) {
-        field(state.listen, 130);
-        field(state.port, 216);
-        field(state.local, 302);
-        field(state.remote, 388);
-        button(state.firewall, x, 484, 158);
-        button(state.save, right - 174, 484, 174);
+        field(state.computer_name, 130);
+        field(state.listen, 216);
+        field(state.port, 302);
+        field(state.local, 388);
+        field(state.remote, 474);
+        button(state.firewall, x, 570, 158);
+        button(state.save, right - 174, 570, 174);
     } else if (state.settings_page == SettingsPage::ProjectTypes) {
         if (state.list) {
             MoveWindow(state.list, x, 126 - offset, available, 330, TRUE);
@@ -1297,8 +1301,8 @@ void PaintSettingsContent(State& state, HDC dc) {
     const wchar_t* title = L"界面外观";
     const wchar_t* subtitle = L"主题切换会立即作用于主窗口、设置页和原生终端。";
     if (state.settings_page == SettingsPage::Connection) {
-        title = L"网络连接";
-        subtitle = L"配置手机访问使用的 HTTPS/WSS Agent；保存网络设置时重启 Agent。";
+        title = L"本机与网络";
+        subtitle = L"本机名称显示在手机端；保存名称或网络设置时重启 HTTPS/WSS Agent。";
     } else if (state.settings_page == SettingsPage::ProjectTypes) {
         title = L"项目类型";
         subtitle = L"Codex 和 Claude 为预置类型；所有类型都可在这里维护名称和启动方式。";
@@ -1351,13 +1355,14 @@ void PaintSettingsContent(State& state, HDC dc) {
         DrawTextW(dc, L"原生终端会保留 ANSI 颜色层次，并同步切换背景与默认前景色。", -1,
                   &hint, DT_LEFT | DT_TOP | DT_WORDBREAK);
     } else if (state.settings_page == SettingsPage::Connection) {
-        label(L"监听地址（0.0.0.0 表示所有网卡）", 100);
-        label(L"HTTPS/WSS 端口", 186);
-        label(L"本机/内网访问地址（二维码优先使用）", 272);
-        label(L"公网或 Relay 地址（可留空）", 358);
+        label(L"本机名称（显示在手机端）", 100);
+        label(L"监听地址（0.0.0.0 表示所有网卡）", 186);
+        label(L"HTTPS/WSS 端口", 272);
+        label(L"本机/内网访问地址（二维码优先使用）", 358);
+        label(L"公网或 Relay 地址（可留空）", 444);
         SelectObject(dc, state.small_font);
         SetTextColor(dc, state.muted_color);
-        RECT hint{x, 538, right, 574};
+        RECT hint{x, 624, right, 660};
         DrawTextW(dc, L"本机和公网地址必须使用 https://。端口变化后请重新允许手机访问。", -1,
                   &hint, DT_LEFT | DT_TOP | DT_WORDBREAK);
     } else if (state.settings_page == SettingsPage::ProjectTypes) {
@@ -1391,6 +1396,7 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     };
     visible(state.theme, appearance);
     visible(state.theme_light, appearance);
+    visible(state.computer_name, connection);
     visible(state.listen, connection);
     visible(state.port, connection);
     visible(state.local, connection);
@@ -1628,9 +1634,10 @@ void CreateControls(State& state) {
             WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VSCROLL,
             0, 0, 1, 1, state.window, nullptr, GetModuleHandleW(nullptr), &state);
         state.settings_appearance = MakeButton(state, L"外观", kSettingsAppearance);
-        state.settings_connection = MakeButton(state, L"网络连接", kSettingsConnection);
+        state.settings_connection = MakeButton(state, L"本机与网络", kSettingsConnection);
         state.settings_project_types = MakeButton(state, L"项目类型", kSettingsProjectTypes);
         state.settings_groups = MakeButton(state, L"分组管理", kSettingsGroups);
+        state.computer_name = MakeField(state, kComputerName, L"例如 开发主机", state.content);
         state.listen = MakeField(state, kListen, L"例如 0.0.0.0", state.content);
         state.port = MakeField(state, kPort, L"例如 4280", state.content);
         state.local = MakeField(state, kLocal, L"例如 https://192.168.1.10:4280", state.content);
@@ -1700,6 +1707,8 @@ void CreateControls(State& state) {
 
 void PopulateControls(State& state) {
     if (state.mode == ManagementMode::Settings) {
+        SetField(state.computer_name, state.store->GetSetting(
+            L"computer_name", aicli::text::LocalComputerName()));
         std::wstring listen_value = state.store->GetSetting(L"listen_address", L"0.0.0.0");
         std::wstring port_value = state.store->GetSetting(L"listen_port", L"4280");
         if (listen_value.empty()) listen_value = L"0.0.0.0";
@@ -1853,10 +1862,19 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                 return 0;
             }
             if (state->settings_page == SettingsPage::Connection && id == kSave) {
+                const std::wstring computer_name = Field(state->computer_name);
                 const std::wstring listen = Field(state->listen).empty() ? L"0.0.0.0" : Field(state->listen);
                 const std::wstring port = Field(state->port).empty() ? L"4280" : Field(state->port);
                 const std::wstring local = Field(state->local);
                 const std::wstring remote = Field(state->remote);
+                if (computer_name.empty()) {
+                    ShowError(h, L"本机名称不能为空");
+                    return 0;
+                }
+                if (computer_name.size() > 64) {
+                    ShowError(h, L"本机名称不能超过 64 个字符");
+                    return 0;
+                }
                 try {
                     size_t consumed{};
                     const int number = std::stoi(port, &consumed);
@@ -1872,11 +1890,13 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                     ShowError(h, L"本机地址和公网/Relay 地址必须使用 https://");
                     return 0;
                 }
+                state->store->SetSetting(L"computer_name", computer_name);
                 state->store->SetSetting(L"listen_address", listen);
                 state->store->SetSetting(L"listen_port", port);
                 state->store->SetSetting(L"local_address", local);
                 state->store->SetSetting(L"remote_address", remote);
                 agent::AgentConfig config;
+                config.computer_name = computer_name;
                 config.bind_address = listen;
                 config.port = port;
                 config.local_address = local;

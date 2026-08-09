@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingStart="24dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="24dp"
+    android:paddingBottom="4dp">
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="备注名称"
+        app:boxBackgroundColor="@color/aicli_surface_high"
+        app:boxCornerRadiusBottomEnd="14dp"
+        app:boxCornerRadiusBottomStart="14dp"
+        app:boxCornerRadiusTopEnd="14dp"
+        app:boxCornerRadiusTopStart="14dp"
+        app:boxStrokeColor="@color/aicli_primary"
+        app:counterEnabled="true"
+        app:counterMaxLength="40"
+        app:hintTextColor="@color/aicli_text_secondary">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/computerRemarkInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="例如：办公室电脑"
+            android:inputType="textCapSentences"
+            android:maxLength="40"
+            android:maxLines="1"
+            android:selectAllOnFocus="true"
+            android:textColor="@color/aicli_text"
+            android:textColorHint="@color/aicli_text_tertiary" />
+    </com.google.android.material.textfield.TextInputLayout>
+</FrameLayout>

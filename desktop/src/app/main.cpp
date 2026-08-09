@@ -709,11 +709,13 @@ void ConfigureRemoteAgent(){
     g_remote_agent.SetControlCallback([](const std::wstring& project,const std::wstring& phone,const std::wstring& action,std::wstring* error){auto* message=new(std::nothrow) RemoteControlMessage{project,phone,action};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_REMOTE_CONTROL,0,reinterpret_cast<LPARAM>(message))){delete message;if(error)*error=L"桌面窗口未就绪";return false;}return true;});
     g_remote_agent.SetPairingCallback([](const aicli::agent::PendingPairing& pairing){auto* message=new(std::nothrow) aicli::agent::PendingPairing(pairing);if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_PAIRING_PENDING,0,reinterpret_cast<LPARAM>(message)))delete message;});
     g_remote_agent.SetStatusCallback([](bool online,const std::wstring& text){auto* message=new(std::nothrow) AgentStatusMessage{online,text};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_AGENT_STATUS,0,reinterpret_cast<LPARAM>(message)))delete message;});
-    aicli::agent::AgentConfig config;config.bind_address=g_store.GetSetting(L"listen_address",L"0.0.0.0");config.port=g_store.GetSetting(L"listen_port",L"4280");config.local_address=g_store.GetSetting(L"local_address");config.remote_address=g_store.GetSetting(L"remote_address");config.data_directory=aicli::DefaultDataDirectory();std::wstring error;if(!g_remote_agent.Start(&g_store,config,&error))SetText(g_status,L"Agent 启动失败: "+error);else SetText(g_status,L"就绪");UpdateDeviceHeader();
+    aicli::agent::AgentConfig config;config.computer_name=g_store.GetSetting(L"computer_name",aicli::text::LocalComputerName());config.bind_address=g_store.GetSetting(L"listen_address",L"0.0.0.0");config.port=g_store.GetSetting(L"listen_port",L"4280");config.local_address=g_store.GetSetting(L"local_address");config.remote_address=g_store.GetSetting(L"remote_address");config.data_directory=aicli::DefaultDataDirectory();std::wstring error;if(!g_remote_agent.Start(&g_store,config,&error))SetText(g_status,L"Agent 启动失败: "+error);else SetText(g_status,L"就绪");UpdateDeviceHeader();
 }
 
 aicli::agent::AgentConfig CurrentAgentConfig() {
     aicli::agent::AgentConfig config;
+    config.computer_name = g_store.GetSetting(
+        L"computer_name", aicli::text::LocalComputerName());
     config.bind_address = g_store.GetSetting(L"listen_address", L"0.0.0.0");
     config.port = g_store.GetSetting(L"listen_port", L"4280");
     config.local_address = g_store.GetSetting(L"local_address");
@@ -1018,7 +1020,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         }else if(message->action==L"ctrl_c")g_island.WriteInput(message->project_id,std::wstring(1,L'\x03'));
         return 0;
     }
-    case WM_PAIRING_PENDING:{std::unique_ptr<aicli::agent::PendingPairing> pairing(reinterpret_cast<aicli::agent::PendingPairing*>(l));if(!pairing)return 0;g_pending_pairing=*pairing;if(g_binding_dialog){InvalidateRect(g_binding_dialog,nullptr,FALSE);}else if(pairing->submitted&&!pairing->authorized&&!pairing->rejected){const std::wstring text=L"手机名称："+pairing->device.name+L"\n型号："+pairing->device.model+L"\n设备 ID："+pairing->device.phone_id+L"\n\n确认后该手机可远程操作管理员终端。";const bool approve=MessageBoxW(h,text.c_str(),L"确认绑定手机",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES;std::wstring error;if(!g_remote_agent.ConfirmPairing(pairing->info.pairing_id,approve,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);}UpdateDeviceHeader();return 0;}
+    case WM_PAIRING_PENDING:{std::unique_ptr<aicli::agent::PendingPairing> pairing(reinterpret_cast<aicli::agent::PendingPairing*>(l));if(!pairing)return 0;g_pending_pairing=*pairing;if(g_binding_dialog){LayoutBindingDialog(g_binding_dialog);InvalidateRect(g_binding_dialog,nullptr,FALSE);}else if(pairing->submitted&&!pairing->authorized&&!pairing->rejected){const std::wstring text=L"手机名称："+pairing->device.name+L"\n型号："+pairing->device.model+L"\n设备 ID："+pairing->device.phone_id+L"\n\n确认后该手机可远程操作管理员终端。";const bool approve=MessageBoxW(h,text.c_str(),L"确认绑定手机",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES;std::wstring error;if(!g_remote_agent.ConfirmPairing(pairing->info.pairing_id,approve,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);}UpdateDeviceHeader();return 0;}
     case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message&&!message->online)SetText(g_status,message->text);UpdateHeaderTelemetry();return 0;}
     case WM_AGENT_WORKING_STATE:{std::unique_ptr<AgentWorkingStateMessage> message(reinterpret_cast<AgentWorkingStateMessage*>(l));if(message)SetProjectWorkingState(message->project_id,message->working);return 0;}
     case WM_PAINT:{

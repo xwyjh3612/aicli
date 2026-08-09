@@ -71,6 +71,13 @@ final class TerminalTextRenderer {
         return state == null ? 0L : state.sequence;
     }
 
+    synchronized void followBottom() {
+        SessionState state = sessions.get(selectedProjectId);
+        if (state == null) return;
+        state.followBottom = true;
+        view.scrollToBottom();
+    }
+
     synchronized StreamResult reset(String terminalSessionId, long baseSequence,
                                     int rows, int columns) {
         SessionState state = selectedState();
@@ -95,7 +102,16 @@ final class TerminalTextRenderer {
         SessionState state = selectedState();
         StreamResult validation = validate(state, terminalSessionId, sequence);
         if (validation != StreamResult.APPLIED) return validation;
-        boolean follow = view.isNearBottom();
+        // DECSET 2026 lets Claude build one atomic screen repaint across
+        // several terminal.data frames. During that interval the emulator's
+        // content height changes before TerminalView is allowed to draw and
+        // scroll. Re-reading isNearBottom() for the later frames therefore
+        // mistakes the temporarily stale viewport for a deliberate user
+        // scroll and leaves the completed answer below the visible area.
+        // Capture the user's follow intent when the synchronized frame begins
+        // and preserve it until DECRST 2026 closes the frame.
+        boolean wasSynchronized = state.terminal.synchronizedOutput();
+        boolean follow = wasSynchronized ? state.followBottom : view.isNearBottom();
         state.terminal.feed(data == null ? "" : data);
         state.sequence = sequence;
         state.followBottom = follow;
@@ -113,7 +129,8 @@ final class TerminalTextRenderer {
         SessionState state = selectedState();
         StreamResult validation = validate(state, terminalSessionId, sequence);
         if (validation != StreamResult.APPLIED) return validation;
-        boolean follow = view.isNearBottom();
+        boolean follow = state.terminal.synchronizedOutput()
+                ? state.followBottom : view.isNearBottom();
         state.terminal.resize(rows, columns);
         state.sequence = sequence;
         state.followBottom = follow;

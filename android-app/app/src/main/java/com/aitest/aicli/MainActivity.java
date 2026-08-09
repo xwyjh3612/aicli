@@ -39,6 +39,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private final List<AicliClient.Conversation> allConversations = new ArrayList<>();
     private final List<String> displayedGroups = new ArrayList<>();
+    private final List<ComputerConnectionStore.Computer> displayedComputers = new ArrayList<>();
+    private ComputerConnectionStore connectionStore;
     private AicliClient client;
     private ConversationAdapter conversationAdapter;
     private String selectedGroup = ALL_GROUPS;
@@ -47,8 +49,12 @@ public final class MainActivity extends AppCompatActivity {
     private long lastEventId;
     private String configuredConnectionKey = "";
     private boolean rebuildingGroups;
+    private boolean rebuildingComputers;
+    private long serverGeneration;
 
     private DrawerLayout drawerLayout;
+    private View computerSelectorLayout;
+    private MaterialAutoCompleteTextView computerSelector;
     private View groupSelectorLayout;
     private MaterialAutoCompleteTextView groupSelector;
     private View emptyState;
@@ -88,8 +94,11 @@ public final class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         initializeDeviceIdentity();
+        connectionStore = new ComputerConnectionStore(this);
 
         drawerLayout = findViewById(R.id.drawerLayout);
+        computerSelectorLayout = findViewById(R.id.computerSelectorLayout);
+        computerSelector = findViewById(R.id.computerSelector);
         groupSelectorLayout = findViewById(R.id.groupSelectorLayout);
         groupSelector = findViewById(R.id.groupSelector);
         emptyState = findViewById(R.id.emptyState);
@@ -123,6 +132,12 @@ public final class MainActivity extends AppCompatActivity {
             getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit()
                     .putString("selected_group", selectedGroup).apply();
             renderSelectedGroup(true);
+        });
+
+        computerSelector.setOnItemClickListener((parent, view, position, id) -> {
+            if (rebuildingComputers || position < 0 ||
+                    position >= displayedComputers.size()) return;
+            switchComputer(displayedComputers.get(position));
         });
 
         findViewById(R.id.settingsButton).setOnClickListener(view ->
@@ -184,17 +199,23 @@ public final class MainActivity extends AppCompatActivity {
 
     private void configureClient() {
         SharedPreferences preferences = getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE);
-        String baseUrl = preferences.getString(BASE_URL_KEY, "");
-        String connectionKey = preferences.getString(BASE_URL_KEY, "") + "\n"
-                + preferences.getString("localAddress", "") + "\n"
-                + preferences.getString("remoteAddress", "") + "\n"
-                + preferences.getString("certificateSha256", "") + "\n"
-                + preferences.getString("computerId", "");
+        ComputerConnectionStore.Computer activeComputer = connectionStore.active();
+        refreshComputerSelector(activeComputer);
+        String baseUrl = activeComputer == null
+                ? preferences.getString(BASE_URL_KEY, "") : activeComputer.baseUrl;
+        String connectionKey = activeComputer == null
+                ? preferences.getString(BASE_URL_KEY, "") + "\n"
+                    + preferences.getString("localAddress", "") + "\n"
+                    + preferences.getString("remoteAddress", "") + "\n"
+                    + preferences.getString("certificateSha256", "") + "\n"
+                    + preferences.getString("computerId", "")
+                : activeComputer.connectionKey();
         if (client == null || !connectionKey.equals(configuredConnectionKey)) {
             if (client != null) client.close();
-            client = new AicliClient(this, baseUrl);
+            client = new AicliClient(this, "");
             configuredConnectionKey = connectionKey;
-            terminalRenderer.clearAll();
+            serverGeneration++;
+            resetForComputerChange();
         }
         if (baseUrl.isEmpty()) {
             setConnectionStatus("未绑定电脑");
@@ -212,21 +233,28 @@ public final class MainActivity extends AppCompatActivity {
 
     private void loadConversations() {
         if (client == null || client.baseUrl().isEmpty()) return;
-        setConnectionStatus("正在连接电脑…");
-        client.listConversations(new AicliClient.ConversationCallback() {
+        final AicliClient requestClient = client;
+        final long requestGeneration = serverGeneration;
+        final String computerName = activeComputerName();
+        setConnectionStatus(computerName + " · 正在连接…");
+        requestClient.listConversations(new AicliClient.ConversationCallback() {
             @Override public void onSuccess(List<AicliClient.Conversation> conversations) {
                 runOnUiThread(() -> {
+                    if (client != requestClient || serverGeneration != requestGeneration) return;
                     allConversations.clear();
                     allConversations.addAll(conversations);
+                    refreshComputerSelector(connectionStore.active());
                     rebuildGroupSelector(conversations);
-                    setConnectionStatus("已连接 · " + conversations.size() + " 个项目");
+                    setConnectionStatus(activeComputerName() + " · 已连接 · "
+                            + conversations.size() + " 个项目");
                     renderSelectedGroup(false);
                 });
             }
 
             @Override public void onError(String message) {
                 runOnUiThread(() -> {
-                    setConnectionStatus("连接失败");
+                    if (client != requestClient || serverGeneration != requestGeneration) return;
+                    setConnectionStatus(computerName + " · 连接失败");
                     showEmptyState("暂时无法连接电脑", "请确认电脑端在线且已授权此手机；也可以在设置中重新扫码。");
                     Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show();
                 });
@@ -308,6 +336,8 @@ public final class MainActivity extends AppCompatActivity {
     private void selectConversation(AicliClient.Conversation conversation) {
         if (client == null) return;
         client.closeEvents();
+        final AicliClient requestClient = client;
+        final long requestGeneration = serverGeneration;
         selectedConversationId = conversation.id;
         selectedConversation = conversation;
         updateProjectHeader(conversation);
@@ -321,7 +351,8 @@ public final class MainActivity extends AppCompatActivity {
         client.listEvents(conversation.id, 0, new AicliClient.HistoryCallback() {
             @Override public void onSuccess(List<String> events) {
                 runOnUiThread(() -> {
-                    if (!conversation.id.equals(selectedConversationId)) return;
+                    if (client != requestClient || serverGeneration != requestGeneration ||
+                            !conversation.id.equals(selectedConversationId)) return;
                     for (String event : events) consumeEvent(event);
                     connectRealtime(conversation.id);
                 });
@@ -329,7 +360,8 @@ public final class MainActivity extends AppCompatActivity {
 
             @Override public void onError(String message) {
                 runOnUiThread(() -> {
-                    if (!conversation.id.equals(selectedConversationId)) return;
+                    if (client != requestClient || serverGeneration != requestGeneration ||
+                            !conversation.id.equals(selectedConversationId)) return;
                     appendOutput("[历史记录] " + message);
                     connectRealtime(conversation.id);
                 });
@@ -342,6 +374,10 @@ public final class MainActivity extends AppCompatActivity {
         String input = messageInput.getText().toString();
         if (input.isEmpty()) return;
         String conversationId = selectedConversationId;
+        // Sending a new turn is an explicit request to return to the live
+        // edge, even if an earlier synchronized Claude repaint temporarily
+        // left the viewport above the newest terminal rows.
+        terminalRenderer.followBottom();
         messageInput.setText("");
         client.sendMessage(conversationId, input, new AicliClient.ActionCallback() {
             @Override public void onSuccess() {
@@ -494,13 +530,20 @@ public final class MainActivity extends AppCompatActivity {
 
     private void connectRealtime(String conversationId) {
         if (client == null || conversationId == null || conversationId.isEmpty()) return;
-        client.connectEvents(conversationId, new AicliClient.EventCallback() {
+        final AicliClient requestClient = client;
+        final long requestGeneration = serverGeneration;
+        requestClient.connectEvents(conversationId, new AicliClient.EventCallback() {
             @Override public void onEvent(String eventJson) {
-                runOnUiThread(() -> handleEvent(eventJson));
+                runOnUiThread(() -> {
+                    if (client == requestClient && serverGeneration == requestGeneration) {
+                        handleEvent(eventJson);
+                    }
+                });
             }
 
             @Override public void onClosed() {
                 runOnUiThread(() -> {
+                    if (client != requestClient || serverGeneration != requestGeneration) return;
                     setConnectionStatus("实时连接断开 · 正在重连");
                     recoverMissedEvents();
                 });
@@ -533,16 +576,23 @@ public final class MainActivity extends AppCompatActivity {
         String conversationId = selectedConversationId;
         long after = lastEventId;
         if (client == null || conversationId == null) return;
-        client.listEvents(conversationId, after, new AicliClient.HistoryCallback() {
+        final AicliClient requestClient = client;
+        final long requestGeneration = serverGeneration;
+        requestClient.listEvents(conversationId, after, new AicliClient.HistoryCallback() {
             @Override public void onSuccess(List<String> events) {
                 runOnUiThread(() -> {
-                    if (!conversationId.equals(selectedConversationId)) return;
+                    if (client != requestClient || serverGeneration != requestGeneration ||
+                            !conversationId.equals(selectedConversationId)) return;
                     for (String event : events) consumeEvent(event);
                 });
             }
 
             @Override public void onError(String message) {
-                runOnUiThread(() -> setConnectionStatus("补发失败 · 正在继续重连"));
+                runOnUiThread(() -> {
+                    if (client == requestClient && serverGeneration == requestGeneration) {
+                        setConnectionStatus("补发失败 · 正在继续重连");
+                    }
+                });
             }
         });
     }
@@ -579,6 +629,65 @@ public final class MainActivity extends AppCompatActivity {
 
     private void setConnectionStatus(String value) {
         drawerConnectionStatus.setText(value);
+    }
+
+    private void switchComputer(ComputerConnectionStore.Computer computer) {
+        if (computer == null) return;
+        ComputerConnectionStore.Computer active = connectionStore.active();
+        if (active != null && active.computerId.equals(computer.computerId)) return;
+        if (!connectionStore.activate(computer.computerId)) return;
+        configuredConnectionKey = "";
+        setConnectionStatus(computer.displayName() + " · 正在切换…");
+        configureClient();
+    }
+
+    private void refreshComputerSelector(ComputerConnectionStore.Computer active) {
+        displayedComputers.clear();
+        displayedComputers.addAll(connectionStore.all());
+        List<String> labels = new ArrayList<>();
+        int selectedIndex = -1;
+        for (int index = 0; index < displayedComputers.size(); index++) {
+            ComputerConnectionStore.Computer computer = displayedComputers.get(index);
+            labels.add(computerLabel(computer));
+            if (active != null && active.computerId.equals(computer.computerId)) {
+                selectedIndex = index;
+            }
+        }
+        rebuildingComputers = true;
+        computerSelector.setAdapter(new ArrayAdapter<>(
+                this, R.layout.item_group_dropdown, labels));
+        computerSelector.setEnabled(!labels.isEmpty());
+        computerSelector.setText(selectedIndex >= 0
+                ? labels.get(selectedIndex) : "未绑定服务端", false);
+        computerSelectorLayout.setVisibility(View.VISIBLE);
+        rebuildingComputers = false;
+    }
+
+    private void resetForComputerChange() {
+        postSendReplayGeneration++;
+        terminalReconnectScheduled = false;
+        selectedConversationId = null;
+        selectedConversation = null;
+        lastEventId = 0L;
+        allConversations.clear();
+        displayedGroups.clear();
+        conversationAdapter.replace(new ArrayList<>());
+        conversationAdapter.select(null);
+        groupSelector.setAdapter(null);
+        groupSelector.setText("", false);
+        groupSelectorLayout.setVisibility(View.GONE);
+        drawerGroupLabel.setText("暂无项目");
+        terminalRenderer.clearAll();
+        hideConversation();
+    }
+
+    private String activeComputerName() {
+        ComputerConnectionStore.Computer active = connectionStore.active();
+        return active == null ? "电脑" : active.displayName();
+    }
+
+    private static String computerLabel(ComputerConnectionStore.Computer computer) {
+        return computer.displayName();
     }
 
     private void updateProjectHeader(AicliClient.Conversation conversation) {

@@ -55,6 +55,7 @@ private:
     QStackedWidget* pages_{};
     QPushButton* dark_theme_{};
     QPushButton* light_theme_{};
+    QLineEdit* computer_name_{};
     QLineEdit* listen_address_{};
     QLineEdit* listen_port_{};
     QLineEdit* local_address_{};

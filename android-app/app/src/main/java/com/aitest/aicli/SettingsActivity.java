@@ -1,31 +1,52 @@
 package com.aitest.aicli;
 
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Bundle;
+import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.materialswitch.MaterialSwitch;
+import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.journeyapps.barcodescanner.ScanContract;
 import com.journeyapps.barcodescanner.ScanIntentResult;
 import com.journeyapps.barcodescanner.ScanOptions;
-import com.google.android.material.materialswitch.MaterialSwitch;
 
-/** Connection, QR pairing and local Android settings. */
+import java.text.DateFormat;
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/** Connection, multi-desktop management, QR pairing and Android settings. */
 public final class SettingsActivity extends AppCompatActivity {
     public static final String EXTRA_OPEN_SCANNER = "openScanner";
-    private static final String CONNECTION_PREFS = "connection";
-    private static final String BASE_URL_KEY = "baseUrl";
     private static final String APP_PREFS = "app_settings";
+    private static final int MENU_SWITCH = 1;
+    private static final int MENU_DETAILS = 2;
+    private static final int MENU_REMARK = 3;
+    private static final int MENU_DELETE = 4;
 
-    private EditText baseUrlInput;
+    private TextInputEditText deviceNameInput;
+    private TextView deviceNameStatus;
     private TextView computerStatus;
+    private TextView computerListCount;
+    private TextView computerListEmpty;
+    private Button saveDeviceNameButton;
+    private ComputerConnectionAdapter computerAdapter;
+    private ComputerConnectionStore connectionStore;
     private AicliClient client;
     private boolean scannerOpened;
 
@@ -38,18 +59,35 @@ public final class SettingsActivity extends AppCompatActivity {
         setContentView(R.layout.activity_settings);
         findViewById(R.id.settingsBackButton).setOnClickListener(view -> finish());
 
-        baseUrlInput = findViewById(R.id.baseUrlInput);
+        deviceNameInput = findViewById(R.id.deviceNameInput);
+        deviceNameStatus = findViewById(R.id.deviceNameStatus);
         computerStatus = findViewById(R.id.computerStatus);
-        SharedPreferences preferences = getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE);
-        baseUrlInput.setText(preferences.getString(BASE_URL_KEY, ""));
+        computerListCount = findViewById(R.id.computerListCount);
+        computerListEmpty = findViewById(R.id.computerListEmpty);
+        saveDeviceNameButton = findViewById(R.id.saveDeviceNameButton);
 
-        client = new AicliClient(this, baseUrlInput.getText().toString());
+        connectionStore = new ComputerConnectionStore(this);
+        client = new AicliClient(this, "");
+        deviceNameInput.setText(client.deviceName());
+
+        RecyclerView computerList = findViewById(R.id.computerList);
+        computerList.setLayoutManager(new LinearLayoutManager(this));
+        computerAdapter = new ComputerConnectionAdapter(new ComputerConnectionAdapter.Listener() {
+            @Override public void onSelect(ComputerConnectionStore.Computer computer) {
+                switchComputer(computer);
+            }
+
+            @Override public void onManage(ComputerConnectionStore.Computer computer, View anchor) {
+                showComputerMenu(computer, anchor);
+            }
+        });
+        computerList.setAdapter(computerAdapter);
+        refreshComputerList();
         updateStatus();
 
-        findViewById(R.id.saveConnectionButton).setOnClickListener(view -> saveManualAddress());
-        Button addComputer = findViewById(R.id.addComputerButton);
-        addComputer.setOnClickListener(view -> startQrBinding());
-        findViewById(R.id.clearComputerButton).setOnClickListener(view -> clearComputer());
+        saveDeviceNameButton.setOnClickListener(view -> saveDeviceName());
+        View addComputerButton = findViewById(R.id.addComputerButton);
+        addComputerButton.setOnClickListener(view -> startQrBinding());
 
         SharedPreferences appSettings = getSharedPreferences(APP_PREFS, MODE_PRIVATE);
         MaterialSwitch notifications = findViewById(R.id.notificationSwitch);
@@ -62,23 +100,58 @@ public final class SettingsActivity extends AppCompatActivity {
                 appSettings.edit().putBoolean("vibration", checked).apply());
 
         if (getIntent().getBooleanExtra(EXTRA_OPEN_SCANNER, false)) {
-            // Wait until the settings view is attached so the camera permission
-            // prompt appears above this activity rather than the main screen.
-            baseUrlInput.postDelayed(this::startQrBinding, 180L);
+            addComputerButton.postDelayed(this::startQrBinding, 180L);
         }
     }
 
-    private void saveManualAddress() {
-        String value = baseUrlInput.getText().toString().trim();
-        if (!value.startsWith("https://")) {
-            Toast.makeText(this, "公网和自签名连接必须使用 https://", Toast.LENGTH_LONG).show();
+    private void saveDeviceName() {
+        String name = deviceNameInput.getText().toString().trim();
+        if (!client.setDeviceName(name)) {
+            Toast.makeText(this, "手机名称不能为空且不能超过 64 个字符", Toast.LENGTH_LONG).show();
+            deviceNameInput.requestFocus();
             return;
         }
-        getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).edit()
-                .putString(BASE_URL_KEY, value).apply();
-        client.setBaseUrl(value);
-        updateStatus();
-        Toast.makeText(this, "电脑地址已保存，正在连接", Toast.LENGTH_SHORT).show();
+        List<ComputerConnectionStore.Computer> computers = connectionStore.all();
+        deviceNameStatus.setVisibility(View.VISIBLE);
+        if (computers.isEmpty()) {
+            deviceNameStatus.setText("名称已保存在本机，绑定电脑时会自动提交。 ");
+            return;
+        }
+
+        saveDeviceNameButton.setEnabled(false);
+        deviceNameStatus.setText("正在同步到 " + computers.size() + " 台电脑…");
+        AtomicInteger finished = new AtomicInteger();
+        AtomicInteger succeeded = new AtomicInteger();
+        for (ComputerConnectionStore.Computer computer : computers) {
+            AicliClient syncClient = new AicliClient(this, computer);
+            syncClient.updateDeviceName(name, new AicliClient.ActionCallback() {
+                @Override public void onSuccess() {
+                    succeeded.incrementAndGet();
+                    syncClient.close();
+                    finishDeviceNameSync(computers.size(), finished.incrementAndGet(),
+                            succeeded.get());
+                }
+
+                @Override public void onError(String message) {
+                    syncClient.close();
+                    finishDeviceNameSync(computers.size(), finished.incrementAndGet(),
+                            succeeded.get());
+                }
+            });
+        }
+    }
+
+    private void finishDeviceNameSync(int total, int finished, int succeeded) {
+        if (finished < total) return;
+        runOnUiThread(() -> {
+            saveDeviceNameButton.setEnabled(true);
+            if (succeeded == total) {
+                deviceNameStatus.setText("已同步到全部 " + total + " 台电脑");
+            } else {
+                deviceNameStatus.setText("名称已保存，已同步 " + succeeded + "/" + total
+                        + " 台；离线电脑将在下次连接时自动同步。");
+            }
+        });
     }
 
     private void startQrBinding() {
@@ -119,46 +192,248 @@ public final class SettingsActivity extends AppCompatActivity {
 
             @Override public void onComplete() {
                 runOnUiThread(() -> {
-                    baseUrlInput.setText(client.baseUrl());
-                    updateStatus();
-                    Toast.makeText(SettingsActivity.this, "手机已绑定，可以返回主界面使用", Toast.LENGTH_LONG).show();
+                    replaceClientFromActive();
+                    Toast.makeText(SettingsActivity.this,
+                            "新服务端已加入列表并切换为当前服务端", Toast.LENGTH_LONG).show();
                 });
             }
 
             @Override public void onError(String message) {
                 runOnUiThread(() -> {
-                    computerStatus.setText("绑定失败\n" + message);
+                    replaceClientFromActive();
                     Toast.makeText(SettingsActivity.this, message, Toast.LENGTH_LONG).show();
                 });
             }
         });
     }
 
-    private void clearComputer() {
-        client.clearConnection();
-        baseUrlInput.setText("");
-        computerStatus.setText("暂无已绑定电脑\n手机身份仍保留在 Android Keystore 中");
-        Toast.makeText(this, "已清除当前电脑连接信息", Toast.LENGTH_SHORT).show();
+    private void switchComputer(ComputerConnectionStore.Computer computer) {
+        if (computer == null) return;
+        ComputerConnectionStore.Computer active = connectionStore.active();
+        if (active != null && active.computerId.equals(computer.computerId)) return;
+        if (!connectionStore.activate(computer.computerId)) return;
+        replaceClientFromActive();
+        Toast.makeText(this, "已切换到 " + computer.displayName(), Toast.LENGTH_SHORT).show();
+    }
+
+    private void showComputerMenu(ComputerConnectionStore.Computer computer, View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        ComputerConnectionStore.Computer active = connectionStore.active();
+        if (active == null || !active.computerId.equals(computer.computerId)) {
+            menu.getMenu().add(0, MENU_SWITCH, 0, "切换到此服务端");
+        }
+        menu.getMenu().add(0, MENU_DETAILS, 1, "查看与编辑服务端");
+        menu.getMenu().add(0, MENU_REMARK, 2, "修改备注");
+        menu.getMenu().add(0, MENU_DELETE, 3, "删除服务端");
+        menu.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() == MENU_SWITCH) {
+                switchComputer(computer);
+                return true;
+            }
+            if (item.getItemId() == MENU_DETAILS) {
+                showComputerDetails(computer);
+                return true;
+            }
+            if (item.getItemId() == MENU_REMARK) {
+                showRemarkDialog(computer);
+                return true;
+            }
+            if (item.getItemId() == MENU_DELETE) {
+                confirmDelete(computer);
+                return true;
+            }
+            return false;
+        });
+        menu.show();
+    }
+
+    private void showComputerDetails(ComputerConnectionStore.Computer computer) {
+        View content = getLayoutInflater().inflate(R.layout.dialog_computer_details, null);
+        TextView status = content.findViewById(R.id.computerDetailStatus);
+        TextView metadata = content.findViewById(R.id.computerDetailMetadata);
+        TextInputLayout localLayout = content.findViewById(R.id.computerLocalAddressLayout);
+        TextInputLayout remoteLayout = content.findViewById(R.id.computerRemoteAddressLayout);
+        TextInputEditText localInput = content.findViewById(R.id.computerLocalAddressInput);
+        TextInputEditText remoteInput = content.findViewById(R.id.computerRemoteAddressInput);
+
+        ComputerConnectionStore.Computer active = connectionStore.active();
+        boolean isActive = active != null && active.computerId.equals(computer.computerId);
+        status.setText(isActive ? "当前服务端 · 自动连接" : "已绑定 · 自动连接");
+        String desktopName = computer.name.isEmpty() ? "未提供" : computer.name;
+        String pairedTime = computer.pairedAt <= 0L ? "未知" : DateFormat
+                .getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                .format(new Date(computer.pairedAt));
+        metadata.setText("电脑名称：" + desktopName
+                + "\n服务端 ID：" + computer.computerId
+                + "\n绑定时间：" + pairedTime
+                + "\n证书指纹：" + (computer.certificateFingerprint.isEmpty()
+                ? "未固定" : computer.certificateFingerprint));
+        localInput.setText(computer.localUrl);
+        remoteInput.setText(computer.remoteUrl);
+
+        AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+                .setTitle(computer.displayName())
+                .setView(content)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> {
+                    localLayout.setError(null);
+                    remoteLayout.setError(null);
+                    String local;
+                    String remote;
+                    try {
+                        local = normalizeSecureAddress(textOf(localInput));
+                    } catch (IllegalArgumentException error) {
+                        localLayout.setError(error.getMessage());
+                        localInput.requestFocus();
+                        return;
+                    }
+                    try {
+                        remote = normalizeSecureAddress(textOf(remoteInput));
+                    } catch (IllegalArgumentException error) {
+                        remoteLayout.setError(error.getMessage());
+                        remoteInput.requestFocus();
+                        return;
+                    }
+                    if (local.isEmpty() && remote.isEmpty()) {
+                        localLayout.setError("局域网地址和公网地址至少填写一个");
+                        localInput.requestFocus();
+                        return;
+                    }
+                    if (!connectionStore.updateAddresses(computer.computerId, local, remote)) {
+                        Toast.makeText(this, "服务端地址保存失败", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    if (isActive) replaceClientFromActive();
+                    else {
+                        refreshComputerList();
+                        updateStatus();
+                    }
+                    dialog.dismiss();
+                    Toast.makeText(this, "服务端地址已保存", Toast.LENGTH_SHORT).show();
+                }));
+        dialog.show();
+    }
+
+    private void showRemarkDialog(ComputerConnectionStore.Computer computer) {
+        View content = getLayoutInflater().inflate(R.layout.dialog_edit_computer_remark, null);
+        TextInputEditText input = content.findViewById(R.id.computerRemarkInput);
+        input.setText(computer.remark);
+        input.setSelection(input.length());
+        String desktopName = computer.name.isEmpty() ? computer.displayName() : computer.name;
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("修改服务端备注")
+                .setMessage("电脑名称：" + desktopName + "\n留空可恢复显示电脑名称。")
+                .setView(content)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", (dialog, which) -> {
+                    String remark = input.getText() == null
+                            ? "" : input.getText().toString().trim();
+                    if (connectionStore.updateRemark(computer.computerId, remark)) {
+                        refreshComputerList();
+                        updateStatus();
+                        Toast.makeText(this, remark.isEmpty() ? "已清除备注" : "备注已保存",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .show();
+    }
+
+    private void confirmDelete(ComputerConnectionStore.Computer computer) {
+        ComputerConnectionStore.Computer active = connectionStore.active();
+        boolean deletingActive = active != null && active.computerId.equals(computer.computerId);
+        String consequence = deletingActive
+                ? connectionStore.count() > 1
+                    ? "删除后会自动切换到另一台电脑。"
+                    : "删除后手机将回到未绑定状态。"
+                : "当前正在使用的电脑不会受影响。";
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("删除服务端")
+                .setMessage("确定从本手机删除“" + computer.displayName() + "”吗？\n\n"
+                        + consequence + "\n这不会自动删除电脑端的绑定记录。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (dialog, which) -> deleteComputer(computer))
+                .show();
+    }
+
+    private void deleteComputer(ComputerConnectionStore.Computer computer) {
+        ComputerConnectionStore.Computer active = connectionStore.active();
+        boolean deletingActive = active != null && active.computerId.equals(computer.computerId);
+        ComputerConnectionStore.Computer removed = connectionStore.remove(computer.computerId);
+        if (removed == null) {
+            Toast.makeText(this, "服务端已经不存在", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (deletingActive) replaceClientFromActive();
+        else {
+            refreshComputerList();
+            updateStatus();
+        }
+        Toast.makeText(this, "已删除 " + removed.displayName(), Toast.LENGTH_SHORT).show();
+    }
+
+    private void refreshComputerList() {
+        List<ComputerConnectionStore.Computer> computers = connectionStore.all();
+        ComputerConnectionStore.Computer active = connectionStore.active();
+        computerAdapter.replace(computers, active == null ? "" : active.computerId);
+        computerListCount.setText(computers.size() + " 台");
+        computerListEmpty.setVisibility(computers.isEmpty() ? View.VISIBLE : View.GONE);
+        findViewById(R.id.computerList).setVisibility(
+                computers.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    private void updateStatus() {
+        ComputerConnectionStore.Computer active = connectionStore.active();
+        if (active == null) {
+            computerStatus.setText("暂无已绑定服务端\n手机 ID：" + client.phoneId()
+                    + "\n手机私钥仍安全保存在 Android Keystore 中");
+            return;
+        }
+        String actualName = !active.remark.isEmpty() && !active.name.isEmpty()
+                ? "\n电脑名称：" + active.name : "";
+        String preferredAddress = !active.localUrl.isEmpty()
+                ? active.localUrl : active.remoteUrl;
+        computerStatus.setText("当前服务端：" + active.displayName()
+                + actualName
+                + "\n连接策略：局域网优先，公网自动兜底"
+                + "\n首选地址：" + preferredAddress
+                + (active.localUrl.isEmpty() ? "" : "\n局域网地址：" + active.localUrl)
+                + (active.remoteUrl.isEmpty() ? "" : "\n公网/Relay：" + active.remoteUrl)
+                + "\n证书指纹：" + (client.certificateFingerprint().isEmpty()
+                ? "未固定（请优先使用扫码绑定）" : client.certificateFingerprint())
+                + "\n手机 ID：" + client.phoneId());
+    }
+
+    private static String textOf(TextInputEditText input) {
+        return input.getText() == null ? "" : input.getText().toString().trim();
+    }
+
+    private static String normalizeSecureAddress(String value) {
+        String result = value == null ? "" : value.trim();
+        if (result.isEmpty()) return "";
+        if (!result.contains("://")) result = "https://" + result;
+        while (result.endsWith("/")) result = result.substring(0, result.length() - 1);
+        Uri parsed = Uri.parse(result);
+        if (!"https".equalsIgnoreCase(parsed.getScheme()) || parsed.getHost() == null ||
+                parsed.getHost().trim().isEmpty()) {
+            throw new IllegalArgumentException("请输入有效的 HTTPS 地址");
+        }
+        return result;
+    }
+
+    private void replaceClientFromActive() {
+        if (client != null) client.close();
+        client = new AicliClient(this, "");
+        deviceNameInput.setText(client.deviceName());
+        refreshComputerList();
+        updateStatus();
     }
 
     @Override
     protected void onDestroy() {
         if (client != null) client.close();
         super.onDestroy();
-    }
-
-    private void updateStatus() {
-        String address = client.baseUrl();
-        if (address.isEmpty()) {
-            computerStatus.setText("暂无已绑定电脑\n手机 ID：" + client.phoneId());
-            return;
-        }
-        computerStatus.setText("当前电脑：" + (client.computerId().isEmpty() ? "已保存地址" : client.computerId())
-                + "\n当前地址：" + address
-                + (client.localUrl().isEmpty() ? "" : "\n内网地址：" + client.localUrl())
-                + (client.remoteUrl().isEmpty() ? "" : "\n公网/Relay：" + client.remoteUrl())
-                + "\n证书指纹：" + (client.certificateFingerprint().isEmpty()
-                ? "未固定（请优先使用扫码绑定）" : client.certificateFingerprint())
-                + "\n手机 ID：" + client.phoneId());
     }
 }

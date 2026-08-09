@@ -184,6 +184,13 @@ public final class TerminalView extends View {
         return isNearBottom();
     }
 
+    void scrollToBottom() {
+        if (!scroller.isFinished()) scroller.forceFinished(true);
+        scrollToClamped(softWrapEnabled ? 0 : getScrollX(), maximumScrollY());
+        invalidate();
+        awakenScrollBars();
+    }
+
     public void setSoftWrapEnabled(boolean enabled) {
         if (softWrapEnabled == enabled) return;
         boolean follow = isNearBottom();

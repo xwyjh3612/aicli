@@ -340,6 +340,8 @@ void DesktopController::ConfigureRemoteAgent() {
 
 agent::AgentConfig DesktopController::CurrentAgentConfig() {
     agent::AgentConfig config;
+    config.computer_name = store_.GetSetting(
+        L"computer_name", aicli::text::LocalComputerName());
     config.bind_address = store_.GetSetting(L"listen_address", L"0.0.0.0");
     config.port = store_.GetSetting(L"listen_port", L"4280");
     config.local_address = store_.GetSetting(L"local_address");

@@ -96,34 +96,18 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="连接方式"
+                        android:text="扫码连接"
                         android:textColor="@color/aicli_text"
                         android:textSize="16sp"
                         android:textStyle="bold" />
 
-                    <com.google.android.material.textfield.TextInputLayout
-                        style="@style/Widget.Material3.TextInputLayout.FilledBox"
+                    <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:hint="电脑 HTTPS 地址"
-                        app:boxBackgroundColor="@color/aicli_surface_high"
-                        app:boxCornerRadiusBottomEnd="14dp"
-                        app:boxCornerRadiusBottomStart="14dp"
-                        app:boxCornerRadiusTopEnd="14dp"
-                        app:boxCornerRadiusTopStart="14dp"
-                        app:boxStrokeColor="@color/aicli_primary"
-                        app:hintTextColor="@color/aicli_text_secondary">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/baseUrlInput"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:hint="https://192.168.1.10:4280"
-                            android:inputType="textUri"
-                            android:textColor="@color/aicli_text"
-                            android:textColorHint="@color/aicli_text_tertiary" />
-                    </com.google.android.material.textfield.TextInputLayout>
+                        android:layout_marginTop="5dp"
+                        android:text="扫描另一台电脑的绑定二维码，会加入服务端列表并切换到该电脑。"
+                        android:textColor="@color/aicli_text_secondary"
+                        android:textSize="13sp" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/addComputerButton"
@@ -136,26 +120,156 @@
                         app:cornerRadius="16dp"
                         app:icon="@drawable/ic_qr"
                         app:iconTint="@color/aicli_text" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                app:cardBackgroundColor="@color/aicli_surface"
+                app:cardCornerRadius="20dp"
+                app:cardElevation="0dp"
+                app:strokeColor="@color/aicli_outline"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="18dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="服务端管理"
+                            android:textColor="@color/aicli_text"
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/computerListCount"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/aicli_text_secondary"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="5dp"
+                        android:text="点击服务端进行切换；右侧菜单可查看信息、编辑地址与备注或删除。"
+                        android:textColor="@color/aicli_text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/computerListEmpty"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
+                        android:gravity="center"
+                        android:padding="20dp"
+                        android:text="暂无已绑定服务端"
+                        android:textColor="@color/aicli_text_tertiary"
+                        android:textSize="14sp" />
+
+                    <androidx.recyclerview.widget.RecyclerView
+                        android:id="@+id/computerList"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:nestedScrollingEnabled="false"
+                        android:overScrollMode="never"
+                        android:visibility="gone" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                app:cardBackgroundColor="@color/aicli_surface"
+                app:cardCornerRadius="20dp"
+                app:cardElevation="0dp"
+                app:strokeColor="@color/aicli_outline"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="18dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="手机名称"
+                        android:textColor="@color/aicli_text"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="5dp"
+                        android:text="该名称会显示在电脑端的已绑定设备列表。"
+                        android:textColor="@color/aicli_text_secondary"
+                        android:textSize="13sp" />
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        style="@style/Widget.Material3.TextInputLayout.FilledBox"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:hint="自定义手机名称"
+                        app:boxBackgroundColor="@color/aicli_surface_high"
+                        app:boxCornerRadiusBottomEnd="14dp"
+                        app:boxCornerRadiusBottomStart="14dp"
+                        app:boxCornerRadiusTopEnd="14dp"
+                        app:boxCornerRadiusTopStart="14dp"
+                        app:boxStrokeColor="@color/aicli_primary"
+                        app:counterEnabled="true"
+                        app:counterMaxLength="64"
+                        app:hintTextColor="@color/aicli_text_secondary">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/deviceNameInput"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:hint="例如：我的 360 手机"
+                            android:inputType="textCapSentences"
+                            android:maxLength="64"
+                            android:maxLines="1"
+                            android:textColor="@color/aicli_text"
+                            android:textColorHint="@color/aicli_text_tertiary" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
                     <com.google.android.material.button.MaterialButton
-                        android:id="@+id/saveConnectionButton"
-                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:id="@+id/saveDeviceNameButton"
                         android:layout_width="match_parent"
                         android:layout_height="48dp"
                         android:layout_marginTop="10dp"
-                        android:text="保存手工地址并连接"
-                        android:textColor="@color/aicli_text_secondary"
-                        app:cornerRadius="16dp"
-                        app:strokeColor="@color/aicli_outline_strong" />
+                        android:text="保存并同步到电脑"
+                        android:textColor="@color/aicli_text"
+                        app:backgroundTint="@color/aicli_primary"
+                        app:cornerRadius="16dp" />
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/clearComputerButton"
-                        style="@style/Widget.Material3.Button.TextButton"
+                    <TextView
+                        android:id="@+id/deviceNameStatus"
                         android:layout_width="match_parent"
-                        android:layout_height="46dp"
-                        android:layout_marginTop="4dp"
-                        android:text="清除当前电脑连接"
-                        android:textColor="@color/aicli_stopped" />
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:textColor="@color/aicli_text_secondary"
+                        android:textSize="12sp"
+                        android:visibility="gone" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
@@ -250,7 +364,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
                 android:gravity="center"
-                android:text="版本 0.2.0 · 私钥由 Android Keystore 管理"
+                android:text="版本 1.1.0 · 私钥由 Android Keystore 管理"
                 android:textColor="@color/aicli_text_tertiary"
                 android:textSize="12sp" />
         </LinearLayout>

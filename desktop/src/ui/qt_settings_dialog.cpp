@@ -12,6 +12,7 @@
 #include <QStackedWidget>
 #include <QVBoxLayout>
 
+#include "core/text_utils.h"
 #include "ui/qt_widgets.h"
 
 namespace aicli::ui::qt {
@@ -197,7 +198,7 @@ SettingsDialog::SettingsDialog(app::DesktopController& controller,
     navigation_->setObjectName(QStringLiteral("settingsNavigation"));
     navigation_->setFrameShape(QFrame::NoFrame);
     navigation_->viewport()->setAutoFillBackground(false);
-    navigation_->addItems({QStringLiteral("外观"), QStringLiteral("访问地址"),
+    navigation_->addItems({QStringLiteral("外观"), QStringLiteral("本机与网络"),
                            QStringLiteral("项目类型"), QStringLiteral("分组管理"),
                            QStringLiteral("已绑定设备")});
     navigation_->setCurrentRow(0);
@@ -263,18 +264,22 @@ QWidget* SettingsDialog::buildAppearancePage() {
 QWidget* SettingsDialog::buildNetworkPage() {
     QVBoxLayout* layout{};
     auto* page = PageWithHeading(
-        QStringLiteral("访问地址"),
-        QStringLiteral("本地地址用于局域网连接，远程地址用于公网或 Relay。保存后 Agent 会自动重启。"),
+        QStringLiteral("本机与访问地址"),
+        QStringLiteral("本机名称会显示在手机端；访问地址用于 HTTPS/WSS 连接。保存后 Agent 会自动重启。"),
         layout, pages_);
     auto* form = new QFormLayout();
     form->setVerticalSpacing(12);
+    computer_name_ = new QLineEdit(ToQString(controller_.store().GetSetting(
+        L"computer_name", aicli::text::LocalComputerName())), page);
     listen_address_ = new QLineEdit(ToQString(controller_.store().GetSetting(L"listen_address", L"0.0.0.0")), page);
     listen_port_ = new QLineEdit(ToQString(controller_.store().GetSetting(L"listen_port", L"4280")), page);
     local_address_ = new QLineEdit(ToQString(controller_.store().GetSetting(L"local_address")), page);
     remote_address_ = new QLineEdit(ToQString(controller_.store().GetSetting(L"remote_address")), page);
-    for (auto* field : {listen_address_, listen_port_, local_address_, remote_address_}) {
+    for (auto* field : {computer_name_, listen_address_, listen_port_, local_address_, remote_address_}) {
         field->setMinimumHeight(42);
     }
+    computer_name_->setMaxLength(64);
+    form->addRow(QStringLiteral("本机名称"), computer_name_);
     form->addRow(QStringLiteral("监听地址"), listen_address_);
     form->addRow(QStringLiteral("监听端口"), listen_port_);
     form->addRow(QStringLiteral("本地访问地址"), local_address_);
@@ -379,6 +384,12 @@ void SettingsDialog::refreshThemeButtons() {
 }
 
 void SettingsDialog::saveNetwork() {
+    const QString computerName = computer_name_->text().trimmed();
+    if (computerName.isEmpty()) {
+        network_status_->setText(QStringLiteral("本机名称不能为空"));
+        computer_name_->setFocus();
+        return;
+    }
     bool portOk = false;
     const int port = listen_port_->text().toInt(&portOk);
     if (!portOk || port < 1 || port > 65535) {
@@ -386,6 +397,7 @@ void SettingsDialog::saveNetwork() {
         listen_port_->setFocus();
         return;
     }
+    controller_.store().SetSetting(L"computer_name", ToWideString(computerName));
     controller_.store().SetSetting(L"listen_address", ToWideString(listen_address_->text().trimmed()));
     controller_.store().SetSetting(L"listen_port", ToWideString(listen_port_->text().trimmed()));
     controller_.store().SetSetting(L"local_address", ToWideString(local_address_->text().trimmed()));

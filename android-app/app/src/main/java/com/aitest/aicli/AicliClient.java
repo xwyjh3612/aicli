@@ -52,6 +52,10 @@ public final class AicliClient {
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final String PREFS = "connection";
     private static final String PHONE_PREFS = "device_identity";
+    private static final String PHONE_NAME_KEY = "deviceName";
+    private static final Object SEQUENCE_LOCK = new Object();
+    private static final long LOCAL_RECOVERY_INITIAL_DELAY_SECONDS = 8L;
+    private static final long LOCAL_RECOVERY_INTERVAL_SECONDS = 15L;
 
     public static final class Conversation {
         public final String id;
@@ -94,7 +98,10 @@ public final class AicliClient {
     private final DeviceKeyManager keyManager = new DeviceKeyManager();
     private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
     private final Object authLock = new Object();
+    private final Object routeLock = new Object();
     private final SharedPreferences preferences;
+    private final SharedPreferences identityPreferences;
+    private final ComputerConnectionStore connectionStore;
     private final String phoneId;
     private volatile OkHttpClient http;
     private volatile String baseUrl = "";
@@ -106,35 +113,60 @@ public final class AicliClient {
     private volatile long tokenExpiresAt;
     private volatile String transportError = "";
     private long sequence;
+    private volatile boolean persistConnectionState = true;
     private volatile WebSocket eventsSocket;
     private volatile EventCallback eventsCallback;
     private volatile String eventsConversationId = "";
     private final AtomicLong eventsGeneration = new AtomicLong();
     private ScheduledFuture<?> reconnectTask;
+    private ScheduledFuture<?> localRecoveryTask;
     private volatile boolean closed;
+    private volatile boolean clientClosed;
 
     public AicliClient(Context context, String baseUrl) {
+        this(context, baseUrl, null);
+    }
+
+    AicliClient(Context context, ComputerConnectionStore.Computer computer) {
+        this(context, "", computer);
+    }
+
+    private AicliClient(Context context, String requestedBaseUrl,
+                        ComputerConnectionStore.Computer requestedComputer) {
         preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        SharedPreferences identity = context.getSharedPreferences(PHONE_PREFS, Context.MODE_PRIVATE);
+        connectionStore = new ComputerConnectionStore(context);
+        identityPreferences = context.getSharedPreferences(PHONE_PREFS, Context.MODE_PRIVATE);
         try {
-            phoneId = keyManager.getOrCreatePhoneId(identity);
+            phoneId = keyManager.getOrCreatePhoneId(identityPreferences);
             keyManager.getOrCreateKeyPair();
         } catch (Exception exception) {
             throw new IllegalStateException("设备密钥初始化失败", exception);
         }
         sequence = preferences.getLong("sequence", 0L);
-        this.localUrl = normalize(preferences.getString("localAddress", ""));
-        this.remoteUrl = normalize(preferences.getString("remoteAddress", ""));
-        String savedBase = preferences.getString("baseUrl", "");
-        this.baseUrl = normalize(baseUrl == null || baseUrl.trim().isEmpty() ? savedBase : baseUrl);
-        this.certificateFingerprint = normalizeFingerprint(preferences.getString("certificateSha256", ""));
-        this.computerId = preferences.getString("computerId", "");
+        ComputerConnectionStore.Computer active = requestedComputer == null
+                ? connectionStore.active() : requestedComputer;
+        persistConnectionState = requestedComputer == null;
+        String savedBase = active == null ? preferences.getString("baseUrl", "") : active.baseUrl;
+        this.localUrl = normalize(active == null
+                ? preferences.getString("localAddress", "") : active.localUrl);
+        this.remoteUrl = normalize(active == null
+                ? preferences.getString("remoteAddress", "") : active.remoteUrl);
+        String requestedAddress = normalize(requestedBaseUrl == null || requestedBaseUrl.trim().isEmpty()
+                ? savedBase : requestedBaseUrl);
+        this.baseUrl = preferredAddress(this.localUrl, this.remoteUrl, requestedAddress);
+        this.certificateFingerprint = normalizeFingerprint(active == null
+                ? preferences.getString("certificateSha256", "")
+                : active.certificateFingerprint);
+        this.computerId = active == null
+                ? preferences.getString("computerId", "") : active.computerId;
         rebuildHttpClient();
     }
 
     /** Compatibility constructor used only by old callers; it has no identity until configured. */
     public AicliClient(String baseUrl) {
         preferences = null;
+        identityPreferences = null;
+        connectionStore = null;
         phoneId = "";
         this.baseUrl = normalize(baseUrl);
         rebuildHttpClient();
@@ -147,17 +179,50 @@ public final class AicliClient {
     public String localUrl() { return localUrl; }
     public String remoteUrl() { return remoteUrl; }
 
-    public String deviceName() { return keyManager.deviceName(); }
+    public String deviceName() {
+        String saved = identityPreferences == null
+                ? "" : identityPreferences.getString(PHONE_NAME_KEY, "");
+        return saved == null || saved.trim().isEmpty()
+                ? keyManager.deviceName() : saved.trim();
+    }
     public String deviceModel() { return keyManager.model(); }
+
+    public boolean setDeviceName(String value) {
+        String name = value == null ? "" : value.trim();
+        if (identityPreferences == null || name.isEmpty() || name.length() > 64) return false;
+        identityPreferences.edit().putString(PHONE_NAME_KEY, name).commit();
+        return true;
+    }
+
+    public void updateDeviceName(String value, ActionCallback callback) {
+        String name = value == null ? "" : value.trim();
+        if (!setDeviceName(name)) {
+            callback.onError("手机名称不能为空且不能超过 64 个字符");
+            return;
+        }
+        JsonObject body = new JsonObject();
+        body.addProperty("name", name);
+        signedRequest("POST", "/api/device/profile", body.toString(), new ResponseCallback() {
+            @Override public void onResponse(JsonObject root, int status) { callback.onSuccess(); }
+            @Override public void onError(String message) { callback.onError(message); }
+        });
+    }
 
     public void setBaseUrl(String value) {
         baseUrl = normalize(value);
-        if (preferences != null) preferences.edit().putString("baseUrl", baseUrl).apply();
-        rebuildHttpClient();
+        synchronized (authLock) { token = ""; tokenExpiresAt = 0L; }
+        if (connectionStore != null && !computerId.isEmpty()) {
+            connectionStore.updateActiveBaseUrl(baseUrl);
+        } else if (preferences != null) {
+            preferences.edit().putString("baseUrl", baseUrl).apply();
+        }
+        updateLocalRecoveryProbe();
     }
 
     /** Stop network callbacks when the owning activity is discarded. */
     public void close() {
+        clientClosed = true;
+        stopLocalRecoveryProbe();
         closeEvents();
         executor.shutdownNow();
     }
@@ -168,12 +233,19 @@ public final class AicliClient {
 
     public void configurePinnedConnections(String local, String remote, String preferred,
                                            String fingerprint, String computer) {
+        configurePinnedConnections(local, remote, preferred, fingerprint, computer, "", true);
+    }
+
+    private void configurePinnedConnections(String local, String remote, String preferred,
+                                            String fingerprint, String computer,
+                                            String computerName, boolean persist) {
         localUrl = normalizeAddress(local);
         remoteUrl = normalizeAddress(remote);
         baseUrl = normalizeAddress(preferred);
         if (baseUrl.isEmpty()) baseUrl = !localUrl.isEmpty() ? localUrl : remoteUrl;
         certificateFingerprint = normalizeFingerprint(fingerprint);
         computerId = computer == null ? "" : computer;
+        persistConnectionState = persist;
         if ((!baseUrl.isEmpty() && !baseUrl.startsWith("https://")) ||
                 (!localUrl.isEmpty() && !localUrl.startsWith("https://")) ||
                 (!remoteUrl.isEmpty() && !remoteUrl.startsWith("https://"))) {
@@ -181,7 +253,13 @@ public final class AicliClient {
         }
         token = "";
         tokenExpiresAt = 0L;
-        if (preferences != null) {
+        if (persist && connectionStore != null && !computerId.isEmpty()) {
+            connectionStore.upsert(new ComputerConnectionStore.Computer(
+                    computerId,
+                    ComputerConnectionStore.defaultName(computerName, computerId, baseUrl),
+                    baseUrl, localUrl, remoteUrl, certificateFingerprint,
+                    System.currentTimeMillis()), true);
+        } else if (persist && preferences != null) {
             preferences.edit().putString("baseUrl", baseUrl)
                     .putString("localAddress", localUrl)
                     .putString("remoteAddress", remoteUrl)
@@ -189,11 +267,13 @@ public final class AicliClient {
                     .putString("computerId", computerId).apply();
         }
         rebuildHttpClient();
+        if (persist) updateLocalRecoveryProbe();
     }
 
     public void listConversations(String provider, ConversationCallback callback) {
         signedRequest("GET", "/api/conversations", "", new ResponseCallback() {
             @Override public void onResponse(JsonObject root, int status) {
+                refreshComputerIdentity(root);
                 JsonArray items = root.has("items") && root.get("items").isJsonArray()
                         ? root.getAsJsonArray("items") : new JsonArray();
                 List<Conversation> result = new ArrayList<>();
@@ -270,8 +350,10 @@ public final class AicliClient {
         closed = false;
         executor.execute(() -> {
             if (generation != eventsGeneration.get() || closed) return;
+            String attemptedAddress = baseUrl;
             try {
                 ensureAuthenticated();
+                final String connectionAddress = baseUrl;
                 String path = "/api/events";
                 String safeConversation = safePath(conversationId);
                 String safeTerminalSession = safePath(callback == null
@@ -292,7 +374,7 @@ public final class AicliClient {
                 }
                 if (query.length() > 0) path += "?" + query;
                 Request request = signedBuilder("GET", path, "", true)
-                        .url(webSocketUrl(path)).build();
+                        .url(webSocketUrl(connectionAddress, path)).build();
                 eventsSocket = http.newWebSocket(request, new WebSocketListener() {
                     @Override public void onMessage(@NonNull WebSocket socket, @NonNull String text) {
                         if (generation != eventsGeneration.get()) return;
@@ -303,11 +385,13 @@ public final class AicliClient {
                         scheduleReconnect(generation, conversationId, callback);
                     }
                     @Override public void onFailure(@NonNull WebSocket socket, @NonNull Throwable error, Response response) {
+                        if (generation != eventsGeneration.get()) return;
+                        switchAfterFailure(connectionAddress, false);
                         scheduleReconnect(generation, conversationId, callback);
                     }
                 });
             } catch (Exception exception) {
-                switchToAlternateAddress();
+                switchAfterFailure(attemptedAddress, false);
                 scheduleReconnect(generation, conversationId, callback);
             }
         });
@@ -326,6 +410,7 @@ public final class AicliClient {
 
     public void clearConnection() {
         closeEvents();
+        stopLocalRecoveryProbe();
         localUrl = "";
         remoteUrl = "";
         baseUrl = "";
@@ -335,7 +420,12 @@ public final class AicliClient {
             token = "";
             tokenExpiresAt = 0L;
         }
-        if (preferences != null) preferences.edit().clear().apply();
+        if (connectionStore != null) connectionStore.removeActive();
+        else if (preferences != null) {
+            preferences.edit().remove("baseUrl").remove("localAddress")
+                    .remove("remoteAddress").remove("certificateSha256")
+                    .remove("computerId").apply();
+        }
         rebuildHttpClient();
     }
 
@@ -349,6 +439,7 @@ public final class AicliClient {
                 if (local.isEmpty() && remote.isEmpty()) throw new IOException("二维码没有可用电脑地址");
                 String fingerprint = stringValue(qr, "certificateSha256");
                 String computer = stringValue(qr, "computerId");
+                String computerName = stringValue(qr, "computerName");
                 String pairingId = stringValue(qr, "pairingId");
                 String challenge = stringValue(qr, "challenge");
                 if (pairingId.isEmpty() || challenge.isEmpty() || computer.isEmpty())
@@ -359,12 +450,13 @@ public final class AicliClient {
                 if (fingerprint.isEmpty()) throw new IOException("二维码没有证书指纹");
                 callback.onStatus("正在提交", "正在向电脑提交手机公钥…");
                 String publicKey = keyManager.publicKeyBase64();
+                String phoneName = deviceName();
                 String canonical = "AICLI-PAIR|" + computer + "|" + pairingId + "|" + challenge + "|"
-                        + phoneId + "|" + keyManager.deviceName() + "|" + keyManager.model() + "|" + publicKey;
+                        + phoneId + "|" + phoneName + "|" + keyManager.model() + "|" + publicKey;
                 JsonObject request = new JsonObject();
                 request.addProperty("pairingId", pairingId);
                 request.addProperty("phoneId", phoneId);
-                request.addProperty("deviceName", keyManager.deviceName());
+                request.addProperty("deviceName", phoneName);
                 request.addProperty("model", keyManager.model());
                 request.addProperty("publicKey", publicKey);
                 request.addProperty("signature", keyManager.sign(canonical));
@@ -374,7 +466,8 @@ public final class AicliClient {
                 for (String address : addresses) {
                     if (address == null || address.isEmpty()) continue;
                     try {
-                        configurePinnedConnections(local, remote, address, fingerprint, computer);
+                        configurePinnedConnections(local, remote, address, fingerprint,
+                                computer, computerName, false);
                         executeUntrustedPost("/api/pair/request", request.toString());
                         submitted = true;
                         break;
@@ -388,9 +481,20 @@ public final class AicliClient {
                 while (System.currentTimeMillis() < deadline) {
                     JsonObject status = executeUntrustedGet("/api/pair/status?pairingId=" + pairingId);
                     String value = stringValue(status, "status");
+                    String statusComputerName = stringValue(status, "computerName");
+                    if (!statusComputerName.isEmpty()) computerName = statusComputerName;
                     if ("authorized".equals(value)) {
                         callback.onStatus("已确认", "正在建立安全会话…");
                         ensureAuthenticated();
+                        if (connectionStore != null) {
+                            connectionStore.upsert(new ComputerConnectionStore.Computer(
+                                    computer,
+                                    ComputerConnectionStore.defaultName(
+                                            computerName, computer, baseUrl),
+                                    baseUrl, localUrl, remoteUrl,
+                                    certificateFingerprint, System.currentTimeMillis()), true);
+                        }
+                        persistConnectionState = true;
                         callback.onComplete();
                         return;
                     }
@@ -417,6 +521,7 @@ public final class AicliClient {
         executor.execute(() -> {
             Exception lastFailure = null;
             for (int connectionAttempt = 0; connectionAttempt < 2; connectionAttempt++) {
+                String attemptedAddress = baseUrl;
                 try {
                     Response response = executeSigned(method, path, body);
                     String text = response.body() == null ? "{}" : response.body().string();
@@ -438,7 +543,8 @@ public final class AicliClient {
                     return;
                 } catch (Exception exception) {
                     lastFailure = exception;
-                    if (connectionAttempt == 0 && switchToAlternateAddress()) continue;
+                    if (connectionAttempt == 0 &&
+                            switchAfterFailure(attemptedAddress, true)) continue;
                     break;
                 }
             }
@@ -461,11 +567,7 @@ public final class AicliClient {
         if (query >= 0) canonicalPath = canonicalPath.substring(0, query);
         String requestId = UUID.randomUUID().toString();
         long timestamp = System.currentTimeMillis() / 1000L;
-        long currentSequence;
-        synchronized (authLock) {
-            currentSequence = ++sequence;
-            if (preferences != null) preferences.edit().putLong("sequence", currentSequence).apply();
-        }
+        long currentSequence = nextSequence();
         String canonical = method + "\n" + canonicalPath + "\n" + requestId + "\n"
                 + timestamp + "\n" + currentSequence + "\n" + sha256Hex(body);
         RequestBody requestBody = body.isEmpty() ? null : RequestBody.create(body, JSON);
@@ -490,6 +592,7 @@ public final class AicliClient {
             String serverComputer = stringValue(challenge, "computerId");
             if (!computerId.isEmpty() && !computerId.equals(serverComputer)) throw new IOException("电脑身份不匹配");
             computerId = serverComputer;
+            refreshComputerIdentity(challenge);
             String canonical = "AICLI-AUTH|" + computerId + "|" + phoneId + "|" + challengeId + "|" + nonce;
             JsonObject body = new JsonObject();
             body.addProperty("phoneId", phoneId);
@@ -499,9 +602,36 @@ public final class AicliClient {
             token = stringValue(result, "token");
             tokenExpiresAt = result.has("expiresAt") ? result.get("expiresAt").getAsLong() : 0L;
             if (token.isEmpty()) throw new IOException("电脑没有签发会话令牌");
-            if (preferences != null) preferences.edit().putString("computerId", computerId)
-                    .putString("certificateSha256", certificateFingerprint).apply();
+            refreshComputerIdentity(result);
+            if (persistConnectionState && preferences != null) {
+                preferences.edit().putString("computerId", computerId)
+                        .putString("certificateSha256", certificateFingerprint).apply();
+            }
+            syncDeviceNameBestEffort();
         }
+    }
+
+    private void refreshComputerIdentity(JsonObject value) {
+        if (value == null || connectionStore == null) return;
+        String id = stringValue(value, "computerId");
+        if (id.isEmpty()) id = computerId;
+        String name = stringValue(value, "computerName");
+        if (!id.isEmpty() && !name.isEmpty()) connectionStore.updateName(id, name);
+    }
+
+    private void syncDeviceNameBestEffort() {
+        if (http == null || token.isEmpty() || phoneId.isEmpty()) return;
+        try {
+            JsonObject body = new JsonObject();
+            body.addProperty("name", deviceName());
+            String text = body.toString();
+            try (Response response = http.newCall(signedBuilder(
+                    "POST", "/api/device/profile", text, true)
+                    .url(baseUrl + "/api/device/profile").build()).execute()) {
+                // Older desktops may not expose this endpoint yet. Name sync
+                // is best-effort and must never block normal terminal access.
+            }
+        } catch (Exception ignored) { }
     }
 
     private JsonObject executeUntrustedGet(String path) throws Exception {
@@ -601,22 +731,130 @@ public final class AicliClient {
         }
     }
 
-    private boolean switchToAlternateAddress() {
-        String alternate = "";
-        if (!localUrl.isEmpty() && !localUrl.equals(baseUrl)) alternate = localUrl;
-        else if (!remoteUrl.isEmpty() && !remoteUrl.equals(baseUrl)) alternate = remoteUrl;
-        if (alternate.isEmpty()) return false;
-        baseUrl = alternate;
+    private boolean switchAfterFailure(String failedAddress, boolean reconnectEvents) {
+        String failed = normalize(failedAddress);
+        String alternate;
+        synchronized (routeLock) {
+            if (!failed.equals(baseUrl)) return !baseUrl.isEmpty();
+            if (failed.equals(localUrl)) {
+                alternate = distinctAddress(remoteUrl, failed);
+            } else {
+                alternate = distinctAddress(localUrl, failed);
+                if (alternate.isEmpty()) alternate = distinctAddress(remoteUrl, failed);
+            }
+        }
+        return switchCurrentAddress(alternate, reconnectEvents);
+    }
+
+    private boolean switchCurrentAddress(String value, boolean reconnectEvents) {
+        String address = normalize(value);
+        if (address.isEmpty()) return false;
+        synchronized (routeLock) {
+            if (address.equals(baseUrl)) return false;
+            baseUrl = address;
+        }
         synchronized (authLock) { token = ""; tokenExpiresAt = 0L; }
-        if (preferences != null) preferences.edit().putString("baseUrl", baseUrl).apply();
-        rebuildHttpClient();
+        updateLocalRecoveryProbe();
+        if (reconnectEvents) reconnectEventsForAddressChange();
         return true;
     }
 
-    private String webSocketUrl(String path) {
-        if (baseUrl.startsWith("https://")) return "wss://" + baseUrl.substring(8) + path;
-        if (baseUrl.startsWith("http://")) return "ws://" + baseUrl.substring(7) + path;
-        return baseUrl + path;
+    private void reconnectEventsForAddressChange() {
+        EventCallback callback = eventsCallback;
+        String conversationId = eventsConversationId;
+        if (callback == null || closed || clientClosed) return;
+        connectEvents(conversationId, callback);
+    }
+
+    private void updateLocalRecoveryProbe() {
+        if (clientClosed || localUrl.isEmpty() || localUrl.equals(baseUrl) ||
+                localUrl.equals(remoteUrl)) {
+            stopLocalRecoveryProbe();
+            return;
+        }
+        synchronized (routeLock) {
+            if (localRecoveryTask != null && !localRecoveryTask.isDone()) return;
+            try {
+                localRecoveryTask = executor.scheduleWithFixedDelay(
+                        this::tryRecoverLocalAddress,
+                        LOCAL_RECOVERY_INITIAL_DELAY_SECONDS,
+                        LOCAL_RECOVERY_INTERVAL_SECONDS,
+                        TimeUnit.SECONDS);
+            } catch (RuntimeException ignored) { }
+        }
+    }
+
+    private void stopLocalRecoveryProbe() {
+        synchronized (routeLock) {
+            if (localRecoveryTask != null) localRecoveryTask.cancel(false);
+            localRecoveryTask = null;
+        }
+    }
+
+    private void tryRecoverLocalAddress() {
+        if (clientClosed || localUrl.isEmpty() || localUrl.equals(baseUrl)) {
+            stopLocalRecoveryProbe();
+            return;
+        }
+        if (!probeAddress(localUrl)) return;
+        switchCurrentAddress(localUrl, true);
+    }
+
+    private boolean probeAddress(String address) {
+        OkHttpClient current = http;
+        if (current == null || !transportError.isEmpty()) return false;
+        try {
+            OkHttpClient probeClient = current.newBuilder()
+                    .connectTimeout(2, TimeUnit.SECONDS)
+                    .readTimeout(3, TimeUnit.SECONDS)
+                    .writeTimeout(3, TimeUnit.SECONDS)
+                    .callTimeout(4, TimeUnit.SECONDS)
+                    .build();
+            try (Response response = probeClient.newCall(new Request.Builder()
+                    .url(address + "/api/health").get().build()).execute()) {
+                if (!response.isSuccessful()) return false;
+                String body = response.body() == null ? "{}" : response.body().string();
+                JsonObject health = parseObject(body);
+                String serverComputer = stringValue(health, "computerId");
+                return computerId.isEmpty() || computerId.equals(serverComputer);
+            }
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static String preferredAddress(String local, String remote, String fallback) {
+        if (local != null && !local.isEmpty()) return local;
+        if (remote != null && !remote.isEmpty()) return remote;
+        return fallback == null ? "" : fallback;
+    }
+
+    private static String distinctAddress(String candidate, String current) {
+        String normalized = normalize(candidate);
+        return normalized.isEmpty() || normalized.equals(normalize(current)) ? "" : normalized;
+    }
+
+    private long nextSequence() {
+        if (preferences == null) {
+            synchronized (authLock) { return ++sequence; }
+        }
+        synchronized (SEQUENCE_LOCK) {
+            String suffix = computerId == null || computerId.isEmpty()
+                    ? "default" : computerId;
+            String key = "sequence." + suffix;
+            long legacy = preferences.getLong("sequence", 0L);
+            long stored = preferences.getLong(key, 0L);
+            long current = Math.max(Math.max(sequence, legacy), stored) + 1L;
+            preferences.edit().putLong(key, current).putLong("sequence", current).commit();
+            sequence = current;
+            return current;
+        }
+    }
+
+    private static String webSocketUrl(String address, String path) {
+        if (address.startsWith("https://")) return "wss://" + address.substring(8) + path;
+        if (address.startsWith("http://")) return "ws://" + address.substring(7) + path;
+        return address + path;
     }
 
     private static String normalize(String value) { String result = value == null ? "" : value.trim(); while (result.endsWith("/")) result = result.substring(0, result.length() - 1); return result; }

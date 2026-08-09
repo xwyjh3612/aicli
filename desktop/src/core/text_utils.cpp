@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <iterator>
+
 namespace aicli::text {
 
 std::string Utf8Text(std::wstring_view value) {
@@ -27,6 +29,15 @@ std::wstring WideText(std::string_view value) {
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
                         static_cast<int>(value.size()), result.data(), count);
     return result;
+}
+
+std::wstring LocalComputerName() {
+    wchar_t value[MAX_COMPUTERNAME_LENGTH + 1]{};
+    DWORD size = static_cast<DWORD>(std::size(value));
+    if (GetComputerNameW(value, &size) && size > 0) {
+        return std::wstring(value, size);
+    }
+    return L"AI CLI 电脑";
 }
 
 std::wstring NormalizeTerminalSnapshot(std::wstring value) {

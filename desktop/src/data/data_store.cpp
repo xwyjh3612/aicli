@@ -653,6 +653,38 @@ public_key_base64=excluded.public_key_base64,active=1,last_seen=excluded.last_se
     return false;
 }
 
+bool DataStore::UpdateDeviceName(const std::wstring& phone_id,
+                                 const std::wstring& name,
+                                 std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    if (phone_id.empty() || IsBlank(name)) {
+        if (error) *error = L"手机名称不能为空";
+        return false;
+    }
+    if (name.size() > 64) {
+        if (error) *error = L"手机名称不能超过 64 个字符";
+        return false;
+    }
+    auto statement = Prepare(
+        db_, "UPDATE devices SET name=?,last_seen=? WHERE phone_id=? AND active=1;");
+    if (!statement) {
+        if (error) *error = LastError();
+        return false;
+    }
+    BindText(statement.get(), 1, name);
+    sqlite3_bind_int64(statement.get(), 2, UnixSeconds());
+    BindText(statement.get(), 3, phone_id);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        if (error) *error = LastError();
+        return false;
+    }
+    if (sqlite3_changes(db_) == 0) {
+        if (error) *error = L"手机未绑定或已被解绑";
+        return false;
+    }
+    return true;
+}
+
 bool DataStore::RevokeDevice(const std::wstring& phone_id) {
     std::scoped_lock lock(mutex_);
     auto statement = Prepare(db_, "UPDATE devices SET active=0,last_sequence=0 WHERE phone_id=?;");
