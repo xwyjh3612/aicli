@@ -102,6 +102,7 @@ target_link_libraries(aicli PRIVATE
     gdi32
     gdiplus
     kernel32
+    imm32
     ole32
     runtimeobject
     dwmapi

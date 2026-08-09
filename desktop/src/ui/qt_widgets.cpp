@@ -66,8 +66,11 @@ QPushButton:hover { background: %10; border-color: %11; }
 QPushButton:pressed { background: %12; }
 QPushButton#primaryButton { background: %13; color: white; border-color: %14; }
 QPushButton#primaryButton:hover { background: %15; }
-QPushButton#captionButton { background: transparent; border: none; border-radius: 0; padding: 0; color: %6; font-size: 16px; }
+QPushButton#captionButton, QPushButton#closeButton {
+    background: transparent; border: none; border-radius: 0; padding: 0; color: %6;
+}
 QPushButton#captionButton:hover { background: %10; }
+QPushButton#captionButton:pressed { background: %12; }
 QPushButton#closeButton:hover { background: #e85663; color: white; }
 QPushButton#closeButton:pressed { background: #c63946; color: white; }
 QLineEdit, QComboBox { background: %16; color: %8; border: 1px solid %9; border-radius: 9px; padding: 0 10px; selection-background-color: %17; selection-color: %8; }
@@ -411,17 +414,54 @@ TitleBarWidget::TitleBarWidget(QWidget* parent) : QWidget(parent) {
     layout->addWidget(devices_button_);
     layout->addWidget(settings_button_);
 
-    minimize_button_ = makeButton(QStringLiteral("—"), QStringLiteral("captionButton"), 46);
-    maximize_button_ = makeButton(QStringLiteral("□"), QStringLiteral("captionButton"), 46);
-    close_button_ = makeButton(QStringLiteral("×"), QStringLiteral("closeButton"), 46);
+    // Keep the entire title bar on one row. These are client-side buttons,
+    // but use the same glyphs, dimensions and hover treatment as the Windows
+    // 11 caption controls so the custom title bar remains visually native.
+    auto* caption_buttons = new QWidget(this);
+    caption_buttons->setObjectName(QStringLiteral("captionButtons"));
+    caption_buttons->setFixedSize(138, 52);
+    auto* caption_layout = new QHBoxLayout(caption_buttons);
+    caption_layout->setContentsMargins(0, 0, 0, 0);
+    caption_layout->setSpacing(0);
+
+    QFont caption_font;
+    caption_font.setFamilies({QStringLiteral("Segoe Fluent Icons"),
+                              QStringLiteral("Segoe MDL2 Assets")});
+    caption_font.setPixelSize(10);
+
+    auto makeCaptionButton = [&](QChar glyph, const QString& name,
+                                 const QString& accessibleName) {
+        auto* button = new QPushButton(QString(glyph), caption_buttons);
+        button->setObjectName(name);
+        button->setFixedSize(46, 52);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setFont(caption_font);
+        button->setAccessibleName(accessibleName);
+        button->setToolTip(accessibleName);
+        return button;
+    };
+    minimize_button_ = makeCaptionButton(QChar(0xE921),
+                                         QStringLiteral("captionButton"),
+                                         QStringLiteral("最小化"));
+    maximize_button_ = makeCaptionButton(QChar(0xE922),
+                                         QStringLiteral("captionButton"),
+                                         QStringLiteral("最大化"));
+    close_button_ = makeCaptionButton(QChar(0xE8BB),
+                                      QStringLiteral("closeButton"),
+                                      QStringLiteral("关闭"));
+    caption_layout->addWidget(minimize_button_);
+    caption_layout->addWidget(maximize_button_);
+    caption_layout->addWidget(close_button_);
     layout->addSpacing(8);
-    layout->addWidget(minimize_button_);
-    layout->addWidget(maximize_button_);
-    layout->addWidget(close_button_);
+    layout->addWidget(caption_buttons);
 }
 
 void TitleBarWidget::UpdateMaximizeGlyph(bool maximized) {
-    maximize_button_->setText(maximized ? QStringLiteral("❐") : QStringLiteral("□"));
+    if (!maximize_button_) return;
+    maximize_button_->setText(QString(QChar(maximized ? 0xE923 : 0xE922)));
+    const QString action = maximized ? QStringLiteral("还原") : QStringLiteral("最大化");
+    maximize_button_->setAccessibleName(action);
+    maximize_button_->setToolTip(action);
 }
 
 void TitleBarWidget::mousePressEvent(QMouseEvent* event) {

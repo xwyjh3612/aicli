@@ -2,6 +2,9 @@
 
 #include <cstdint>
 
+#include <windows.h>
+#include <imm.h>
+
 #include <QMainWindow>
 #include <QPointer>
 
@@ -30,6 +33,7 @@ public:
     bool Initialize(std::wstring* error = nullptr);
 
 protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
     void resizeEvent(QResizeEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
@@ -58,6 +62,8 @@ private:
     void wireController();
     void applyTheme();
     void applyNativeWindowStyle();
+    void captureQtInputContext(HWND window);
+    void restoreQtInputContext(QWidget* editor);
     void handlePairing(const agent::PendingPairing& pairing);
     int executeModal(QDialog& dialog);
     void setStatus(const std::wstring& text);
@@ -94,6 +100,10 @@ private:
     bool refreshing_{};
     bool shutting_down_{};
     bool native_frame_configured_{};
+    HIMC qt_input_context_{};
+    bool ime_filter_installed_{};
+    bool restoring_ime_{};
+    std::uint64_t ime_focus_serial_{};
     std::uint64_t theme_refresh_serial_{};
 };
 

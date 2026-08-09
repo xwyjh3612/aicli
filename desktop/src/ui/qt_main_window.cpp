@@ -24,6 +24,7 @@
 #include <QVBoxLayout>
 
 #include <dwmapi.h>
+#include <imm.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -96,10 +97,14 @@ MainWindow::MainWindow(app::DesktopController& controller)
 }
 
 MainWindow::~MainWindow() {
-    if (!shutting_down_) {
-        shutting_down_ = true;
-        controller_.Shutdown();
+    if (ime_filter_installed_ && qApp) {
+        qApp->removeEventFilter(this);
+        ime_filter_installed_ = false;
     }
+    // DesktopController is owned by qt_main.cpp and is shut down after the
+    // Qt event loop has returned.  Waiting for CivetWeb, ConPTY and
+    // TermControl here would keep the native window visible while their
+    // worker threads are being joined.
 }
 
 void MainWindow::buildUi() {
@@ -130,11 +135,8 @@ void MainWindow::buildUi() {
     search_->setPlaceholderText(QStringLiteral("搜索会话"));
     search_->setClearButtonEnabled(true);
     search_->setFixedHeight(38);
-    // Be explicit because the window also hosts a native XAML/TSF terminal.
-    // The search field must remain a normal Qt IME target for Chinese
-    // composition instead of inheriting terminal-oriented input behaviour.
-    search_->setAttribute(Qt::WA_DontCreateNativeAncestors, true);
-    search_->setAttribute(Qt::WA_NativeWindow, true);
+    // The application-wide IME coordinator restores Windows text-input focus
+    // for this and every other Qt editor after TermControl was active.
     search_->setAttribute(Qt::WA_InputMethodEnabled, true);
     search_->setInputMethodHints(Qt::ImhNone);
     sidebarLayout->addWidget(search_);
@@ -223,11 +225,13 @@ void MainWindow::buildUi() {
     footerLayout->addWidget(telemetry_);
     rootLayout->addWidget(footer);
 
-    connect(title_bar_->minimizeButton(), &QPushButton::clicked, this, &QWidget::showMinimized);
+    connect(title_bar_->minimizeButton(), &QPushButton::clicked,
+            this, &QWidget::showMinimized);
     connect(title_bar_->maximizeButton(), &QPushButton::clicked, this, [this] {
         if (isMaximized()) showNormal(); else showMaximized();
     });
-    connect(title_bar_->closeButton(), &QPushButton::clicked, this, &QWidget::close);
+    connect(title_bar_->closeButton(), &QPushButton::clicked,
+            this, &QWidget::close);
     connect(title_bar_->groupButton(), &QPushButton::clicked, this, &MainWindow::showGroupMenu);
     connect(title_bar_->addGroupButton(), &QPushButton::clicked, this, &MainWindow::createGroup);
     connect(title_bar_->bindButton(), &QPushButton::clicked, this, &MainWindow::showBindingDialog);
@@ -271,6 +275,11 @@ void MainWindow::wireController() {
 bool MainWindow::Initialize(std::wstring* error) {
     const HWND window = reinterpret_cast<HWND>(winId());
     applyNativeWindowStyle();
+    // Capture Qt's working input context before WindowsXamlManager and
+    // TermControl initialize text services on this UI thread. The XAML stack
+    // changes the default compatibility context used by Qt's IMM32 backend;
+    // retaining the original context lets Qt editors restore it on focus.
+    captureQtInputContext(window);
     if (!controller_.Initialize(window, error)) return false;
 
     const HWND terminalParent = reinterpret_cast<HWND>(terminal_host_->winId());
@@ -293,6 +302,16 @@ bool MainWindow::Initialize(std::wstring* error) {
     terminal_snapshot_timer_->setInterval(200);
     connect(terminal_snapshot_timer_, &QTimer::timeout,
             this, &MainWindow::publishTerminalSnapshots);
+
+    // Prime Qt's native input context on the first event-loop turn, before the
+    // delayed terminal-session restore takes focus below. Without this first
+    // activation, TermControl can remain the only initialized text-service
+    // client on the shared UI thread and every later QLineEdit receives raw
+    // Latin keystrokes. When there is no terminal to restore, leaving search
+    // focused is the natural initial state.
+    QTimer::singleShot(0, this, [this] {
+        if (search_) search_->setFocus(Qt::OtherFocusReason);
+    });
 
     QTimer::singleShot(160, this, [this] {
         const auto id = controller_.selectedProjectId();
@@ -368,23 +387,12 @@ void MainWindow::applyNativeWindowStyle() {
     const HWND window = reinterpret_cast<HWND>(winId());
     if (!window) return;
 
-    // Qt creates this window with FramelessWindowHint.  Add the native
-    // resize/system-menu bits only once, and only send FRAMECHANGED when the
-    // style actually changed.  Re-sending FRAMECHANGED on every telemetry or
-    // theme refresh makes DWM briefly restore its default resize frame (about
-    // 5 px on the current DPI), which is the intermittent gray rim seen
-    // around all four sides of the window.
     LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
     const LONG_PTR requiredStyle = style | WS_THICKFRAME | WS_MINIMIZEBOX |
                                    WS_MAXIMIZEBOX | WS_SYSMENU;
     const bool styleChanged = style != requiredStyle;
-    if (styleChanged) {
-        SetWindowLongPtrW(window, GWL_STYLE, requiredStyle);
-    }
+    if (styleChanged) SetWindowLongPtrW(window, GWL_STYLE, requiredStyle);
     if (styleChanged || !native_frame_configured_) {
-        // Do not extend glass into the client area.  A one-pixel extension is
-        // enough for DWM to expand it into the full resize frame during an
-        // inactive -> active transition on some Windows configurations.
         const MARGINS margins{0, 0, 0, 0};
         DwmExtendFrameIntoClientArea(window, &margins);
         SetWindowPos(window, nullptr, 0, 0, 0, 0,
@@ -395,10 +403,39 @@ void MainWindow::applyNativeWindowStyle() {
 
     const BOOL dark = controller_.lightTheme() ? FALSE : TRUE;
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-    DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
-                          &kDwmColorNone, sizeof(kDwmColorNone));
+    DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR, &kDwmColorNone, sizeof(kDwmColorNone));
     const DWM_WINDOW_CORNER_PREFERENCE corners = DWMWCP_ROUND;
     DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE, &corners, sizeof(corners));
+}
+
+void MainWindow::captureQtInputContext(HWND window) {
+    if (!window || !IsWindow(window)) return;
+    if (const HIMC context = ImmGetContext(window)) {
+        qt_input_context_ = context;
+        ImmReleaseContext(window, context);
+    }
+    if (qt_input_context_ && !ime_filter_installed_ && qApp) {
+        qApp->installEventFilter(this);
+        ime_filter_installed_ = true;
+    }
+}
+
+void MainWindow::restoreQtInputContext(QWidget* editor) {
+    if (!qt_input_context_ || !editor || restoring_ime_) return;
+    QWidget* top_level = editor->window();
+    if (!top_level) return;
+
+    const HWND target = reinterpret_cast<HWND>(top_level->winId());
+    if (!target || !IsWindow(target)) return;
+
+    restoring_ime_ = true;
+    // Qt keeps logical focus on the child editor while Windows routes IME
+    // messages through its top-level HWND. Native focus must be back on that
+    // HWND before the preserved context is associated; otherwise a no-op
+    // SetFocus can leave the TermControl context active.
+    if (GetFocus() != target) SetFocus(target);
+    ImmAssociateContext(target, qt_input_context_);
+    restoring_ime_ = false;
 }
 
 void MainWindow::refreshAll() {
@@ -828,6 +865,31 @@ void MainWindow::publishTerminalSnapshots() {
     }
 }
 
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (event && event->type() == QEvent::FocusIn) {
+        if (auto* editor = qobject_cast<QLineEdit*>(watched)) {
+            // QWindowsInputContext handles the same FocusIn after this event
+            // filter returns and calls ImmAssociateContextEx(IACE_DEFAULT).
+            // Restoring synchronously here is therefore immediately undone.
+            // Queue the operation so it runs after Qt's focus/input-method
+            // update, and ignore stale requests when focus has moved again.
+            const auto serial = ++ime_focus_serial_;
+            const QPointer<QLineEdit> guarded_editor(editor);
+            QMetaObject::invokeMethod(
+                this,
+                [this, guarded_editor, serial] {
+                    if (shutting_down_ || serial != ime_focus_serial_ ||
+                        !guarded_editor || !guarded_editor->hasFocus()) {
+                        return;
+                    }
+                    restoreQtInputContext(guarded_editor);
+                },
+                Qt::QueuedConnection);
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
 bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {
     auto* native = static_cast<MSG*>(message);
     if (native && controller_.HandleNativeMessage(
@@ -850,28 +912,21 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
     switch (native->message) {
     case WM_MOUSEACTIVATE:
         // Deliver the first title-bar click even when the window begins in
-        // the background.  The client-side drag handler needs that press to
+        // the background. The client-side drag handler needs that press to
         // start moving immediately instead of requiring a second gesture.
         *result = MA_ACTIVATE;
         return true;
     case WM_NCACTIVATE:
-        // The whole title bar and frame are client-rendered.  Never let the
-        // default procedure paint an active/inactive non-client frame: that
-        // is the 5 px gray rim shown when the window returns to the front.
+        // The whole title bar and frame are client-rendered. Never let the
+        // default procedure paint an active/inactive non-client frame.
         DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
                               &kDwmColorNone, sizeof(kDwmColorNone));
         *result = TRUE;
         return true;
     case WM_NCCALCSIZE:
         if (native->wParam) {
-            // Qt's FramelessWindowHint initially creates a full-client HWND.
-            // applyNativeWindowStyle later restores WS_THICKFRAME for native
-            // resize/snap behavior. Without owning NCCALCSIZE, Windows then
-            // inserts a 7 px non-client frame while Qt still lays out against
-            // the old full size: the right edge and footer end up outside the
-            // visible window, and the XAML island overlaps the footer. Keep
-            // the complete outer rectangle as client space and use our
-            // WM_NCHITTEST implementation for resize borders.
+            // WS_THICKFRAME remains enabled for resize/snap, while the entire
+            // outer rectangle is still client space for the custom title bar.
             *result = 0;
             return true;
         }
@@ -880,8 +935,9 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
         const POINT screen{GET_X_LPARAM(native->lParam), GET_Y_LPARAM(native->lParam)};
         RECT rect{};
         GetWindowRect(window, &rect);
-        const int frame = std::max(6, GetSystemMetricsForDpi(SM_CXSIZEFRAME, GetDpiForWindow(window)) +
-                                      GetSystemMetricsForDpi(SM_CXPADDEDBORDER, GetDpiForWindow(window)));
+        const int frame = std::max(
+            6, GetSystemMetricsForDpi(SM_CXSIZEFRAME, GetDpiForWindow(window)) +
+                   GetSystemMetricsForDpi(SM_CXPADDEDBORDER, GetDpiForWindow(window)));
         if (!isMaximized()) {
             const bool left = screen.x < rect.left + frame;
             const bool right = screen.x >= rect.right - frame;
@@ -896,15 +952,8 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
             if (top) { *result = HTTOP; return true; }
             if (bottom) { *result = HTBOTTOM; return true; }
         }
-        const QPoint local = mapFromGlobal(QPoint(screen.x, screen.y));
-        if (local.y() >= 0 && local.y() < kTitleBarHeight) {
-            // TitleBarWidget performs smooth client-side dragging.  Returning
-            // HTCAPTION would hand the gesture back to Windows and re-enter
-            // the native outline-only move loop when the window starts in the
-            // background.  The resize strips above remain fully native.
-            *result = HTCLIENT;
-            return true;
-        }
+        // TitleBarWidget owns dragging and double-click maximize. Returning
+        // HTCLIENT prevents Windows from drawing a second non-client title.
         *result = HTCLIENT;
         return true;
     }
@@ -961,10 +1010,13 @@ void MainWindow::changeEvent(QEvent* event) {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-    if (!shutting_down_) {
-        shutting_down_ = true;
-        controller_.Shutdown();
-    }
+    // Let the native window disappear first. qt_main.cpp performs the same
+    // complete, synchronous controller shutdown immediately after exec()
+    // returns, while this object is still alive. This preserves orderly
+    // cleanup without making the close button appear unresponsive.
+    shutting_down_ = true;
+    if (telemetry_timer_) telemetry_timer_->stop();
+    if (terminal_snapshot_timer_) terminal_snapshot_timer_->stop();
     QMainWindow::closeEvent(event);
 }
 
