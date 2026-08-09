@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="surface" x1="42" y1="34" x2="216" y2="226" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#17233C"/>
+      <stop offset="0.55" stop-color="#111827"/>
+      <stop offset="1" stop-color="#172554"/>
+    </linearGradient>
+    <radialGradient id="blueGlow" cx="0" cy="0" r="1" gradientTransform="translate(202 56) rotate(132) scale(154)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3B82F6" stop-opacity="0.72"/>
+      <stop offset="1" stop-color="#3B82F6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="violetGlow" cx="0" cy="0" r="1" gradientTransform="translate(54 222) rotate(-38) scale(126)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7C3AED" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#7C3AED" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cursor" x1="138" y1="172" x2="190" y2="172" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#60A5FA"/>
+    </linearGradient>
+    <clipPath id="shape">
+      <rect x="22" y="22" width="212" height="212" rx="56"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#shape)">
+    <rect x="22" y="22" width="212" height="212" rx="56" fill="url(#surface)"/>
+    <rect x="22" y="22" width="212" height="212" fill="url(#blueGlow)"/>
+    <rect x="22" y="22" width="212" height="212" fill="url(#violetGlow)"/>
+  </g>
+  <rect x="23.5" y="23.5" width="209" height="209" rx="54.5" fill="none" stroke="#7AA8FF" stroke-opacity="0.58" stroke-width="3"/>
+  <path d="M76 78L128 128L76 178" fill="none" stroke="#F8FAFC" stroke-width="23" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M141 177H187" fill="none" stroke="url(#cursor)" stroke-width="19" stroke-linecap="round"/>
+  <path d="M181 61L186 72L197 77L186 82L181 93L176 82L165 77L176 72Z" fill="#C4B5FD"/>
+</svg>

@@ -13,6 +13,7 @@ void PaintMainWindow(HDC target_dc,
                      const RECT& dirty,
                      HWND window,
                      HWND search,
+                     HICON app_icon,
                      HFONT medium_font,
                      HFONT small_font,
                      const LayoutMetrics& metrics,
@@ -66,21 +67,13 @@ void PaintMainWindow(HDC target_dc,
     // work area now, so it no longer needs a surrounding decorative frame.
     (void)search;
 
-    HBRUSH logo = CreateSolidBrush(theme.accent_strong);
-    HPEN logo_pen = CreatePen(PS_SOLID, 1, RGB(75, 143, 244));
-    auto previous_logo_brush = SelectObject(dc, logo);
-    auto previous_logo_pen = SelectObject(dc, logo_pen);
-    RoundRect(dc, 14, 10, 46, 42, 9, 9);
-    SelectObject(dc, previous_logo_brush);
-    SelectObject(dc, previous_logo_pen);
-    DeleteObject(logo);
-    DeleteObject(logo_pen);
+    if (app_icon) {
+        DrawIconEx(dc, 14, 10, app_icon, 32, 32, 0, nullptr, DI_NORMAL);
+    }
 
     SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(255, 255, 255));
-    SelectObject(dc, medium_font);
-    TextOutW(dc, 22, 16, L">_", 2);
     SetTextColor(dc, chrome.Text(theme));
+    SelectObject(dc, medium_font);
     TextOutW(dc, 58, 11, L"AI CLI", 6);
 
     footer_status.Draw(

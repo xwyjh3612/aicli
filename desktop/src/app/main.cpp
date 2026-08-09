@@ -18,12 +18,15 @@
 #include <cwchar>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <string_view>
 #include <optional>
+#include <unordered_set>
 #include <winrt/base.h>
 #include <nlohmann/json.hpp>
 #include <qrcodegen.hpp>
 #include "aicli_build_identity.h"
+#include "app/resource.h"
 #include "agent/conversation_bridge.h"
 #include "agent/remote_agent.h"
 #include "agent/terminal_snapshot_publisher.h"
@@ -37,6 +40,7 @@
 #include "terminal/conpty_connection_bridge.h"
 #include "terminal/xaml_island_adapter.h"
 #include "ui/styled_input.h"
+#include "ui/taskbar_working_indicator.h"
 #include "ui/drawing_utils.h"
 #include "ui/footer_status.h"
 #include "ui/main_window_renderer.h"
@@ -64,6 +68,7 @@ constexpr UINT WM_TERMINAL_DIRTY = WM_APP + 25;
 // the owner-draw button paint its released state before the modal is shown.
 constexpr UINT WM_OPEN_SETTINGS = WM_APP + 26;
 constexpr UINT WM_REMOTE_KEY = WM_APP + 27;
+constexpr UINT WM_AGENT_WORKING_STATE = WM_APP + 28;
 constexpr int ID_PROJECT_LIST = 1001;
 constexpr int ID_NEW_PROJECT = 1004;
 constexpr int ID_SETTINGS = 1005;
@@ -91,6 +96,8 @@ constexpr wchar_t kClassName[] = L"AicliDesktopWindow";
 constexpr wchar_t kAllGroupsName[] = L"全部";
 constexpr UINT_PTR kXamlIslandSubclassId = 0xA1C11;
 constexpr UINT_PTR kTerminalSnapshotTimerId = 2;
+constexpr UINT_PTR kProjectSpinnerTimerId = 3;
+constexpr UINT kProjectSpinnerIntervalMs = 75;
 
 
 using aicli::DeviceRecord;
@@ -131,6 +138,7 @@ struct RemoteKeyMessage {
     ~RemoteKeyMessage(){if(completed)CloseHandle(completed);}
 };
 struct AgentStatusMessage { bool online{}; std::wstring text; };
+struct AgentWorkingStateMessage { std::wstring project_id; bool working{}; };
 
 // WinRT component registration and activation factories live in
 // app/runtime_components.*.  The main window only owns the registry instance.
@@ -140,6 +148,7 @@ struct AgentStatusMessage { bool online{}; std::wstring text; };
 
 HWND g_hwnd{}, g_list{}, g_status{}, g_new_project{}, g_settings{}, g_group{}, g_group_add{}, g_bind{}, g_devices{}, g_sidebar_title{}, g_search{};
 HWND g_detail_title{}, g_detail_folder{}, g_detail_command{}, g_detail_state{}, g_start_project{}, g_edit_project{};
+HICON g_app_icon_large{},g_app_icon_small{};
 WNDPROC g_button_proc{}; HWND g_hover_button{};
 HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_sidebar_title{}, g_font_project_list{}, g_font_modal_title{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
 aicli::DataStore g_store;
@@ -177,15 +186,20 @@ RECT g_project_panel{};
 RECT g_d_name_rect{}, g_d_type_rect{}, g_d_group_rect{}, g_d_folder_rect{}, g_d_command_rect{};
 aicli::ui::WindowChrome g_window_chrome({ID_MINIMIZE,ID_MAXIMIZE,ID_CLOSE});
 aicli::ui::FooterStatusController g_footer_status;
+aicli::ui::TaskbarWorkingIndicator g_taskbar_working_indicator;
 aicli::agent::TerminalSnapshotPublisher g_terminal_snapshots;
 aicli::agent::TerminalStreamPublisher g_terminal_streams;
 bool g_terminal_snapshot_timer_active{};
+bool g_project_spinner_timer_active{};
+float g_project_spinner_angle{-90.0f};
+std::unordered_set<std::wstring> g_working_projects;
 int g_project_drag_source=-1;
 int g_project_drag_insert=-1;
 int g_project_drag_candidate=-1;
 int g_project_hover_row=-1;
 bool g_project_dragging{};
 UINT g_project_drag_message{};
+UINT g_taskbar_button_created_message{};
 HWND g_project_drag_preview{};
 POINT g_project_drag_hotspot{};
 
@@ -303,6 +317,220 @@ void RecordAndBroadcastEvent(const std::wstring& project_id,const std::wstring& 
 
 #include "ui/internal/binding_dialog_section.inl"
 
+bool IsProjectWorking(const Project& project){
+    return g_island.HasSession(project.id)&&
+           g_working_projects.find(project.id)!=g_working_projects.end();
+}
+bool HasVisibleWorkingProject(){
+    return std::any_of(g_visible_project_indices.begin(),g_visible_project_indices.end(),[](int index){
+        return index>=0&&index<static_cast<int>(g_projects.size())&&
+               IsProjectWorking(g_projects[index]);
+    });
+}
+void StopProjectSpinnerTimer(){
+    if(!g_project_spinner_timer_active)return;
+    if(g_hwnd)KillTimer(g_hwnd,kProjectSpinnerTimerId);
+    g_project_spinner_timer_active=false;
+}
+void SyncProjectSpinnerTimer(){
+    const bool shouldRun=g_hwnd&&g_list&&HasVisibleWorkingProject();
+    if(shouldRun&&!g_project_spinner_timer_active){
+        g_project_spinner_angle=-90.0f;
+        g_project_spinner_timer_active=
+            SetTimer(g_hwnd,kProjectSpinnerTimerId,kProjectSpinnerIntervalMs,nullptr)!=0;
+    }else if(!shouldRun){
+        StopProjectSpinnerTimer();
+    }
+}
+void InvalidateProjectRow(const std::wstring& project_id){
+    if(!g_list||!IsWindow(g_list))return;
+    RECT client{};
+    GetClientRect(g_list,&client);
+    for(size_t row=0;row<g_visible_project_indices.size();++row){
+        const int index=g_visible_project_indices[row];
+        if(index<0||index>=static_cast<int>(g_projects.size())||
+           g_projects[index].id!=project_id)continue;
+        RECT itemRect{};
+        if(SendMessageW(g_list,LB_GETITEMRECT,static_cast<WPARAM>(row),
+                        reinterpret_cast<LPARAM>(&itemRect))!=LB_ERR&&
+           itemRect.bottom>client.top&&itemRect.top<client.bottom){
+            InvalidateRect(g_list,&itemRect,FALSE);
+        }
+        return;
+    }
+}
+void SetProjectWorkingState(const std::wstring& project_id,bool working){
+    if(project_id.empty())return;
+    const bool changed=working
+        ?g_working_projects.insert(project_id).second
+        :g_working_projects.erase(project_id)>0;
+    if(!changed)return;
+    InvalidateProjectRow(project_id);
+    SyncProjectSpinnerTimer();
+    const bool anyWorking=std::any_of(g_projects.begin(),g_projects.end(),[](const Project& project){
+        return IsProjectWorking(project);
+    });
+    g_taskbar_working_indicator.SetWorking(anyWorking);
+}
+bool InvalidateWorkingProjectRows(){
+    if(!g_list||!IsWindow(g_list))return false;
+    RECT client{};
+    GetClientRect(g_list,&client);
+    bool found=false;
+    for(size_t row=0;row<g_visible_project_indices.size();++row){
+        const int index=g_visible_project_indices[row];
+        if(index<0||index>=static_cast<int>(g_projects.size())||
+           !IsProjectWorking(g_projects[index]))continue;
+        found=true;
+        RECT itemRect{};
+        if(SendMessageW(g_list,LB_GETITEMRECT,static_cast<WPARAM>(row),
+                        reinterpret_cast<LPARAM>(&itemRect))!=LB_ERR&&
+           itemRect.bottom>client.top&&itemRect.top<client.bottom){
+            InvalidateRect(g_list,&itemRect,FALSE);
+        }
+    }
+    return found;
+}
+
+enum class TerminalTitleProtocol { Codex, Claude };
+
+std::optional<TerminalTitleProtocol> WorkingProtocolForSession(
+    std::wstring_view type,std::wstring_view command){
+    const auto equals=[](std::wstring_view value,std::wstring_view expected){
+        return value.size()==expected.size()&&
+               _wcsnicmp(value.data(),expected.data(),value.size())==0;
+    };
+    if(equals(type,L"Claude"))
+        return TerminalTitleProtocol::Claude;
+    if(equals(type,L"Codex"))
+        return TerminalTitleProtocol::Codex;
+    const auto contains=[](std::wstring_view value,std::wstring_view needle){
+        return std::search(value.begin(),value.end(),needle.begin(),needle.end(),
+            [](wchar_t left,wchar_t right){
+                return std::towlower(left)==std::towlower(right);
+            })!=value.end();
+    };
+    // Project types are editable. Keep Working support when a built-in type is
+    // renamed but its launch command still invokes the same CLI.
+    if(contains(command,L"claude"))return TerminalTitleProtocol::Claude;
+    if(contains(command,L"codex"))return TerminalTitleProtocol::Codex;
+    return std::nullopt;
+}
+
+class TerminalTitleWorkingDetector {
+public:
+    TerminalTitleWorkingDetector(HWND owner,std::wstring project_id,
+                                 TerminalTitleProtocol protocol):
+        owner_(owner),project_id_(std::move(project_id)),protocol_(protocol){}
+
+    void Observe(std::wstring_view output){
+        if(output.empty())return;
+        std::scoped_lock lock(mutex_);
+        pending_.append(output);
+        ParseTerminalTitles();
+    }
+
+private:
+    bool TitleShowsWorking(std::wstring_view title) const {
+        // Both CLIs publish animation frames in OSC 0/2 terminal titles while
+        // a turn is active. Their frame alphabets are intentionally distinct.
+        const std::wstring_view frames=protocol_==TerminalTitleProtocol::Claude
+            ?std::wstring_view{L"⠂⠐"}
+            :std::wstring_view{L"⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"};
+        return title.find_first_of(frames)!=std::wstring_view::npos;
+    }
+
+    bool TitleShowsIdle(std::wstring_view title) const {
+        // Claude's stable idle title starts with the star marker (for example
+        // "✳ Claude Code" or "✳ <conversation title>"). Ignore its earlier
+        // plain "claude" shell title so startup cannot be mistaken for ready.
+        if(protocol_==TerminalTitleProtocol::Claude)
+            return title.find(L'✳')!=std::wstring_view::npos;
+        // Codex uses an ordinary non-spinner project title while idle.
+        return !TitleShowsWorking(title);
+    }
+
+    void Publish(bool working){
+        if(working_.has_value()&&*working_==working)return;
+        working_=working;
+        auto* message=new(std::nothrow) AgentWorkingStateMessage{project_id_,working};
+        if(!message||!owner_||
+           !PostMessageW(owner_,WM_AGENT_WORKING_STATE,0,
+                         reinterpret_cast<LPARAM>(message))){
+            delete message;
+        }
+    }
+
+    void ParseTerminalTitles(){
+        for(;;){
+            const size_t start=pending_.find(L"\x1b]");
+            if(start==std::wstring::npos){
+                if(pending_.size()>1){
+                    const bool keepEscape=pending_.back()==L'\x1b';
+                    pending_.erase(0,pending_.size()-(keepEscape?1u:0u));
+                }
+                return;
+            }
+            if(start>0)pending_.erase(0,start);
+
+            const size_t separator=pending_.find(L';',2);
+            if(separator==std::wstring::npos){
+                if(pending_.size()>64)pending_.erase(0,2);
+                return;
+            }
+            if(separator>16){
+                pending_.erase(0,2);
+                continue;
+            }
+
+            const size_t bell=pending_.find(L'\x07',separator+1);
+            const size_t stringTerminator=pending_.find(L"\x1b\\",separator+1);
+            size_t end=std::wstring::npos;
+            size_t terminatorLength=0;
+            if(bell!=std::wstring::npos&&
+               (stringTerminator==std::wstring::npos||bell<stringTerminator)){
+                end=bell;
+                terminatorLength=1;
+            }else if(stringTerminator!=std::wstring::npos){
+                end=stringTerminator;
+                terminatorLength=2;
+            }
+            if(end==std::wstring::npos){
+                if(pending_.size()>4096)pending_.erase(0,2);
+                return;
+            }
+
+            const std::wstring_view command{pending_.data()+2,separator-2};
+            if(command==L"0"||command==L"2"){
+                const std::wstring_view title{
+                    pending_.data()+separator+1,end-separator-1};
+                const bool working=TitleShowsWorking(title);
+                const bool idle=TitleShowsIdle(title);
+                // Startup can publish transient titles and animation. Treat
+                // the first protocol-specific idle title as the ready boundary;
+                // only later animation represents a user turn.
+                if(!ready_seen_){
+                    if(idle)ready_seen_=true;
+                    Publish(false);
+                }else if(working){
+                    Publish(working);
+                }else if(idle){
+                    Publish(false);
+                }
+            }
+            pending_.erase(0,end+terminatorLength);
+        }
+    }
+
+    HWND owner_{};
+    std::wstring project_id_;
+    TerminalTitleProtocol protocol_{};
+    std::wstring pending_;
+    std::optional<bool> working_;
+    bool ready_seen_{};
+    std::mutex mutex_;
+};
+
 #include "ui/internal/project_list_renderer_section.inl"
 bool PickFolder(HWND owner,std::wstring& path){IFileDialog* dialog=nullptr;if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))||!dialog)return false;DWORD options=0;dialog->GetOptions(&options);dialog->SetOptions(options|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST);if(FAILED(dialog->Show(owner))){dialog->Release();return false;}IShellItem* item=nullptr;bool ok=SUCCEEDED(dialog->GetResult(&item));if(ok){PWSTR value=nullptr;ok=SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&value));if(ok){path=value;CoTaskMemFree(value);}item->Release();}dialog->Release();return ok;}
 int SelectedProjectIndex(){
@@ -396,6 +624,7 @@ void RefreshProjectList(){
     RefreshProjectDetails();
     RefreshConversationsCache();
     UpdateGroupButton();
+    SyncProjectSpinnerTimer();
 }
 #include "ui/internal/project_drag_section.inl"
 void Layout(){
@@ -484,6 +713,7 @@ void DeleteProject(){
     message+=L"只会删除项目配置，不会删除项目文件夹或其中的任何文件。";
     if(MessageBoxW(g_hwnd,message.c_str(),L"删除项目",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)!=IDYES)return;
     if(deletingRunning){
+        SetProjectWorkingState(project.id,false);
         g_island.Stop(project.id);
     }
     g_terminal_streams.RemoveSession(project.id);
@@ -496,12 +726,20 @@ void DeleteProject(){
 }
 #include "ui/internal/project_context_menu_section.inl"
 bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const std::wstring& title,const std::wstring& sessionAgent,const std::wstring& project_id){
+    SetProjectWorkingState(project_id,false);
     g_terminal_streams.BeginSession(project_id);
+    std::shared_ptr<TerminalTitleWorkingDetector> workingDetector;
+    const auto workingProtocol=WorkingProtocolForSession(sessionAgent,cmd);
+    if(workingProtocol){
+        workingDetector=std::make_shared<TerminalTitleWorkingDetector>(
+            g_hwnd,project_id,*workingProtocol);
+    }
     if(g_island.Start(
            project_id,cmd,cwd,title,g_hwnd,g_status,
-           [project_id](std::wstring_view output){
+           [project_id,workingDetector](std::wstring_view output){
                g_terminal_streams.PublishOutput(project_id,output);
                g_terminal_snapshots.Queue(project_id);
+               if(workingDetector)workingDetector->Observe(output);
            },
            [project_id](std::uint32_t rows,std::uint32_t columns){
                g_terminal_streams.PublishResize(project_id,rows,columns);
@@ -521,6 +759,7 @@ void StartSession(bool restart=false){
     auto& project=g_projects[i];
     if(g_island.HasSession(project.id)){
         if(!restart){g_island.Activate(project.id);Layout();return;}
+        SetProjectWorkingState(project.id,false);
         g_island.Stop(project.id);
     }
     const std::wstring sessionAgent=project.type;
@@ -691,8 +930,9 @@ void ResizeModalHosts(HWND owner){
 }
 LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     if(g_project_drag_message&&m==g_project_drag_message)return HandleProjectDragListMessage(h,l);
+    if(g_taskbar_button_created_message&&m==g_taskbar_button_created_message){g_taskbar_working_indicator.OnTaskbarButtonCreated();return 0;}
     switch(m){
-    case WM_CREATE:{g_hwnd=h;g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY); g_font=CreateFontW(-15,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_medium=CreateFontW(-17,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_small=CreateFontW(-13,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_sidebar_title=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_project_list=CreateFontW(-14,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_modal_title=CreateFontW(-21,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_icon_font=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe MDL2 Assets");
+    case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY); g_font=CreateFontW(-15,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_medium=CreateFontW(-17,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_small=CreateFontW(-13,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_sidebar_title=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_project_list=CreateFontW(-14,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_modal_title=CreateFontW(-21,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_icon_font=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe MDL2 Assets");
         g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
         g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputFocusBorderOnly(g_search);
         g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
@@ -736,7 +976,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(aicli::ui::HasActiveModal(h))ResizeModalHosts(h);
         Layout();return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshots.MarkDirtyMessageHandled();if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
-    case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}break;
+    case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}break;
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;info->ptMinTrackSize.x=900;info->ptMinTrackSize.y=600;return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;
@@ -775,6 +1015,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
             const int selected=SelectedProjectIndex();const bool pausing=id==ID_CTX_PAUSE;
             if(selected>=0&&selected<(int)g_projects.size()){
                 auto& project=g_projects[selected];
+                SetProjectWorkingState(project.id,false);
                 g_island.Stop(project.id);
                 project.status=pausing?L"paused":L"cancelled";
                 g_store.UpdateProjectStatus(project.id,project.status);
@@ -893,6 +1134,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         else if(message->action==L"continue"||message->action==L"start")StartSession();
         else if(message->action==L"pause"||message->action==L"cancel"){
             const bool pause=message->action==L"pause";
+            SetProjectWorkingState(message->project_id,false);
             g_island.Stop(message->project_id);
             if(selected>=0&&selected<(int)g_projects.size()){
                 g_projects[selected].status=pause?L"paused":L"cancelled";
@@ -905,6 +1147,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     }
     case WM_PAIRING_PENDING:{std::unique_ptr<aicli::agent::PendingPairing> pairing(reinterpret_cast<aicli::agent::PendingPairing*>(l));if(!pairing)return 0;g_pending_pairing=*pairing;if(g_binding_dialog){InvalidateRect(g_binding_dialog,nullptr,FALSE);}else if(pairing->submitted&&!pairing->authorized&&!pairing->rejected){const std::wstring text=L"手机名称："+pairing->device.name+L"\n型号："+pairing->device.model+L"\n设备 ID："+pairing->device.phone_id+L"\n\n确认后该手机可远程操作管理员终端。";const bool approve=MessageBoxW(h,text.c_str(),L"确认绑定手机",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES;std::wstring error;if(!g_remote_agent.ConfirmPairing(pairing->info.pairing_id,approve,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);}UpdateDeviceHeader();return 0;}
     case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message&&!message->online)SetText(g_status,message->text);UpdateHeaderTelemetry();return 0;}
+    case WM_AGENT_WORKING_STATE:{std::unique_ptr<AgentWorkingStateMessage> message(reinterpret_cast<AgentWorkingStateMessage*>(l));if(message)SetProjectWorkingState(message->project_id,message->working);return 0;}
     case WM_PAINT:{
         PAINTSTRUCT ps;
         HDC target_dc=BeginPaint(h,&ps);
@@ -912,12 +1155,12 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         GetClientRect(h,&r);
         const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);
         aicli::ui::PaintMainWindow(
-            target_dc,r,ps.rcPaint,h,g_search,g_font_medium,g_font_small,
+            target_dc,r,ps.rcPaint,h,g_search,g_app_icon_large,g_font_medium,g_font_small,
             metrics,g_theme,g_window_chrome,g_footer_status);
         EndPaint(h,&ps);
         return 0;
     }
-    case WM_DESTROY:g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_DESTROY:StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}PostQuitMessage(0);return 0; }
     return DefWindowProcW(h,m,w,l);
 }
 }
@@ -952,13 +1195,27 @@ int WINAPI wWinMain(HINSTANCE instance,
         sizeof(common_controls), ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES};
     InitCommonControlsEx(&common_controls);
 
-    WNDCLASSW window_class{};
+    g_taskbar_button_created_message=RegisterWindowMessageW(L"TaskbarButtonCreated");
+    g_app_icon_large=static_cast<HICON>(LoadImageW(
+        instance,MAKEINTRESOURCEW(IDI_AICLI_APP),IMAGE_ICON,
+        GetSystemMetrics(SM_CXICON),GetSystemMetrics(SM_CYICON),
+        LR_DEFAULTCOLOR|LR_SHARED));
+    g_app_icon_small=static_cast<HICON>(LoadImageW(
+        instance,MAKEINTRESOURCEW(IDI_AICLI_APP),IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR|LR_SHARED));
+    if(!g_app_icon_large)g_app_icon_large=LoadIconW(nullptr,IDI_APPLICATION);
+    if(!g_app_icon_small)g_app_icon_small=g_app_icon_large;
+
+    WNDCLASSEXW window_class{sizeof(window_class)};
     window_class.hInstance = instance;
     window_class.lpfnWndProc = WndProc;
     window_class.lpszClassName = kClassName;
     window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    window_class.hIcon = g_app_icon_large;
+    window_class.hIconSm = g_app_icon_small;
     window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    RegisterClassW(&window_class);
+    RegisterClassExW(&window_class);
 
     constexpr DWORD window_style =
         WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX |

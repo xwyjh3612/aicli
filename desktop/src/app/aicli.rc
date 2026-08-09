@@ -1,0 +1,3 @@
+#include "resource.h"
+
+IDI_AICLI_APP ICON "../../assets/aicli.ico"

@@ -223,14 +223,27 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         const float iconX=static_cast<float>(card.right)-iconSize-11.0f;
         const float iconY=(card.top+card.bottom-iconSize)/2.0f;
         Gdiplus::RectF iconBounds{iconX,iconY,iconSize,iconSize};
+        const bool workingSpinner=stateIcon==StateIcon::Running&&IsProjectWorking(project);
         Gdiplus::SolidBrush halo(SmoothColor(stateColor,30));
-        graphics.FillEllipse(&halo,iconBounds);
+        if(!workingSpinner)graphics.FillEllipse(&halo,iconBounds);
         Gdiplus::Pen iconPen(SmoothColor(stateColor),1.65f);
         iconPen.SetStartCap(Gdiplus::LineCapRound);
         iconPen.SetEndCap(Gdiplus::LineCapRound);
         Gdiplus::SolidBrush iconBrush(SmoothColor(stateColor));
         const float cx=iconX+iconSize/2.0f,cy=iconY+iconSize/2.0f;
-        if(stateIcon==StateIcon::Running){
+        if(workingSpinner){
+            Gdiplus::Pen trackPen(SmoothColor(stateColor,65),1.65f);
+            Gdiplus::Pen spinnerPen(SmoothColor(stateColor),2.35f);
+            trackPen.SetStartCap(Gdiplus::LineCapRound);
+            trackPen.SetEndCap(Gdiplus::LineCapRound);
+            spinnerPen.SetStartCap(Gdiplus::LineCapRound);
+            spinnerPen.SetEndCap(Gdiplus::LineCapRound);
+            graphics.DrawEllipse(&trackPen,iconX+2.0f,iconY+2.0f,
+                                 iconSize-4.0f,iconSize-4.0f);
+            graphics.DrawArc(&spinnerPen,iconX+2.0f,iconY+2.0f,
+                             iconSize-4.0f,iconSize-4.0f,
+                             g_project_spinner_angle,112.0f);
+        }else if(stateIcon==StateIcon::Running){
             graphics.DrawEllipse(&iconPen,iconX+2.0f,iconY+2.0f,iconSize-4.0f,iconSize-4.0f);
             graphics.FillEllipse(&iconBrush,cx-3.0f,cy-3.0f,6.0f,6.0f);
         }else if(stateIcon==StateIcon::Paused){

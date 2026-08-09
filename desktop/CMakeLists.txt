@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.26)
-project(aicli LANGUAGES C CXX)
+project(aicli LANGUAGES C CXX RC)
 
 option(AICLI_SKIP_PACKAGED_ACTIVATION "Run the desktop executable directly for local UI smoke tests" OFF)
 option(AICLI_USE_QT_UI "Build the Qt desktop UI instead of the legacy Win32 UI" ON)
@@ -62,16 +62,21 @@ if (AICLI_USE_QT_UI)
         src/ui/qt_settings_dialog.cpp
         src/ui/qt_widgets.cpp
     )
+    set(AICLI_APPLICATION_LOGO "F:/deps/Microsoft.UI.Xaml.2.8/logo.png")
 else()
     list(APPEND AICLI_COMMON_SOURCES
+        src/app/aicli.rc
         src/app/main.cpp
         src/ui/drawing_utils.cpp
         src/ui/footer_status.cpp
         src/ui/main_window_renderer.cpp
         src/ui/styled_input.cpp
+        src/ui/taskbar_working_indicator.cpp
         src/ui/management_dialog.cpp
         src/ui/window_chrome.cpp
     )
+    set(AICLI_APPLICATION_LOGO
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/aicli-logo.png")
 endif()
 
 add_executable(aicli WIN32 ${AICLI_COMMON_SOURCES})
@@ -162,6 +167,7 @@ add_custom_command(TARGET aicli POST_BUILD
         -Configuration "$<CONFIG>"
         -Platform x64
         -PackageIdentityName "${AICLI_PACKAGE_IDENTITY_NAME}"
+        -ApplicationLogo "${AICLI_APPLICATION_LOGO}"
 )
 
 target_link_libraries(aicli_data_store_tests PRIVATE

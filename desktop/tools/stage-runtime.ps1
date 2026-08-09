@@ -5,7 +5,8 @@ param(
     [string]$WorkingRoot = 'F:\codex_tool-target\desktop\runtime-stage',
     [string]$Configuration = 'Debug',
     [string]$Platform = 'x64',
-    [string]$PackageIdentityName = 'AiCli.Desktop.Dev'
+    [string]$PackageIdentityName = 'AiCli.Desktop.Dev',
+    [string]$ApplicationLogo = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -137,7 +138,11 @@ $manifestText = [Text.RegularExpressions.Regex]::Replace(
     [Text.RegularExpressions.RegexOptions]::IgnoreCase)
 [IO.File]::WriteAllText($manifestOutput, $manifestText, [Text.UTF8Encoding]::new($false))
 Copy-Item (Join-Path $PSScriptRoot 'configure-agent-firewall.ps1') $Output -Force
-Copy-Item (Join-Path $xaml 'logo.png') (Join-Path $assets 'Logo.png') -Force
+$logoSource = if ($ApplicationLogo) { $ApplicationLogo } else { Join-Path $xaml 'logo.png' }
+if (!(Test-Path -LiteralPath $logoSource)) {
+    throw "Application logo was not found: $logoSource"
+}
+Copy-Item -LiteralPath $logoSource -Destination (Join-Path $assets 'Logo.png') -Force
 $openssl = 'F:\deps\aicli\openssl'
 Copy-Item (Join-Path $openssl 'libssl-4-x64.dll'), (Join-Path $openssl 'libcrypto-4-x64.dll') $Output -Force
 $sha256 = [Security.Cryptography.SHA256]::Create()
