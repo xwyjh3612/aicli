@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -88,6 +89,56 @@ std::wstring QuoteDroppedPath(std::wstring_view path) {
     }
     quoted.push_back(L'\'');
     return quoted;
+}
+
+class ClipboardScope {
+public:
+    explicit ClipboardScope(HWND owner) noexcept : opened_(OpenClipboard(owner) != FALSE) {}
+    ~ClipboardScope() { if (opened_) CloseClipboard(); }
+    explicit operator bool() const noexcept { return opened_; }
+
+    ClipboardScope(const ClipboardScope&) = delete;
+    ClipboardScope& operator=(const ClipboardScope&) = delete;
+
+private:
+    bool opened_{};
+};
+
+bool WriteUnicodeClipboard(HWND owner, std::wstring_view text) noexcept {
+    if (text.empty()) return false;
+    ClipboardScope clipboard{owner};
+    if (!clipboard || !EmptyClipboard()) return false;
+
+    const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!memory) return false;
+    void* target = GlobalLock(memory);
+    if (!target) {
+        GlobalFree(memory);
+        return false;
+    }
+    memcpy(target, text.data(), text.size() * sizeof(wchar_t));
+    static_cast<wchar_t*>(target)[text.size()] = L'\0';
+    GlobalUnlock(memory);
+
+    if (!SetClipboardData(CF_UNICODETEXT, memory)) {
+        GlobalFree(memory);
+        return false;
+    }
+    return true;
+}
+
+std::wstring ReadUnicodeClipboard(HWND owner) noexcept {
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) return {};
+    ClipboardScope clipboard{owner};
+    if (!clipboard) return {};
+    const HANDLE data = GetClipboardData(CF_UNICODETEXT);
+    if (!data) return {};
+    const auto* text = static_cast<const wchar_t*>(GlobalLock(data));
+    if (!text) return {};
+    std::wstring result{text};
+    GlobalUnlock(data);
+    return result;
 }
 
 } // namespace
@@ -332,6 +383,7 @@ public:
                 L"Microsoft.Terminal.Control.TermControl");
             session->control = control_factory.CreateInstance2(
                 session->control_settings, session->unfocused_settings, session->connection);
+            ConfigureClipboardBridge(*session);
             set_stage(L"attach TermControl");
             // TermControl derives the TSF/IME candidate-window position from
             // OwningHwnd's screen rectangle plus the cursor's XAML-local
@@ -687,6 +739,68 @@ public:
             return false;
         }
     }
+    bool CopySelectionToClipboard() noexcept {
+        auto* session = ActiveSession();
+        if (!session || !session->control) return false;
+        try {
+            if (!session->control.HasSelection()) return false;
+            session->control.Focus(winrt::Windows::UI::Xaml::FocusState::Programmatic);
+            return session->control.CopySelectionToClipboard(
+                true,
+                false,
+                false,
+                winrt::Microsoft::Terminal::Control::CopyFormat::None);
+        } catch (...) {
+            return false;
+        }
+    }
+    bool PasteFromClipboard() noexcept {
+        auto* session = ActiveSession();
+        if (!session || !session->control) return false;
+        try {
+            session->control.Focus(winrt::Windows::UI::Xaml::FocusState::Programmatic);
+            session->control.PasteTextFromClipboard();
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    bool HandleClipboardKeyDown(WPARAM key, LPARAM key_details) noexcept {
+        if ((GetKeyState(VK_CONTROL) & 0x8000) == 0 ||
+            (GetKeyState(VK_MENU) & 0x8000) != 0) {
+            return false;
+        }
+        if (key == 'V') {
+            (void)PasteFromClipboard();
+            return true;
+        }
+        if (key == 'C') {
+            const bool auto_repeat = (key_details & (1LL << 30)) != 0;
+            if (copy_shortcut_active_ && !auto_repeat) copy_shortcut_active_ = false;
+            if (copy_shortcut_active_) return true;
+            if (CopySelectionToClipboard()) {
+                copy_shortcut_active_ = true;
+                return true;
+            }
+        }
+        return false;
+    }
+    bool HandleClipboardCharacter(WPARAM character) noexcept {
+        if (character == 0x16) return true; // Ctrl+V must never reach ConPTY as SYN.
+        if (character == 0x03 && copy_shortcut_active_) return true;
+        return false;
+    }
+    void FinishClipboardKey(WPARAM key) noexcept {
+        if (key == 'C') copy_shortcut_active_ = false;
+    }
+    void CancelClipboardShortcut() noexcept { copy_shortcut_active_ = false; }
+    void FocusActiveTerminal() noexcept {
+        try {
+            if (auto* session = ActiveSession(); session && session->control) {
+                session->control.Focus(winrt::Windows::UI::Xaml::FocusState::Programmatic);
+            }
+        } catch (...) {}
+    }
     void OnIslandDestroyed(HWND window) noexcept {
         if (hwnd_ == window) {
             DragAcceptFiles(hwnd_, FALSE);
@@ -767,6 +881,26 @@ private:
         bool scrollbar_expanded{};
         bool scrollbar_loaded_handler_attached{};
     };
+
+    void ConfigureClipboardBridge(TerminalSession& session) {
+        session.control.WriteToClipboard(
+            [this](const winrt::Windows::Foundation::IInspectable&,
+                   const winrt::Microsoft::Terminal::Control::WriteToClipboardEventArgs& args) noexcept {
+                try {
+                    const auto plain = args.Plain();
+                    (void)WriteUnicodeClipboard(
+                        hwnd_, std::wstring_view{plain.c_str(), plain.size()});
+                } catch (...) {}
+            });
+        session.control.PasteFromClipboard(
+            [this](const winrt::Windows::Foundation::IInspectable&,
+                   const winrt::Microsoft::Terminal::Control::PasteFromClipboardEventArgs& args) noexcept {
+                try {
+                    const auto text = ReadUnicodeClipboard(hwnd_);
+                    if (!text.empty()) args.HandleClipboardData(winrt::hstring{text});
+                } catch (...) {}
+            });
+    }
 
     TerminalSession* FindSession(std::wstring_view project_id) {
         const auto found = sessions_.find(std::wstring(project_id));
@@ -935,6 +1069,7 @@ private:
     RECT last_resize_rect_{};
     UINT last_resize_dpi_{};
     bool has_resize_rect_{};
+    bool copy_shortcut_active_{};
     std::wstring last_error_;
     HWND parent_{};
     HWND hwnd_{};
@@ -965,6 +1100,21 @@ LRESULT CALLBACK XamlIslandSubclassProc(
             DragFinish(drop);
             return 0;
         }
+        if (message == WM_KEYDOWN && adapter->HandleClipboardKeyDown(wparam, lparam)) return 0;
+        if (message == WM_CHAR && adapter->HandleClipboardCharacter(wparam)) return 0;
+        if (message == WM_KEYUP) adapter->FinishClipboardKey(wparam);
+        if (message == WM_KILLFOCUS || message == WM_CANCELMODE) {
+            adapter->CancelClipboardShortcut();
+        }
+        if (message == WM_RBUTTONDOWN) {
+            adapter->FocusActiveTerminal();
+            return 0;
+        }
+        if (message == WM_RBUTTONUP) {
+            (void)adapter->PasteFromClipboard();
+            return 0;
+        }
+        if (message == WM_CONTEXTMENU) return 0;
         if (message == WM_NCDESTROY) {
             adapter->OnIslandDestroyed(hwnd);
             RemoveWindowSubclass(hwnd, XamlIslandSubclassProc, subclass_id);
