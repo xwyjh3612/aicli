@@ -38,6 +38,7 @@
 #include "core/text_utils.h"
 #include "data/data_store.h"
 #include "terminal/conpty_connection_bridge.h"
+#include "terminal/terminal_working_detector.h"
 #include "terminal/xaml_island_adapter.h"
 #include "ui/styled_input.h"
 #include "ui/taskbar_working_indicator.h"
@@ -392,145 +393,6 @@ bool InvalidateWorkingProjectRows(){
     return found;
 }
 
-enum class TerminalTitleProtocol { Codex, Claude };
-
-std::optional<TerminalTitleProtocol> WorkingProtocolForSession(
-    std::wstring_view type,std::wstring_view command){
-    const auto equals=[](std::wstring_view value,std::wstring_view expected){
-        return value.size()==expected.size()&&
-               _wcsnicmp(value.data(),expected.data(),value.size())==0;
-    };
-    if(equals(type,L"Claude"))
-        return TerminalTitleProtocol::Claude;
-    if(equals(type,L"Codex"))
-        return TerminalTitleProtocol::Codex;
-    const auto contains=[](std::wstring_view value,std::wstring_view needle){
-        return std::search(value.begin(),value.end(),needle.begin(),needle.end(),
-            [](wchar_t left,wchar_t right){
-                return std::towlower(left)==std::towlower(right);
-            })!=value.end();
-    };
-    // Project types are editable. Keep Working support when a built-in type is
-    // renamed but its launch command still invokes the same CLI.
-    if(contains(command,L"claude"))return TerminalTitleProtocol::Claude;
-    if(contains(command,L"codex"))return TerminalTitleProtocol::Codex;
-    return std::nullopt;
-}
-
-class TerminalTitleWorkingDetector {
-public:
-    TerminalTitleWorkingDetector(HWND owner,std::wstring project_id,
-                                 TerminalTitleProtocol protocol):
-        owner_(owner),project_id_(std::move(project_id)),protocol_(protocol){}
-
-    void Observe(std::wstring_view output){
-        if(output.empty())return;
-        std::scoped_lock lock(mutex_);
-        pending_.append(output);
-        ParseTerminalTitles();
-    }
-
-private:
-    bool TitleShowsWorking(std::wstring_view title) const {
-        // Both CLIs publish animation frames in OSC 0/2 terminal titles while
-        // a turn is active. Their frame alphabets are intentionally distinct.
-        const std::wstring_view frames=protocol_==TerminalTitleProtocol::Claude
-            ?std::wstring_view{L"⠂⠐"}
-            :std::wstring_view{L"⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"};
-        return title.find_first_of(frames)!=std::wstring_view::npos;
-    }
-
-    bool TitleShowsIdle(std::wstring_view title) const {
-        // Claude's stable idle title starts with the star marker (for example
-        // "✳ Claude Code" or "✳ <conversation title>"). Ignore its earlier
-        // plain "claude" shell title so startup cannot be mistaken for ready.
-        if(protocol_==TerminalTitleProtocol::Claude)
-            return title.find(L'✳')!=std::wstring_view::npos;
-        // Codex uses an ordinary non-spinner project title while idle.
-        return !TitleShowsWorking(title);
-    }
-
-    void Publish(bool working){
-        if(working_.has_value()&&*working_==working)return;
-        working_=working;
-        auto* message=new(std::nothrow) AgentWorkingStateMessage{project_id_,working};
-        if(!message||!owner_||
-           !PostMessageW(owner_,WM_AGENT_WORKING_STATE,0,
-                         reinterpret_cast<LPARAM>(message))){
-            delete message;
-        }
-    }
-
-    void ParseTerminalTitles(){
-        for(;;){
-            const size_t start=pending_.find(L"\x1b]");
-            if(start==std::wstring::npos){
-                if(pending_.size()>1){
-                    const bool keepEscape=pending_.back()==L'\x1b';
-                    pending_.erase(0,pending_.size()-(keepEscape?1u:0u));
-                }
-                return;
-            }
-            if(start>0)pending_.erase(0,start);
-
-            const size_t separator=pending_.find(L';',2);
-            if(separator==std::wstring::npos){
-                if(pending_.size()>64)pending_.erase(0,2);
-                return;
-            }
-            if(separator>16){
-                pending_.erase(0,2);
-                continue;
-            }
-
-            const size_t bell=pending_.find(L'\x07',separator+1);
-            const size_t stringTerminator=pending_.find(L"\x1b\\",separator+1);
-            size_t end=std::wstring::npos;
-            size_t terminatorLength=0;
-            if(bell!=std::wstring::npos&&
-               (stringTerminator==std::wstring::npos||bell<stringTerminator)){
-                end=bell;
-                terminatorLength=1;
-            }else if(stringTerminator!=std::wstring::npos){
-                end=stringTerminator;
-                terminatorLength=2;
-            }
-            if(end==std::wstring::npos){
-                if(pending_.size()>4096)pending_.erase(0,2);
-                return;
-            }
-
-            const std::wstring_view command{pending_.data()+2,separator-2};
-            if(command==L"0"||command==L"2"){
-                const std::wstring_view title{
-                    pending_.data()+separator+1,end-separator-1};
-                const bool working=TitleShowsWorking(title);
-                const bool idle=TitleShowsIdle(title);
-                // Startup can publish transient titles and animation. Treat
-                // the first protocol-specific idle title as the ready boundary;
-                // only later animation represents a user turn.
-                if(!ready_seen_){
-                    if(idle)ready_seen_=true;
-                    Publish(false);
-                }else if(working){
-                    Publish(working);
-                }else if(idle){
-                    Publish(false);
-                }
-            }
-            pending_.erase(0,end+terminatorLength);
-        }
-    }
-
-    HWND owner_{};
-    std::wstring project_id_;
-    TerminalTitleProtocol protocol_{};
-    std::wstring pending_;
-    std::optional<bool> working_;
-    bool ready_seen_{};
-    std::mutex mutex_;
-};
-
 #include "ui/internal/project_list_renderer_section.inl"
 bool PickFolder(HWND owner,std::wstring& path){IFileDialog* dialog=nullptr;if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))||!dialog)return false;DWORD options=0;dialog->GetOptions(&options);dialog->SetOptions(options|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST);if(FAILED(dialog->Show(owner))){dialog->Release();return false;}IShellItem* item=nullptr;bool ok=SUCCEEDED(dialog->GetResult(&item));if(ok){PWSTR value=nullptr;ok=SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&value));if(ok){path=value;CoTaskMemFree(value);}item->Release();}dialog->Release();return ok;}
 int SelectedProjectIndex(){
@@ -728,11 +590,22 @@ void DeleteProject(){
 bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const std::wstring& title,const std::wstring& sessionAgent,const std::wstring& project_id){
     SetProjectWorkingState(project_id,false);
     g_terminal_streams.BeginSession(project_id);
-    std::shared_ptr<TerminalTitleWorkingDetector> workingDetector;
-    const auto workingProtocol=WorkingProtocolForSession(sessionAgent,cmd);
+    std::shared_ptr<aicli::terminal::TerminalWorkingDetector> workingDetector;
+    const auto workingProtocol=
+        aicli::terminal::WorkingProtocolForSession(sessionAgent,cmd);
     if(workingProtocol){
-        workingDetector=std::make_shared<TerminalTitleWorkingDetector>(
-            g_hwnd,project_id,*workingProtocol);
+        const HWND owner=g_hwnd;
+        workingDetector=std::make_shared<aicli::terminal::TerminalWorkingDetector>(
+            *workingProtocol,
+            [owner,project_id](bool working){
+                auto* message=new(std::nothrow)
+                    AgentWorkingStateMessage{project_id,working};
+                if(!message||!owner||
+                   !PostMessageW(owner,WM_AGENT_WORKING_STATE,0,
+                                 reinterpret_cast<LPARAM>(message))){
+                    delete message;
+                }
+            });
     }
     if(g_island.Start(
            project_id,cmd,cwd,title,g_hwnd,g_status,

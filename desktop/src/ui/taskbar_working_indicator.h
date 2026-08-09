@@ -8,7 +8,7 @@ namespace aicli::ui {
 
 // Owns the Windows taskbar's native indeterminate progress state.  The shell
 // animates this itself, so the application only switches it on when at least
-// one Codex turn is working and clears it when all turns become idle.
+// one supported AI CLI turn is working and clears it when all turns become idle.
 class TaskbarWorkingIndicator {
 public:
     TaskbarWorkingIndicator() = default;

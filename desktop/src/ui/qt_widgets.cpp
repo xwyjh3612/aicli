@@ -5,11 +5,14 @@
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
 #include <QStyle>
+#include <QPixmap>
+#include <QTimer>
 #include <QVariant>
 #include <QVBoxLayout>
 #include <QWindow>
@@ -59,7 +62,7 @@ QString BuildApplicationStyle(const ThemePalette& theme) {
     return QStringLiteral(R"(
 QWidget#qtRoot, QMainWindow, QWidget#mainSurface { background: %1; color: %2; }
 QWidget#titleBar { background: %3; }
-QLabel#appLogo { background: %4; color: white; border: 1px solid %5; border-radius: 9px; }
+QLabel#appLogo { background: transparent; border: none; }
 QLabel#appTitle { color: %6; }
 QPushButton { background: %7; color: %8; border: 1px solid %9; border-radius: 8px; padding: 0 12px; }
 QPushButton:hover { background: %10; border-color: %11; }
@@ -251,7 +254,8 @@ void ProjectItemDelegate::paint(QPainter* painter,
     painter->setBrush(fill);
     painter->drawRoundedRect(QRectF(card).adjusted(0.5, 0.5, -0.5, -0.5), 2, 2);
 
-    const bool running = index.data(Qt::UserRole + 2).toBool();
+    const bool running = index.data(ProjectSessionRole).toBool();
+    const bool working = index.data(ProjectWorkingRole).toBool();
     const QColor stateColor = running ? QColor(73, 203, 145)
                                       : QColor(245, 178, 72);
 
@@ -263,17 +267,45 @@ void ProjectItemDelegate::paint(QPainter* painter,
         painter->drawLine(card.left() + 11, y, card.left() + 19, y);
     }
 
-    painter->setPen(Qt::NoPen);
-    painter->setBrush(stateColor);
-    const QRectF dot(card.right() - 27, card.center().y() - 5, 10, 10);
+    const QRectF icon(card.right() - 31, card.center().y() - 10, 20, 20);
     if (!running) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(stateColor);
         QPolygonF triangle;
-        triangle << QPointF(dot.left(), dot.top())
-                 << QPointF(dot.right(), dot.center().y())
-                 << QPointF(dot.left(), dot.bottom());
+        triangle << QPointF(icon.left() + 5, icon.top() + 4)
+                 << QPointF(icon.right() - 4, icon.center().y())
+                 << QPointF(icon.left() + 5, icon.bottom() - 4);
         painter->drawPolygon(triangle);
+    } else if (working) {
+        QColor track = stateColor;
+        track.setAlpha(65);
+        QPen trackPen(track, 1.65);
+        trackPen.setCosmetic(true);
+        trackPen.setCapStyle(Qt::RoundCap);
+        painter->setPen(trackPen);
+        painter->setBrush(Qt::NoBrush);
+        const QRectF ring = icon.adjusted(2, 2, -2, -2);
+        painter->drawEllipse(ring);
+
+        qreal angle = -90.0;
+        if (const auto* list = qobject_cast<const ProjectListWidget*>(option.widget)) {
+            angle = list->spinnerAngle();
+        }
+        QPen spinnerPen(stateColor, 2.35);
+        spinnerPen.setCosmetic(true);
+        spinnerPen.setCapStyle(Qt::RoundCap);
+        painter->setPen(spinnerPen);
+        painter->drawArc(ring, static_cast<int>(-angle * 16.0),
+                         static_cast<int>(-112.0 * 16.0));
     } else {
-        painter->drawEllipse(dot);
+        QPen iconPen(stateColor, 1.65);
+        iconPen.setCosmetic(true);
+        painter->setPen(iconPen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawEllipse(icon.adjusted(2, 2, -2, -2));
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(stateColor);
+        painter->drawEllipse(QRectF(icon.center().x() - 3, icon.center().y() - 3, 6, 6));
     }
 
     QString name = index.data(Qt::DisplayRole).toString();
@@ -308,6 +340,10 @@ ProjectListWidget::ProjectListWidget(QWidget* parent) : QListWidget(parent) {
     setUniformItemSizes(true);
     setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     setContextMenuPolicy(Qt::CustomContextMenu);
+    spinner_timer_ = new QTimer(this);
+    spinner_timer_->setInterval(75);
+    connect(spinner_timer_, &QTimer::timeout,
+            this, &ProjectListWidget::advanceWorkingAnimation);
 }
 
 void ProjectListWidget::SetDragEnabledForQuery(bool enabled) {
@@ -316,6 +352,29 @@ void ProjectListWidget::SetDragEnabledForQuery(bool enabled) {
     if (!enabled) {
         unsetCursor();
         viewport()->unsetCursor();
+    }
+}
+
+void ProjectListWidget::SetWorkingAnimationActive(bool active) {
+    if (!spinner_timer_) return;
+    if (active) {
+        if (!spinner_timer_->isActive()) {
+            spinner_angle_ = -90.0;
+            spinner_timer_->start();
+        }
+    } else {
+        spinner_timer_->stop();
+    }
+}
+
+void ProjectListWidget::advanceWorkingAnimation() {
+    spinner_angle_ += 18.0;
+    if (spinner_angle_ >= 360.0) spinner_angle_ -= 360.0;
+    for (int row = 0; row < count(); ++row) {
+        const auto* project = item(row);
+        if (!project || !project->data(ProjectWorkingRole).toBool()) continue;
+        const QRect item_rect = visualItemRect(project);
+        if (item_rect.intersects(viewport()->rect())) viewport()->update(item_rect);
     }
 }
 
@@ -380,10 +439,13 @@ TitleBarWidget::TitleBarWidget(QWidget* parent) : QWidget(parent) {
     layout->setContentsMargins(14, 0, 0, 0);
     layout->setSpacing(6);
 
-    auto* logo = new QLabel(QStringLiteral(">_"), this);
+    auto* logo = new QLabel(this);
     logo->setObjectName(QStringLiteral("appLogo"));
     logo->setAlignment(Qt::AlignCenter);
     logo->setFixedSize(32, 32);
+    const QPixmap app_icon = qApp->windowIcon().pixmap(26, 26);
+    if (!app_icon.isNull()) logo->setPixmap(app_icon);
+    else logo->setText(QStringLiteral(">_"));
     layout->addWidget(logo);
 
     title_label_ = new QLabel(QStringLiteral("AI CLI"), this);

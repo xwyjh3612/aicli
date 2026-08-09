@@ -11,6 +11,7 @@
 
 #include "core/process_metrics.h"
 #include "core/text_utils.h"
+#include "terminal/terminal_working_detector.h"
 
 namespace aicli::app {
 namespace {
@@ -72,6 +73,11 @@ struct DesktopController::RemoteControlMessage {
 struct DesktopController::AgentStatusMessage {
     bool online{};
     std::wstring text;
+};
+
+struct DesktopController::WorkingStateMessage {
+    std::wstring project_id;
+    bool working{};
 };
 
 DesktopController::DesktopController()
@@ -189,6 +195,7 @@ void DesktopController::Shutdown() {
     if (initialized_ || store_.Ready()) {
         terminal_snapshots_.Detach();
         remote_agent_.Stop();
+        working_projects_.clear();
         terminal_.StopAll();
         terminal_owner_ = nullptr;
         if (store_.Ready()) store_.Close();
@@ -362,17 +369,38 @@ std::wstring DesktopController::DefaultCommandForType(const std::wstring& type) 
 }
 
 bool DesktopController::StartCommandSession(Project& project) {
+    SetProjectWorkingState(project.id, false);
     terminal_streams_.BeginSession(project.id);
+    const std::wstring command = project.command.empty()
+        ? DefaultCommandForType(project.type) : project.command;
+    std::shared_ptr<terminal::TerminalWorkingDetector> working_detector;
+    const auto protocol = terminal::WorkingProtocolForSession(project.type, command);
+    if (protocol) {
+        const HWND owner = ui_window_;
+        const std::wstring project_id = project.id;
+        working_detector = std::make_shared<terminal::TerminalWorkingDetector>(
+            *protocol,
+            [owner, project_id](bool working) {
+                auto* state = new (std::nothrow)
+                    DesktopController::WorkingStateMessage{project_id, working};
+                if (!state || !owner ||
+                    !PostMessageW(owner, kQtWorkingStateMessage, 0,
+                                  reinterpret_cast<LPARAM>(state))) {
+                    delete state;
+                }
+            });
+    }
     if (terminal_.Start(
             project.id,
-            project.command.empty() ? DefaultCommandForType(project.type) : project.command,
+            command,
             project.folder,
             project.name,
             ui_window_,
             nullptr,
-            [this, id = project.id](std::wstring_view output) {
+            [this, id = project.id, working_detector](std::wstring_view output) {
                 terminal_streams_.PublishOutput(id, output);
                 terminal_snapshots_.Queue(id);
+                if (working_detector) working_detector->Observe(output);
             },
             [this, id = project.id](std::uint32_t rows, std::uint32_t columns) {
                 terminal_streams_.PublishResize(id, rows, columns);
@@ -382,6 +410,7 @@ bool DesktopController::StartCommandSession(Project& project) {
     }
     const auto error = terminal_.LastError().empty()
         ? L"无法创建原生终端控件" : terminal_.LastError();
+    SetProjectWorkingState(project.id, false);
     terminal_streams_.RemoveSession(project.id);
     project.status = L"created";
     NotifyStatus(L"原生终端启动失败: " + error);
@@ -400,6 +429,7 @@ bool DesktopController::StartProject(const std::wstring& project_id, bool restar
             NotifyState();
             return true;
         }
+        SetProjectWorkingState(project_id, false);
         terminal_.Stop(project_id);
     }
     if (!StartCommandSession(*project)) {
@@ -416,6 +446,7 @@ bool DesktopController::StartProject(const std::wstring& project_id, bool restar
 
 void DesktopController::StopProject(const std::wstring& project_id,
                                      const std::wstring& status) {
+    SetProjectWorkingState(project_id, false);
     terminal_.Stop(project_id);
     terminal_streams_.RemoveSession(project_id);
     if (auto* project = FindProject(project_id)) {
@@ -431,6 +462,19 @@ void DesktopController::StopProject(const std::wstring& project_id,
 
 bool DesktopController::HasSession(const std::wstring& project_id) const {
     return terminal_.HasSession(project_id);
+}
+
+bool DesktopController::IsProjectWorking(const std::wstring& project_id) const {
+    return terminal_.HasSession(project_id) &&
+           working_projects_.find(project_id) != working_projects_.end();
+}
+
+bool DesktopController::AnyProjectWorking() const {
+    return std::any_of(
+        working_projects_.begin(), working_projects_.end(),
+        [this](const std::wstring& project_id) {
+            return terminal_.HasSession(project_id);
+        });
 }
 
 bool DesktopController::ActivateProject(const std::wstring& project_id, bool focus) {
@@ -545,6 +589,7 @@ bool DesktopController::SaveProject(Project project, std::wstring* error) {
 
 bool DesktopController::DeleteProject(const std::wstring& project_id, std::wstring* error) {
     if (!FindProject(project_id)) return false;
+    SetProjectWorkingState(project_id, false);
     terminal_.Stop(project_id);
     terminal_streams_.RemoveSession(project_id);
     if (!store_.DeleteProject(project_id, error)) return false;
@@ -712,6 +757,25 @@ void DesktopController::HandleAgentStatus(std::unique_ptr<AgentStatusMessage> st
     if (agent_status_) agent_status_(status->online, status->text);
 }
 
+void DesktopController::HandleWorkingState(
+    std::unique_ptr<WorkingStateMessage> state) {
+    if (!state) return;
+    SetProjectWorkingState(state->project_id, state->working);
+}
+
+void DesktopController::SetProjectWorkingState(
+    const std::wstring& project_id,
+    bool working) {
+    if (project_id.empty()) return;
+    if (working && (!FindProject(project_id) || !terminal_.HasSession(project_id))) {
+        working = false;
+    }
+    const bool changed = working
+        ? working_projects_.insert(project_id).second
+        : working_projects_.erase(project_id) > 0;
+    if (changed) NotifyState();
+}
+
 bool DesktopController::HandleNativeMessage(UINT message, WPARAM, LPARAM lparam) {
     if (message == kQtTerminalDirtyMessage) {
         terminal_snapshots_.MarkDirtyMessageHandled();
@@ -743,6 +807,11 @@ bool DesktopController::HandleNativeMessage(UINT message, WPARAM, LPARAM lparam)
     if (message == kQtAgentStatusMessage) {
         HandleAgentStatus(std::unique_ptr<AgentStatusMessage>(
             reinterpret_cast<AgentStatusMessage*>(lparam)));
+        return true;
+    }
+    if (message == kQtWorkingStateMessage) {
+        HandleWorkingState(std::unique_ptr<WorkingStateMessage>(
+            reinterpret_cast<WorkingStateMessage*>(lparam)));
         return true;
     }
     return false;

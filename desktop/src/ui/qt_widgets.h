@@ -15,6 +15,7 @@
 #include "ui/theme.h"
 
 class QLineEdit;
+class QTimer;
 
 namespace aicli::ui::qt {
 
@@ -22,6 +23,13 @@ QString ToQString(const std::wstring& value);
 std::wstring ToWideString(const QString& value);
 QColor ToQColor(COLORREF value);
 QString BuildApplicationStyle(const ThemePalette& theme);
+
+enum ProjectItemRole {
+    ProjectIdRole = Qt::UserRole,
+    ProjectStatusRole,
+    ProjectSessionRole,
+    ProjectWorkingRole,
+};
 
 class TerminalHostWidget final : public QWidget {
     Q_OBJECT
@@ -73,6 +81,8 @@ class ProjectListWidget final : public QListWidget {
 public:
     explicit ProjectListWidget(QWidget* parent = nullptr);
     void SetDragEnabledForQuery(bool enabled);
+    void SetWorkingAnimationActive(bool active);
+    qreal spinnerAngle() const noexcept { return spinner_angle_; }
 
 signals:
     void orderChanged();
@@ -87,8 +97,11 @@ protected:
 
 private:
     void updateGripCursor(const QPoint& position);
+    void advanceWorkingAnimation();
     bool dragArmed_{};
     bool dragAllowed_{true};
+    QTimer* spinner_timer_{};
+    qreal spinner_angle_{-90.0};
 };
 
 class TitleBarWidget final : public QWidget {

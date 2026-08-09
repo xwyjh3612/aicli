@@ -1,13 +1,17 @@
 #include <windows.h>
 
 #include <QApplication>
+#include <QIcon>
+#include <QImage>
 #include <QMessageBox>
+#include <QPixmap>
 
 #include <winrt/base.h>
 
 #include "aicli_build_identity.h"
 #include "app/application_activation.h"
 #include "app/desktop_controller.h"
+#include "app/resource.h"
 #include "ui/qt_main_window.h"
 #include "ui/qt_widgets.h"
 
@@ -15,7 +19,7 @@ namespace {
 constexpr wchar_t kApplicationUserModelId[] = AICLI_APPLICATION_USER_MODEL_ID;
 }
 
-int WINAPI wWinMain(HINSTANCE,
+int WINAPI wWinMain(HINSTANCE instance,
                     HINSTANCE,
                     PWSTR arguments,
                     int show_command) {
@@ -59,6 +63,13 @@ int WINAPI wWinMain(HINSTANCE,
     application.setApplicationName(QStringLiteral("AI CLI"));
     application.setOrganizationName(QStringLiteral("AI CLI"));
     QApplication::setStyle(QStringLiteral("Fusion"));
+    if (const auto icon = static_cast<HICON>(LoadImageW(
+            instance, MAKEINTRESOURCEW(IDI_AICLI_APP), IMAGE_ICON,
+            GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON),
+            LR_DEFAULTCOLOR | LR_SHARED))) {
+        application.setWindowIcon(
+            QIcon(QPixmap::fromImage(QImage::fromHICON(icon))));
+    }
 
     aicli::ui::qt::MainWindow window(controller);
     std::wstring error;

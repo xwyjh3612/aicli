@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "agent/conversation_bridge.h"
@@ -32,6 +33,7 @@ constexpr UINT kQtRemoteControlMessage = WM_APP + 42;
 constexpr UINT kQtPairingPendingMessage = WM_APP + 43;
 constexpr UINT kQtAgentStatusMessage = WM_APP + 44;
 constexpr UINT kQtTerminalDirtyMessage = WM_APP + 45;
+constexpr UINT kQtWorkingStateMessage = WM_APP + 46;
 
 class DesktopController final {
 public:
@@ -62,6 +64,8 @@ public:
     void StopProject(const std::wstring& project_id,
                      const std::wstring& status = L"cancelled");
     bool HasSession(const std::wstring& project_id) const;
+    bool IsProjectWorking(const std::wstring& project_id) const;
+    bool AnyProjectWorking() const;
     bool ActivateProject(const std::wstring& project_id, bool focus = true);
     void ResizeTerminal(int width, int height);
     void SetTerminalVisible(bool visible);
@@ -117,6 +121,7 @@ private:
     struct RemoteKeyMessage;
     struct RemoteControlMessage;
     struct AgentStatusMessage;
+    struct WorkingStateMessage;
 
     bool InitializePersistentState(std::wstring* error);
     void ConfigureRemoteAgent();
@@ -128,6 +133,8 @@ private:
     void HandleRemoteControl(std::unique_ptr<RemoteControlMessage> request);
     void HandlePairing(std::unique_ptr<agent::PendingPairing> pairing);
     void HandleAgentStatus(std::unique_ptr<AgentStatusMessage> status);
+    void HandleWorkingState(std::unique_ptr<WorkingStateMessage> state);
+    void SetProjectWorkingState(const std::wstring& project_id, bool working);
     bool StartCommandSession(Project& project);
     void RefreshConversationCache();
     std::string ConversationsJson() const;
@@ -150,6 +157,7 @@ private:
     std::wstring group_name_{L"默认分组"};
     std::wstring selected_project_id_;
     std::wstring startup_project_id_;
+    std::unordered_set<std::wstring> working_projects_;
     bool initialized_{};
     bool runtime_prepared_{};
     std::atomic_bool terminal_dirty_{};

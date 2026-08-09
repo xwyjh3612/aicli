@@ -274,6 +274,12 @@ void MainWindow::wireController() {
 
 bool MainWindow::Initialize(std::wstring* error) {
     const HWND window = reinterpret_cast<HWND>(winId());
+    taskbar_button_created_message_ = RegisterWindowMessageW(L"TaskbarButtonCreated");
+    if (taskbar_button_created_message_) {
+        ChangeWindowMessageFilterEx(window, taskbar_button_created_message_,
+                                    MSGFLT_ALLOW, nullptr);
+    }
+    taskbar_working_indicator_.Attach(window);
     applyNativeWindowStyle();
     // Capture Qt's working input context before WindowsXamlManager and
     // TermControl initialize text services on this UI thread. The XAML stack
@@ -446,6 +452,7 @@ void MainWindow::refreshAll() {
         QString::number(controller_.ProjectCount(controller_.group())) + QStringLiteral(")  ▾"));
     title_bar_->devicesButton()->setText(
         QStringLiteral("已绑定 ") + QString::number(controller_.BoundDeviceCount()) + QStringLiteral(" 台"));
+    taskbar_working_indicator_.SetWorking(controller_.AnyProjectWorking());
     refreshing_ = false;
     refreshProjectList();
     refreshProjectDetails();
@@ -461,16 +468,21 @@ void MainWindow::refreshProjectList() {
     project_list_->clear();
     const auto indices = controller_.VisibleProjectIndices(ToWideString(search_->text()));
     int selectedRow = -1;
+    bool hasVisibleWorking = false;
     for (int projectIndex : indices) {
         if (projectIndex < 0 || projectIndex >= static_cast<int>(controller_.projects().size())) continue;
         const auto& project = controller_.projects()[static_cast<std::size_t>(projectIndex)];
         auto* item = new QListWidgetItem(ToQString(project.name), project_list_);
-        item->setData(Qt::UserRole, ToQString(project.id));
-        item->setData(Qt::UserRole + 1, ToQString(project.status));
-        item->setData(Qt::UserRole + 2, controller_.HasSession(project.id));
+        const bool working = controller_.IsProjectWorking(project.id);
+        item->setData(ProjectIdRole, ToQString(project.id));
+        item->setData(ProjectStatusRole, ToQString(project.status));
+        item->setData(ProjectSessionRole, controller_.HasSession(project.id));
+        item->setData(ProjectWorkingRole, working);
+        hasVisibleWorking = hasVisibleWorking || working;
         item->setToolTip(ToQString(project.folder));
         if (project.id == preferred) selectedRow = project_list_->count() - 1;
     }
+    project_list_->SetWorkingAnimationActive(hasVisibleWorking);
     project_list_->SetDragEnabledForQuery(search_->text().trimmed().isEmpty());
     // While a user is composing a search query (notably with a Chinese IME),
     // rebuilding the filtered list must not silently activate its first row.
@@ -480,7 +492,7 @@ void MainWindow::refreshProjectList() {
     if (selectedRow < 0 && project_list_->count() > 0 && !filtering) selectedRow = 0;
     project_list_->setCurrentRow(selectedRow);
     const std::wstring nextId = selectedRow >= 0
-        ? ToWideString(project_list_->item(selectedRow)->data(Qt::UserRole).toString())
+        ? ToWideString(project_list_->item(selectedRow)->data(ProjectIdRole).toString())
         : std::wstring{};
     refreshing_ = false;
     if (!filtering && nextId != controller_.selectedProjectId()) {
@@ -494,7 +506,7 @@ const Project* MainWindow::selectedProject() const {
 
 std::wstring MainWindow::selectedProjectIdFromList() const {
     auto* item = project_list_->currentItem();
-    return item ? ToWideString(item->data(Qt::UserRole).toString()) : std::wstring{};
+    return item ? ToWideString(item->data(ProjectIdRole).toString()) : std::wstring{};
 }
 
 void MainWindow::refreshProjectDetails() {
@@ -771,7 +783,7 @@ void MainWindow::persistProjectOrder() {
     std::vector<std::wstring> ids;
     ids.reserve(static_cast<std::size_t>(project_list_->count()));
     for (int row = 0; row < project_list_->count(); ++row) {
-        ids.push_back(ToWideString(project_list_->item(row)->data(Qt::UserRole).toString()));
+        ids.push_back(ToWideString(project_list_->item(row)->data(ProjectIdRole).toString()));
     }
     std::wstring error;
     if (!controller_.ReorderVisibleProjects(controller_.group(), ids, &error) && !error.empty()) {
@@ -892,6 +904,12 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 
 bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {
     auto* native = static_cast<MSG*>(message);
+    if (native && taskbar_button_created_message_ &&
+        native->message == taskbar_button_created_message_) {
+        taskbar_working_indicator_.OnTaskbarButtonCreated();
+        *result = 0;
+        return true;
+    }
     if (native && controller_.HandleNativeMessage(
             native->message, native->wParam, native->lParam)) {
         if (native->message == app::kQtTerminalDirtyMessage && terminal_snapshot_timer_ &&
@@ -1017,6 +1035,8 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     shutting_down_ = true;
     if (telemetry_timer_) telemetry_timer_->stop();
     if (terminal_snapshot_timer_) terminal_snapshot_timer_->stop();
+    if (project_list_) project_list_->SetWorkingAnimationActive(false);
+    taskbar_working_indicator_.Detach();
     QMainWindow::closeEvent(event);
 }
 

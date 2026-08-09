@@ -48,8 +48,11 @@ set(AICLI_COMMON_SOURCES
     "F:/deps/aicli/civetweb-1.16/src/civetweb.c"
     "F:/deps/aicli/qrcodegen/qrcodegen.cpp"
     src/terminal/conpty_connection_bridge.cpp
+    src/terminal/terminal_working_detector.cpp
     src/terminal/xaml_island_adapter.cpp
     src/ui/theme.cpp
+    src/ui/taskbar_working_indicator.cpp
+    src/app/aicli.rc
 )
 
 if (AICLI_USE_QT_UI)
@@ -62,16 +65,15 @@ if (AICLI_USE_QT_UI)
         src/ui/qt_settings_dialog.cpp
         src/ui/qt_widgets.cpp
     )
-    set(AICLI_APPLICATION_LOGO "F:/deps/Microsoft.UI.Xaml.2.8/logo.png")
+    set(AICLI_APPLICATION_LOGO
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/aicli-logo.png")
 else()
     list(APPEND AICLI_COMMON_SOURCES
-        src/app/aicli.rc
         src/app/main.cpp
         src/ui/drawing_utils.cpp
         src/ui/footer_status.cpp
         src/ui/main_window_renderer.cpp
         src/ui/styled_input.cpp
-        src/ui/taskbar_working_indicator.cpp
         src/ui/management_dialog.cpp
         src/ui/window_chrome.cpp
     )

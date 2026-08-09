@@ -9,6 +9,7 @@
 #include <QPointer>
 
 #include "app/desktop_controller.h"
+#include "ui/taskbar_working_indicator.h"
 
 class QLabel;
 class QDialog;
@@ -96,6 +97,8 @@ private:
     QTimer* telemetry_timer_{};
     QTimer* terminal_snapshot_timer_{};
     QPointer<BindingDialog> binding_dialog_;
+    TaskbarWorkingIndicator taskbar_working_indicator_;
+    UINT taskbar_button_created_message_{};
     bool terminal_attached_{};
     bool refreshing_{};
     bool shutting_down_{};
