@@ -41,8 +41,18 @@ bool WinRtComponentRegistry::Initialize() {
 }
 
 WinRtComponentRegistry::~WinRtComponentRegistry() {
-    for (auto cookie : cookies_) RoRevokeActivationFactories(cookie);
-    if (dll_directory_) RemoveDllDirectory(dll_directory_);
+    Shutdown();
+}
+
+void WinRtComponentRegistry::Shutdown() noexcept {
+    for (auto iterator = cookies_.rbegin(); iterator != cookies_.rend(); ++iterator) {
+        RoRevokeActivationFactories(*iterator);
+    }
+    cookies_.clear();
+    if (dll_directory_) {
+        RemoveDllDirectory(dll_directory_);
+        dll_directory_ = nullptr;
+    }
 }
 
 bool WinRtComponentRegistry::Register(

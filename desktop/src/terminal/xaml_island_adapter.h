@@ -37,6 +37,7 @@ public:
     bool Activate(std::wstring_view project_id, bool focus = true);
     void Stop(std::wstring_view project_id);
     void StopAll();
+    void Shutdown() noexcept;
     void SetVisible(bool visible);
     void SetTheme(bool light);
     void RefreshTerminalViewport();

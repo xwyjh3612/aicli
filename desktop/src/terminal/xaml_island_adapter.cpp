@@ -12,6 +12,8 @@
 
 #include <windowsx.h>
 #include <commctrl.h>
+#include <ole2.h>
+#include <shellapi.h>
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -70,6 +72,22 @@ std::wstring FilterRemotePasteText(std::wstring_view value) {
         }
     }
     return filtered;
+}
+
+// Explorer paths are inserted into the PowerShell command line as literal
+// arguments. Always quoting is simpler and safer than trying to predict every
+// character PowerShell treats as syntax or a wildcard. A literal single quote
+// inside a path is escaped by doubling it.
+std::wstring QuoteDroppedPath(std::wstring_view path) {
+    std::wstring quoted;
+    quoted.reserve(path.size() + 2);
+    quoted.push_back(L'\'');
+    for (const wchar_t character : path) {
+        if (character == L'\'') quoted.push_back(L'\'');
+        quoted.push_back(character);
+    }
+    quoted.push_back(L'\'');
+    return quoted;
 }
 
 } // namespace
@@ -142,10 +160,44 @@ LRESULT CALLBACK XamlIslandSubclassProc(
 struct XamlIslandAdapter::Impl {
 public:
     ~Impl() {
+        Shutdown();
+    }
+
+    void Shutdown() noexcept {
+        if (shutting_down_) return;
+        shutting_down_ = true;
+        StopAll();
         if (hwnd_) {
+            DragAcceptFiles(hwnd_, FALSE);
             KillTimer(hwnd_, kScrollbarHoverTimerId);
             RemoveWindowSubclass(hwnd_, XamlIslandSubclassProc, kXamlIslandSubclassId);
         }
+        try {
+            if (source_) source_.Content(nullptr);
+        } catch (...) {}
+        grid_ = nullptr;
+        try {
+            if (source_) source_.Close();
+        } catch (...) {}
+        source_ = nullptr;
+        hwnd_ = nullptr;
+        try {
+            if (manager_) manager_.Close();
+        } catch (...) {}
+        manager_ = nullptr;
+        try {
+            if (application_) {
+                application_.as<winrt::Windows::UI::Xaml::Application>().Exit();
+            }
+        } catch (...) {}
+        // Windows.UI.Xaml retains its own reference to the custom Application
+        // until DLL_PROCESS_DETACH. Releasing the final reference from XAML's
+        // DllMain runs HostXamlApplication's destructor after twinapi.appcore
+        // has already begun teardown and crashes there. Keep this one
+        // process-lifetime reference intentionally; the OS reclaims it with
+        // the process, while XAML's late Release can no longer delete it.
+        if (application_) (void)application_.detach();
+        parent_ = nullptr;
     }
 
     bool Attach(HWND parent, RECT rc) {
@@ -186,6 +238,7 @@ public:
                 // The terminal still works with its compiled resources when WinUI theme resources are unavailable.
             }
             source_.Content(grid_);
+            ConfigureSafeFileDrop();
             stage = L"size XAML island";
             Resize(rc);
             ShowWindow(hwnd_,SW_HIDE);
@@ -286,10 +339,18 @@ public:
             // at the main window origin), so using the main HWND loses the
             // island's left/top offset and places IME UI over the sidebar.
             session->control.OwningHwnd(reinterpret_cast<uint64_t>(hwnd_ ? hwnd_ : owner));
+            // TermControl's built-in async StorageItems drop handler assumes
+            // the complete Windows Terminal application host. In a loose
+            // XAML Island it can dereference invalid host state and crash in
+            // Microsoft.Terminal.Control.dll. The native island subclass
+            // below owns file drops instead and feeds the escaped paths back
+            // through TermControl's normal input pipeline.
+            session->control.AllowDrop(false);
             session->control.HorizontalAlignment(winrt::Windows::UI::Xaml::HorizontalAlignment::Stretch);
             session->control.VerticalAlignment(winrt::Windows::UI::Xaml::VerticalAlignment::Stretch);
             session->control.Visibility(winrt::Windows::UI::Xaml::Visibility::Collapsed);
             grid_.Children().Append(session->control);
+            ConfigureSafeFileDrop();
             sessions_.emplace(project_id, std::move(session));
             Activate(project_id);
             ShowWindow(hwnd_, SW_SHOW);
@@ -592,8 +653,43 @@ public:
             return false;
         }
     }
+    bool HandleFileDrop(HDROP drop) noexcept {
+        if (!drop) return false;
+        auto* session = ActiveSession();
+        if (!session || !session->control) return false;
+
+        try {
+            const UINT count = DragQueryFileW(drop, 0xFFFFFFFFu, nullptr, 0);
+            if (!count) return false;
+
+            std::wstring input;
+            for (UINT index = 0; index < count; ++index) {
+                const UINT length = DragQueryFileW(drop, index, nullptr, 0);
+                if (!length) continue;
+                std::wstring path(static_cast<std::size_t>(length) + 1, L'\0');
+                const UINT copied = DragQueryFileW(
+                    drop, index, path.data(), static_cast<UINT>(path.size()));
+                if (!copied) continue;
+                path.resize(copied);
+                if (!input.empty()) input.push_back(L' ');
+                input.append(QuoteDroppedPath(path));
+            }
+            if (input.empty()) return false;
+
+            session->control.Focus(winrt::Windows::UI::Xaml::FocusState::Programmatic);
+            if (session->control.BracketedPasteEnabled()) {
+                input.insert(0, L"\x1b[200~");
+                input.append(L"\x1b[201~");
+            }
+            session->control.RawWriteString(winrt::hstring{input});
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
     void OnIslandDestroyed(HWND window) noexcept {
         if (hwnd_ == window) {
+            DragAcceptFiles(hwnd_, FALSE);
             KillTimer(hwnd_, kScrollbarHoverTimerId);
             hwnd_ = nullptr;
         }
@@ -634,12 +730,29 @@ public:
     }
     const std::wstring& LastError() const { return last_error_; }
 private:
+    void ConfigureSafeFileDrop() noexcept {
+        if (!hwnd_) return;
+        // DesktopWindowXamlSource registers an OLE drop target for XAML. It is
+        // the route that reaches TermControl::_DragDropHandler and crashes in
+        // this custom host. Remove it and enable the stable Win32 HDROP path
+        // on the same visible child window instead.
+        (void)RevokeDragDrop(hwnd_);
+        DragAcceptFiles(hwnd_, TRUE);
+    }
+
     void RaiseIsland() noexcept {
         if (!hwnd_ || !parent_ || !visible_) return;
-        RECT rect{};
-        if (!GetClientRect(parent_, &rect)) return;
-        SetWindowPos(hwnd_, HWND_TOP, 0, 0,
-                     rect.right - rect.left, rect.bottom - rect.top,
+        RECT rect = last_resize_rect_;
+        if (!has_resize_rect_ && !GetClientRect(parent_, &rect)) return;
+        const int width = rect.right - rect.left;
+        const int height = rect.bottom - rect.top;
+        if (width <= 0 || height <= 0) return;
+        // Qt attaches the island to a dedicated shell host, while the legacy
+        // Win32 UI attaches it directly to the whole main window. Raising the
+        // island must preserve the terminal viewport calculated by Resize();
+        // expanding it to the parent's full client area covers the legacy
+        // header, project list and footer with the XAML background.
+        SetWindowPos(hwnd_, HWND_TOP, rect.left, rect.top, width, height,
                      SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
 
@@ -818,6 +931,7 @@ private:
     std::wstring active_project_id_;
     bool visible_{};
     bool light_theme_{};
+    bool shutting_down_{};
     RECT last_resize_rect_{};
     UINT last_resize_dpi_{};
     bool has_resize_rect_{};
@@ -843,6 +957,12 @@ LRESULT CALLBACK XamlIslandSubclassProc(
         if (message == WM_MOUSELEAVE) adapter->CollapseNativeScrollbar();
         if (message == WM_TIMER && wparam == kScrollbarHoverTimerId) {
             adapter->UpdateNativeScrollbarHover();
+            return 0;
+        }
+        if (message == WM_DROPFILES) {
+            const auto drop = reinterpret_cast<HDROP>(wparam);
+            (void)adapter->HandleFileDrop(drop);
+            DragFinish(drop);
             return 0;
         }
         if (message == WM_NCDESTROY) {
@@ -896,6 +1016,10 @@ void XamlIslandAdapter::Stop(std::wstring_view project_id) {
 
 void XamlIslandAdapter::StopAll() {
     if (impl_) impl_->StopAll();
+}
+
+void XamlIslandAdapter::Shutdown() noexcept {
+    impl_.reset();
 }
 
 void XamlIslandAdapter::SetVisible(bool visible) {

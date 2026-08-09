@@ -186,12 +186,16 @@ bool DesktopController::AttachTerminal(HWND parent, int width, int height,
 }
 
 void DesktopController::Shutdown() {
-    if (!initialized_ && !store_.Ready()) return;
-    terminal_snapshots_.Detach();
-    remote_agent_.Stop();
-    terminal_.StopAll();
-    terminal_owner_ = nullptr;
-    if (store_.Ready()) store_.Close();
+    if (initialized_ || store_.Ready()) {
+        terminal_snapshots_.Detach();
+        remote_agent_.Stop();
+        terminal_.StopAll();
+        terminal_owner_ = nullptr;
+        if (store_.Ready()) store_.Close();
+    }
+    terminal_.Shutdown();
+    components_.Shutdown();
+    runtime_prepared_ = false;
     initialized_ = false;
 }
 

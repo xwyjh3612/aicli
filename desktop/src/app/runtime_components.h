@@ -19,6 +19,7 @@ class WinRtComponentRegistry {
 public:
     WinRtComponentRegistry() = default;
     bool Initialize();
+    void Shutdown() noexcept;
     ~WinRtComponentRegistry();
 
     WinRtComponentRegistry(const WinRtComponentRegistry&) = delete;

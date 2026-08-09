@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.26)
 project(aicli LANGUAGES C CXX)
 
 option(AICLI_SKIP_PACKAGED_ACTIVATION "Run the desktop executable directly for local UI smoke tests" OFF)
+option(AICLI_USE_QT_UI "Build the Qt desktop UI instead of the legacy Win32 UI" ON)
 set(AICLI_APPLICATION_USER_MODEL_ID "AiCli.Desktop.Dev_jw3zr00rmb0ym!App"
     CACHE STRING "Application user model ID used for packaged activation")
 set(AICLI_PACKAGE_IDENTITY_NAME "AiCli.Desktop.Dev"
@@ -9,7 +10,7 @@ set(AICLI_PACKAGE_IDENTITY_NAME "AiCli.Desktop.Dev"
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOMOC ${AICLI_USE_QT_UI})
 if (NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 endif()
@@ -20,10 +21,12 @@ if (NOT CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 endif()
 
-if (EXISTS "F:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6")
-    list(PREPEND CMAKE_PREFIX_PATH "F:/Qt/6.8.3/msvc2022_64")
+if (AICLI_USE_QT_UI)
+    if (EXISTS "F:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6")
+        list(PREPEND CMAKE_PREFIX_PATH "F:/Qt/6.8.3/msvc2022_64")
+    endif()
+    find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
 endif()
-find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
 
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/app/build_identity.h.in"
@@ -31,14 +34,12 @@ configure_file(
     @ONLY
 )
 
-add_executable(aicli WIN32
+set(AICLI_COMMON_SOURCES
     src/agent/conversation_bridge.cpp
     src/agent/remote_agent.cpp
     src/agent/terminal_snapshot_publisher.cpp
     src/agent/terminal_stream_publisher.cpp
     src/app/application_activation.cpp
-    src/app/desktop_controller.cpp
-    src/app/qt_main.cpp
     src/app/runtime_components.cpp
     src/core/process_metrics.cpp
     src/core/text_utils.cpp
@@ -48,13 +49,32 @@ add_executable(aicli WIN32
     "F:/deps/aicli/qrcodegen/qrcodegen.cpp"
     src/terminal/conpty_connection_bridge.cpp
     src/terminal/xaml_island_adapter.cpp
-    src/ui/qt_binding_dialog.cpp
-    src/ui/qt_main_window.cpp
-    src/ui/qt_project_dialog.cpp
-    src/ui/qt_settings_dialog.cpp
-    src/ui/qt_widgets.cpp
     src/ui/theme.cpp
 )
+
+if (AICLI_USE_QT_UI)
+    list(APPEND AICLI_COMMON_SOURCES
+        src/app/desktop_controller.cpp
+        src/app/qt_main.cpp
+        src/ui/qt_binding_dialog.cpp
+        src/ui/qt_main_window.cpp
+        src/ui/qt_project_dialog.cpp
+        src/ui/qt_settings_dialog.cpp
+        src/ui/qt_widgets.cpp
+    )
+else()
+    list(APPEND AICLI_COMMON_SOURCES
+        src/app/main.cpp
+        src/ui/drawing_utils.cpp
+        src/ui/footer_status.cpp
+        src/ui/main_window_renderer.cpp
+        src/ui/styled_input.cpp
+        src/ui/management_dialog.cpp
+        src/ui/window_chrome.cpp
+    )
+endif()
+
+add_executable(aicli WIN32 ${AICLI_COMMON_SOURCES})
 
 add_executable(aicli_data_store_tests
     tests/data_store_tests.cpp
@@ -96,7 +116,6 @@ target_include_directories(aicli_data_store_tests PRIVATE
 )
 
 target_link_libraries(aicli PRIVATE
-    Qt6::Widgets
     comctl32
     user32
     gdi32
@@ -106,6 +125,7 @@ target_link_libraries(aicli PRIVATE
     ole32
     runtimeobject
     dwmapi
+    shell32
     winsqlite3
     ws2_32
     advapi32
@@ -118,15 +138,24 @@ target_link_libraries(aicli PRIVATE
     "$<$<NOT:$<CONFIG:Debug>>:F:/deps/aicli/openssl/lib/VC/x64/MD/libcrypto.lib>"
 )
 
+if (AICLI_USE_QT_UI)
+    target_link_libraries(aicli PRIVATE Qt6::Widgets)
+endif()
+
+if (AICLI_USE_QT_UI)
+    add_custom_command(TARGET aicli POST_BUILD
+        COMMAND "F:/Qt/6.8.3/msvc2022_64/bin/windeployqt.exe"
+            "$<$<CONFIG:Debug>:--debug>"
+            "$<$<NOT:$<CONFIG:Debug>>:--release>"
+            --no-translations
+            --no-system-d3d-compiler
+            --no-opengl-sw
+            --no-compiler-runtime
+            "$<TARGET_FILE:aicli>"
+    )
+endif()
+
 add_custom_command(TARGET aicli POST_BUILD
-    COMMAND "F:/Qt/6.8.3/msvc2022_64/bin/windeployqt.exe"
-        "$<$<CONFIG:Debug>:--debug>"
-        "$<$<NOT:$<CONFIG:Debug>>:--release>"
-        --no-translations
-        --no-system-d3d-compiler
-        --no-opengl-sw
-        --no-compiler-runtime
-        "$<TARGET_FILE:aicli>"
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/stage-runtime.ps1"
         -Output "$<TARGET_FILE_DIR:aicli>"

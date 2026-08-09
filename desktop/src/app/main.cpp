@@ -23,6 +23,7 @@
 #include <winrt/base.h>
 #include <nlohmann/json.hpp>
 #include <qrcodegen.hpp>
+#include "aicli_build_identity.h"
 #include "agent/conversation_bridge.h"
 #include "agent/remote_agent.h"
 #include "agent/terminal_snapshot_publisher.h"
@@ -51,7 +52,7 @@
 #pragma comment(lib, "gdiplus.lib")
 
 namespace {
-constexpr wchar_t kApplicationUserModelId[] = L"AiCli.Desktop.Dev_jw3zr00rmb0ym!App";
+constexpr wchar_t kApplicationUserModelId[] = AICLI_APPLICATION_USER_MODEL_ID;
 constexpr UINT WM_REMOTE_INPUT = WM_APP + 20;
 constexpr UINT WM_REMOTE_CONTROL = WM_APP + 21;
 constexpr UINT WM_PAIRING_PENDING = WM_APP + 22;
@@ -934,9 +935,13 @@ int WINAPI wWinMain(HINSTANCE instance,
         MessageBoxW(nullptr,
                     L"无法启动已注册的 AI CLI 桌面实例，请先完成包注册。",
                     L"AI CLI", MB_OK | MB_ICONERROR);
+        winrt::uninit_apartment();
         return 1;
     }
-    if (activation == 0) return 0;
+    if (activation == 0) {
+        winrt::uninit_apartment();
+        return 0;
+    }
     if (!InitializePersistentState()) {
         winrt::uninit_apartment();
         return 1;
@@ -972,6 +977,8 @@ int WINAPI wWinMain(HINSTANCE instance,
     }
 
     g_store.Close();
+    g_island.Shutdown();
+    g_components.Shutdown();
     winrt::uninit_apartment();
     return 0;
 }
