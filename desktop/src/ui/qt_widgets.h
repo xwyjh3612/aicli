@@ -2,6 +2,7 @@
 
 #include <QAbstractItemView>
 #include <QColor>
+#include <QDialog>
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
@@ -12,6 +13,8 @@
 
 #include "core/models.h"
 #include "ui/theme.h"
+
+class QLineEdit;
 
 namespace aicli::ui::qt {
 
@@ -32,6 +35,26 @@ signals:
 protected:
     void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+};
+
+// Small, reusable modal used for names (groups, labels, etc.).  Keeping this
+// here makes all one-line forms use the same opaque surface, field geometry,
+// placeholder behavior, and Chinese confirmation buttons.
+class SingleTextDialog final : public QDialog {
+    Q_OBJECT
+public:
+    SingleTextDialog(const QString& title,
+                     const QString& label,
+                     const QString& initial,
+                     QWidget* parent = nullptr);
+
+    QString value() const;
+
+private slots:
+    void acceptDialog();
+
+private:
+    QLineEdit* field_{};
 };
 
 class ProjectItemDelegate final : public QStyledItemDelegate {
@@ -56,11 +79,14 @@ signals:
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void startDrag(Qt::DropActions supportedActions) override;
     void dropEvent(QDropEvent* event) override;
 
 private:
+    void updateGripCursor(const QPoint& position);
     bool dragArmed_{};
     bool dragAllowed_{true};
 };
@@ -84,6 +110,8 @@ public:
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
 
 private:
@@ -96,6 +124,10 @@ private:
     QPushButton* minimize_button_{};
     QPushButton* maximize_button_{};
     QPushButton* close_button_{};
+    bool drag_pending_{};
+    bool dragging_{};
+    QPoint drag_press_global_;
+    QPoint drag_offset_;
 };
 
 } // namespace aicli::ui::qt

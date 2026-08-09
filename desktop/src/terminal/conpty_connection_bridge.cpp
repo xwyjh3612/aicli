@@ -61,6 +61,12 @@ constexpr ULONG kFilePipeByteStreamMode = 0;
 constexpr ULONG kFilePipeQueueOperation = 0;
 constexpr std::wstring_view kCodexInputBackgroundParameters = L"48;2;41;41;41";
 constexpr std::wstring_view kLightInputBackgroundParameters = L"48;2;232;235;239";
+// Codex 0.113+ selects its own light composer surface after querying the
+// terminal background.  It keeps emitting that light RGB after the host theme
+// changes at runtime, so it must be treated as the same semantic composer
+// background as the legacy #292929 value.
+constexpr std::wstring_view kCodexNativeLightInputBackgroundParameters =
+    L"48;2;237;238;240";
 
 bool NtSucceeded(NTSTATUS status) noexcept {
     return status >= 0;
@@ -454,29 +460,36 @@ void ConPtyConnectionBridge::RefreshViewport() noexcept {
     // its current TUI while keeping the same process and terminal control.
     uint32_t rows{};
     uint32_t columns{};
-    uint64_t generation{};
+    uint32_t probe_columns{};
     {
         std::scoped_lock lock(lifecycle_mutex_);
         if (!pseudo_console_ || closing_) return;
         rows = rows_;
         columns = columns_;
-        generation = resize_generation_.load(std::memory_order_relaxed);
+        probe_columns = std::clamp<uint32_t>(
+            columns > 20 ? columns - 1 : columns + 1, 20, SHRT_MAX);
         const COORD probe{
-            static_cast<SHORT>(std::clamp<uint32_t>(columns > 20 ? columns - 1 : columns + 1,
-                                                     20, SHRT_MAX)),
+            static_cast<SHORT>(probe_columns),
             static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
         (void)ConptyResizePseudoConsole(pseudo_console_, probe);
     }
 
     try {
         auto strong = get_strong();
-        std::thread([strong = std::move(strong), rows, columns, generation] {
+        std::thread([strong = std::move(strong), rows, columns, probe_columns] {
             Sleep(75);
             std::scoped_lock lock(strong->lifecycle_mutex_);
             if (!strong->pseudo_console_ || strong->closing_ ||
-                strong->resize_generation_.load(std::memory_order_relaxed) != generation) {
+                strong->rows_ != rows ||
+                (strong->columns_ != columns && strong->columns_ != probe_columns)) {
                 return;
             }
+            // TermControl may report the probe width back through
+            // ITerminalConnection::Resize. That callback is part of this
+            // refresh, not an external user resize; restore the adapter's
+            // canonical dimensions before restoring the PTY.
+            strong->rows_ = rows;
+            strong->columns_ = columns;
             const COORD original{
                 static_cast<SHORT>(std::clamp<uint32_t>(columns, 20, SHRT_MAX)),
                 static_cast<SHORT>(std::clamp<uint32_t>(rows, 5, SHRT_MAX))};
@@ -648,7 +661,8 @@ std::wstring ConPtyConnectionBridge::TransformDisplayOutput(
             bool changed = false;
             for (const auto fixed_background : {
                      kCodexInputBackgroundParameters,
-                     kLightInputBackgroundParameters}) {
+                     kLightInputBackgroundParameters,
+                     kCodexNativeLightInputBackgroundParameters}) {
                 size_t background = parameters.find(fixed_background);
                 while (background != std::wstring::npos) {
                     parameters.replace(background, fixed_background.size(),

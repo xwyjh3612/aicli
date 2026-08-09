@@ -9,7 +9,6 @@
 #include <QEventLoop>
 #include <QFrame>
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -42,16 +41,28 @@ namespace {
 constexpr int kTitleBarHeight = 52;
 constexpr int kFooterHeight = 30;
 constexpr int kSidebarWidth = 286;
+// Windows 11's documented sentinel for suppressing the DWM-drawn outer
+// border while retaining shadow, rounded corners, and native resize support.
+constexpr COLORREF kDwmColorNone = static_cast<COLORREF>(0xFFFFFFFEu);
 
 class WorkspaceScrim final : public QWidget {
 public:
     WorkspaceScrim(QWidget* owner, bool lightTheme)
-        : QWidget(owner, Qt::Tool | Qt::FramelessWindowHint |
-                             Qt::NoDropShadowWindowHint),
+        // Keep the scrim inside the main window.  The previous implementation
+        // used Qt::Tool, which creates a second top-level HWND.  Showing that
+        // window briefly deactivates/reactivates the owner and DWM repaints
+        // the owner's border (visible as a one-frame bright flash when a
+        // modal is opened).  A native child still paints above the terminal
+        // child window, but never participates in window activation.
+        : QWidget(owner),
           color_(0, 0, 0, lightTheme ? 88 : 138) {
         setAttribute(Qt::WA_TranslucentBackground, true);
         setAttribute(Qt::WA_ShowWithoutActivating, true);
-        setWindowFlag(Qt::WindowDoesNotAcceptFocus, true);
+        setAttribute(Qt::WA_NativeWindow, true);
+        // The scrim is visual-only.  It must never become the hit-test target
+        // for the modal above it; otherwise a second-level dialog can look
+        // enabled while every input/button click is silently swallowed.
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
         setFocusPolicy(Qt::NoFocus);
     }
 
@@ -119,6 +130,13 @@ void MainWindow::buildUi() {
     search_->setPlaceholderText(QStringLiteral("搜索会话"));
     search_->setClearButtonEnabled(true);
     search_->setFixedHeight(38);
+    // Be explicit because the window also hosts a native XAML/TSF terminal.
+    // The search field must remain a normal Qt IME target for Chinese
+    // composition instead of inheriting terminal-oriented input behaviour.
+    search_->setAttribute(Qt::WA_DontCreateNativeAncestors, true);
+    search_->setAttribute(Qt::WA_NativeWindow, true);
+    search_->setAttribute(Qt::WA_InputMethodEnabled, true);
+    search_->setInputMethodHints(Qt::ImhNone);
     sidebarLayout->addWidget(search_);
 
     auto* sidebarHeader = new QHBoxLayout();
@@ -137,16 +155,19 @@ void MainWindow::buildUi() {
     sidebarLayout->addLayout(sidebarHeader);
 
     project_list_ = new ProjectListWidget(sidebar);
+    project_list_->setObjectName(QStringLiteral("projectList"));
     sidebarLayout->addWidget(project_list_, 1);
     contentLayout->addWidget(sidebar);
 
-    auto* separator = new QFrame(content);
-    separator->setObjectName(QStringLiteral("separator"));
-    separator->setFixedWidth(1);
-    contentLayout->addWidget(separator);
-
     workspace_ = new QStackedWidget(content);
+    workspace_->setObjectName(QStringLiteral("workspace"));
+    workspace_->setFrameShape(QFrame::NoFrame);
+    workspace_->setLineWidth(0);
+    workspace_->setMidLineWidth(0);
+    workspace_->setContentsMargins(0, 0, 0, 0);
     terminal_host_ = new TerminalHostWidget(workspace_);
+    terminal_host_->setObjectName(QStringLiteral("terminalHost"));
+    terminal_host_->setContentsMargins(0, 0, 0, 0);
     workspace_->addWidget(terminal_host_);
 
     prestart_ = new QWidget(workspace_);
@@ -275,7 +296,22 @@ bool MainWindow::Initialize(std::wstring* error) {
 
     QTimer::singleShot(160, this, [this] {
         const auto id = controller_.selectedProjectId();
-        if (!id.empty()) controller_.StartProject(id);
+        if (id.empty()) return;
+
+        // Make Qt finish showing and sizing the native terminal host before
+        // TermControl is created.  Starting it while QStackedWidget still has
+        // the pre-start page visible lets ConPTY run, but the first composed
+        // frame can remain black until the session is restarted.
+        prepareTerminalSurface();
+        setStatus(L"正在恢复上次会话…");
+        QTimer::singleShot(0, this, [this, id] {
+            if (shutting_down_ || controller_.selectedProjectId() != id) {
+                refreshAll();
+                return;
+            }
+            if (controller_.StartProject(id)) showRunningProject(id);
+            refreshAll();
+        });
     });
     return true;
 }
@@ -300,26 +336,69 @@ void MainWindow::applyTheme() {
     qApp->setPalette(palette);
     qApp->setStyleSheet(BuildApplicationStyle(theme));
     applyNativeWindowStyle();
+    // The delegate uses this semantic surface instead of inheriting the
+    // platform's (often black) QPalette::Base.  Keep it explicit so both
+    // themes render unselected project cards with a deliberate background.
+    project_list_->setProperty("projectItemSurface", ToQColor(theme.list_surface));
+    project_list_->setProperty("projectItemText", ToQColor(theme.list_text));
+    QPalette listPalette = project_list_->palette();
+    listPalette.setColor(QPalette::Base, ToQColor(theme.list_surface));
+    listPalette.setColor(QPalette::Window, ToQColor(theme.list_surface));
+    listPalette.setColor(QPalette::Text, ToQColor(theme.list_text));
+    listPalette.setColor(QPalette::AlternateBase, ToQColor(theme.hover));
+    project_list_->setPalette(listPalette);
     project_list_->viewport()->update();
+
+    // The native XAML child is laid out again by Qt after this function
+    // returns (the settings dialog also queues a state refresh).  Repaint the
+    // active Codex viewport once that pass is complete.  Coalesce the two
+    // applyTheme() calls made while the modal is open and after it closes.
+    const auto refresh_serial = ++theme_refresh_serial_;
+    const bool expected_light_theme = controller_.lightTheme();
+    QTimer::singleShot(180, this, [this, refresh_serial, expected_light_theme] {
+        if (shutting_down_ || refresh_serial != theme_refresh_serial_ ||
+            controller_.lightTheme() != expected_light_theme) {
+            return;
+        }
+        controller_.RefreshTerminalViewport();
+    });
 }
 
 void MainWindow::applyNativeWindowStyle() {
     const HWND window = reinterpret_cast<HWND>(winId());
     if (!window) return;
-    const auto& theme = controller_.theme();
+
+    // Qt creates this window with FramelessWindowHint.  Add the native
+    // resize/system-menu bits only once, and only send FRAMECHANGED when the
+    // style actually changed.  Re-sending FRAMECHANGED on every telemetry or
+    // theme refresh makes DWM briefly restore its default resize frame (about
+    // 5 px on the current DPI), which is the intermittent gray rim seen
+    // around all four sides of the window.
+    LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
+    const LONG_PTR requiredStyle = style | WS_THICKFRAME | WS_MINIMIZEBOX |
+                                   WS_MAXIMIZEBOX | WS_SYSMENU;
+    const bool styleChanged = style != requiredStyle;
+    if (styleChanged) {
+        SetWindowLongPtrW(window, GWL_STYLE, requiredStyle);
+    }
+    if (styleChanged || !native_frame_configured_) {
+        // Do not extend glass into the client area.  A one-pixel extension is
+        // enough for DWM to expand it into the full resize frame during an
+        // inactive -> active transition on some Windows configurations.
+        const MARGINS margins{0, 0, 0, 0};
+        DwmExtendFrameIntoClientArea(window, &margins);
+        SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                         SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        native_frame_configured_ = true;
+    }
+
     const BOOL dark = controller_.lightTheme() ? FALSE : TRUE;
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-    const COLORREF border = theme.border;
-    DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR, &border, sizeof(border));
+    DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
+                          &kDwmColorNone, sizeof(kDwmColorNone));
     const DWM_WINDOW_CORNER_PREFERENCE corners = DWMWCP_ROUND;
     DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE, &corners, sizeof(corners));
-    const MARGINS margins{1, 1, 1, 1};
-    DwmExtendFrameIntoClientArea(window, &margins);
-    LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
-    style |= WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
-    SetWindowLongPtrW(window, GWL_STYLE, style);
-    SetWindowPos(window, nullptr, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 }
 
 void MainWindow::refreshAll() {
@@ -341,6 +420,7 @@ void MainWindow::refreshProjectList() {
     refreshing_ = true;
     const QSignalBlocker blocker(project_list_);
     const std::wstring preferred = controller_.selectedProjectId();
+    const bool filtering = !search_->text().trimmed().isEmpty();
     project_list_->clear();
     const auto indices = controller_.VisibleProjectIndices(ToWideString(search_->text()));
     int selectedRow = -1;
@@ -355,13 +435,20 @@ void MainWindow::refreshProjectList() {
         if (project.id == preferred) selectedRow = project_list_->count() - 1;
     }
     project_list_->SetDragEnabledForQuery(search_->text().trimmed().isEmpty());
-    if (selectedRow < 0 && project_list_->count() > 0) selectedRow = 0;
+    // While a user is composing a search query (notably with a Chinese IME),
+    // rebuilding the filtered list must not silently activate its first row.
+    // Activating another TermControl transfers TSF focus away from QLineEdit
+    // and cancels the composition. Leave the list unselected until the user
+    // explicitly clicks a result; clearing the query restores normal selection.
+    if (selectedRow < 0 && project_list_->count() > 0 && !filtering) selectedRow = 0;
     project_list_->setCurrentRow(selectedRow);
     const std::wstring nextId = selectedRow >= 0
         ? ToWideString(project_list_->item(selectedRow)->data(Qt::UserRole).toString())
         : std::wstring{};
     refreshing_ = false;
-    if (nextId != controller_.selectedProjectId()) controller_.SetSelectedProject(nextId);
+    if (!filtering && nextId != controller_.selectedProjectId()) {
+        controller_.SetSelectedProject(nextId);
+    }
 }
 
 const Project* MainWindow::selectedProject() const {
@@ -446,6 +533,7 @@ void MainWindow::startSelectedProject() {
     start_project_->setText(QStringLiteral("正在启动…"));
     setStatus(L"正在启动终端…");
     QApplication::setOverrideCursor(Qt::WaitCursor);
+    prepareTerminalSurface();
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     const bool started = controller_.StartProject(id);
     QApplication::restoreOverrideCursor();
@@ -461,10 +549,7 @@ void MainWindow::startSelectedProject() {
     // session. Switch the Qt stack immediately instead of waiting for a
     // queued state refresh; otherwise the process starts behind the prestart
     // page and the button appears to have done nothing.
-    workspace_->setCurrentWidget(terminal_host_);
-    controller_.ActivateProject(id, true);
-    controller_.SetTerminalVisible(true);
-    controller_.ResizeTerminal(terminal_host_->width(), terminal_host_->height());
+    showRunningProject(id);
     setStatus(L"原生终端已连接");
     refreshAll();
 }
@@ -578,11 +663,9 @@ void MainWindow::showGroupMenu() {
 }
 
 void MainWindow::createGroup() {
-    bool ok = false;
-    const QString name = QInputDialog::getText(
-        this, QStringLiteral("添加分组"), QStringLiteral("分组名称"),
-        QLineEdit::Normal, {}, &ok).trimmed();
-    if (!ok || name.isEmpty()) return;
+    SingleTextDialog dialog(QStringLiteral("创建分组"), QStringLiteral("分组名称"), {}, this);
+    if (executeModal(dialog) != QDialog::Accepted) return;
+    const QString name = dialog.value();
     std::wstring error;
     if (!controller_.store().AddGroup(ToWideString(name), &error)) {
         QMessageBox::warning(this, QStringLiteral("添加分组"), ToQString(error));
@@ -620,12 +703,9 @@ void MainWindow::showSettingsDialog(int page) {
 
 int MainWindow::executeModal(QDialog& dialog) {
     WorkspaceScrim scrim(this, controller_.lightTheme());
-    const QPoint scrimTopLeft = mapToGlobal(QPoint(0, kTitleBarHeight));
-    scrim.setGeometry(QRect(
-        scrimTopLeft, QSize(width(), std::max(1, height() - kTitleBarHeight))));
-    scrim.show();
-    scrim.raise();
-
+    // Configure the dialog before showing the scrim.  Recreating a native
+    // dialog window after another top-level overlay is visible can cause an
+    // extra activation cycle on Windows and a visible DWM border repaint.
     dialog.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint |
                           Qt::NoDropShadowWindowHint);
     dialog.setWindowModality(Qt::WindowModal);
@@ -636,9 +716,16 @@ int MainWindow::executeModal(QDialog& dialog) {
         std::min(desired.height(), std::max(320, height() - 110)));
     const QRect owner = frameGeometry();
     dialog.move(owner.center() - QPoint(dialog.width() / 2, dialog.height() / 2));
+
+    // The scrim is a child of the main window, so use client coordinates and
+    // never show/raise a second top-level HWND.  This keeps the owner active
+    // while the modal is being prepared and removes the border flash.
+    scrim.setGeometry(0, kTitleBarHeight, width(),
+                      std::max(1, height() - kTitleBarHeight));
+    scrim.show();
+    scrim.raise();
     const int result = dialog.exec();
-    scrim.close();
-    activateWindow();
+    scrim.hide();
     return result;
 }
 
@@ -673,6 +760,24 @@ void MainWindow::stopSelectedProject(const std::wstring& status) {
     if (id.empty()) return;
     controller_.StopProject(id, status);
     setStatus(status == L"paused" ? L"会话已暂停" : L"会话已取消");
+}
+
+void MainWindow::prepareTerminalSurface() {
+    workspace_->setCurrentWidget(terminal_host_);
+    terminal_host_->show();
+    terminal_host_->raise();
+    terminal_host_->updateGeometry();
+    controller_.ResizeTerminal(
+        std::max(1, terminal_host_->width()),
+        std::max(1, terminal_host_->height()));
+}
+
+void MainWindow::showRunningProject(const std::wstring& project_id) {
+    if (project_id.empty() || !controller_.HasSession(project_id)) return;
+    prepareTerminalSurface();
+    controller_.ActivateProject(project_id, true);
+    controller_.SetTerminalVisible(true);
+    controller_.ResizeTerminal(terminal_host_->width(), terminal_host_->height());
 }
 
 void MainWindow::openProjectFolder() {
@@ -743,6 +848,20 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
     // HWND from the event handler; use the handle supplied by Windows.
     const HWND window = native->hwnd;
     switch (native->message) {
+    case WM_MOUSEACTIVATE:
+        // Deliver the first title-bar click even when the window begins in
+        // the background.  The client-side drag handler needs that press to
+        // start moving immediately instead of requiring a second gesture.
+        *result = MA_ACTIVATE;
+        return true;
+    case WM_NCACTIVATE:
+        // The whole title bar and frame are client-rendered.  Never let the
+        // default procedure paint an active/inactive non-client frame: that
+        // is the 5 px gray rim shown when the window returns to the front.
+        DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
+                              &kDwmColorNone, sizeof(kDwmColorNone));
+        *result = TRUE;
+        return true;
     case WM_NCCALCSIZE:
         if (native->wParam) {
             // Qt's FramelessWindowHint initially creates a full-client HWND.
@@ -779,12 +898,11 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
         }
         const QPoint local = mapFromGlobal(QPoint(screen.x, screen.y));
         if (local.y() >= 0 && local.y() < kTitleBarHeight) {
-            QWidget* child = childAt(local);
-            if (child && (qobject_cast<QAbstractButton*>(child) || child->focusPolicy() != Qt::NoFocus)) {
-                *result = HTCLIENT;
-            } else {
-                *result = HTCAPTION;
-            }
+            // TitleBarWidget performs smooth client-side dragging.  Returning
+            // HTCAPTION would hand the gesture back to Windows and re-enter
+            // the native outline-only move loop when the window starts in the
+            // background.  The resize strips above remain fully native.
+            *result = HTCLIENT;
             return true;
         }
         *result = HTCLIENT;
@@ -806,6 +924,7 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
         break;
     }
     case WM_DWMCOMPOSITIONCHANGED:
+        native_frame_configured_ = false;
         applyNativeWindowStyle();
         break;
     case WM_SIZE:

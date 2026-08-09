@@ -232,6 +232,7 @@ Claude : claude --dangerously-skip-permissions --continue
 - 中文输入、复制、粘贴、文本选择；
 - Windows Terminal 原生滚动和全屏 TUI；
 - Codex 恢复会话只使用 TermControl 原生 scrollback；鼠标滚轮、触控板滚动和 Ctrl+滚轮统一交给 TermControl 的原生 `OnMouseWheel` 处理，宿主不得自行计算缓冲偏移；不得由宿主自动打开 Codex Transcript，不显示 Transcript 的上下箭头、PgUp/PgDn 等分页提示，也不得把滚轮动作转换为发送给 CLI 的按键；
+- 原生滚动条沿用 Windows Terminal 的 TermControl 模板：鼠标离开时保持细窄的 thumb 指示，指针靠近右侧滚动区域时展开为可抓取的完整 thumb/track；XAML Island 只同步视觉状态，不绘制第二条 Qt 滚动条、不覆盖终端内容。
 - Codex/Claude ANSI、光标和弱化文字颜色；
 - 最小化后恢复、窗口缩放和最大化；
 - 终端输出同时写入 SQLite 事件并通过 WSS 推送给手机。

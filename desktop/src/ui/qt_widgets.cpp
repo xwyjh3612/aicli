@@ -2,11 +2,15 @@
 
 #include <QApplication>
 #include <QDrag>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QHBoxLayout>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
 #include <QStyle>
+#include <QVariant>
 #include <QVBoxLayout>
 #include <QWindow>
 
@@ -72,6 +76,9 @@ QComboBox::drop-down { width: 28px; border: none; }
 QComboBox QAbstractItemView { background: %7; color: %8; border: 1px solid %9; selection-background-color: %17; padding: 4px; }
 QListWidget { background: %7; color: %8; border: none; outline: none; padding: 0; }
 QListWidget::item { border: none; padding: 0; }
+QListWidget#projectList { background: %20; color: %21; border: none; }
+QWidget#workspace, QStackedWidget#workspace,
+QWidget#terminalHost { background: transparent; border: none; padding: 0; }
 QLabel#sidebarTitle { color: %8; }
 QLabel#mutedLabel, QLabel#footerLabel { color: %19; }
 QFrame#separator { background: %9; }
@@ -81,6 +88,35 @@ QScrollBar::handle:vertical:hover { background: %11; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 QDialog { background: %1; color: %2; border: 1px solid %9; border-radius: 14px; }
+  QDialog#settingsDialog, QDialog#bindingDialog { background: transparent; border: none; border-radius: 0; }
+  QDialog#projectDialog, QDialog#nameCommandDialog { background: %1; }
+  QWidget#settingsSurface, QWidget#bindingSurface { background: %1; color: %8; border: 1px solid %9; border-radius: 14px; }
+  QWidget#settingsHeader, QWidget#settingsBody, QStackedWidget#settingsPages,
+  QWidget#settingsPage {
+      background: transparent; color: %8; border: none; border-radius: 0;
+  }
+  QWidget#dialogSurface { background: %1; color: %8; border: none; border-radius: 0; }
+  QWidget#settingsNavigationPanel {
+      background: %7; border: none; border-right: 1px solid %9;
+      border-bottom-left-radius: 13px;
+  }
+  QListWidget#settingsNavigation { background: transparent; border: none; }
+QListWidget#settingsNavigation::item { min-height: 38px; padding: 0 14px; border-radius: 7px; }
+QListWidget#settingsNavigation::item:hover { background: %10; }
+QListWidget#settingsNavigation::item:selected { background: %17; color: %8; }
+QListWidget#settingsProjectTypes::item, QListWidget#settingsGroups::item {
+    padding: 0 12px; border-radius: 7px;
+}
+QListWidget#settingsProjectTypes::item:hover, QListWidget#settingsGroups::item:hover {
+    background: %10;
+}
+QListWidget#settingsProjectTypes::item:selected, QListWidget#settingsGroups::item:selected {
+    background: %17; color: %8;
+}
+QDialog QLineEdit, QDialog QComboBox { min-height: 42px; padding: 0 14px; }
+QDialog QPushButton { min-height: 40px; padding: 0 18px; }
+QDialog QPushButton#captionButton { min-height: 0; padding: 0; }
+QDialogButtonBox QPushButton { min-width: 100px; }
 QDialog QLabel { color: %8; }
 QDialog QGroupBox { border: 1px solid %9; border-radius: 10px; margin-top: 12px; padding: 12px; }
 QDialog QTabWidget::pane { border: 1px solid %9; border-radius: 8px; }
@@ -91,7 +127,71 @@ QToolTip { background: %7; color: %8; border: 1px solid %9; padding: 5px; }
         .arg(Css(window), Css(text), Css(ToQColor(theme.titlebar)), Css(accentStrong),
              Css(accent), Css(ToQColor(theme.titlebar_text)), Css(surface), Css(text),
              Css(border), Css(hover), Css(accent), Css(pressed), Css(accentStrong),
-             Css(accent), Css(accent), Css(field), Css(selection), Css(fieldFocus), Css(muted));
+             Css(accent), Css(accent), Css(field), Css(selection), Css(fieldFocus), Css(muted),
+             Css(ToQColor(theme.list_surface)), Css(ToQColor(theme.list_text)));
+}
+
+SingleTextDialog::SingleTextDialog(const QString& title,
+                                   const QString& label,
+                                   const QString& initial,
+                                   QWidget* parent)
+    : QDialog(parent) {
+    setObjectName(QStringLiteral("singleTextDialog"));
+    setModal(true);
+    setMinimumWidth(440);
+    setAttribute(Qt::WA_StyledBackground, true);
+
+    auto* shell = new QVBoxLayout(this);
+    shell->setContentsMargins(0, 0, 0, 0);
+    shell->setSpacing(0);
+
+    auto* surface = new QWidget(this);
+    surface->setObjectName(QStringLiteral("dialogSurface"));
+    surface->setAttribute(Qt::WA_StyledBackground, true);
+    surface->setAutoFillBackground(true);
+    shell->addWidget(surface);
+
+    auto* root = new QVBoxLayout(surface);
+    root->setContentsMargins(24, 22, 24, 20);
+    root->setSpacing(14);
+    auto* heading = new QLabel(title, surface);
+    QFont headingFont = heading->font();
+    headingFont.setPixelSize(20);
+    headingFont.setWeight(QFont::DemiBold);
+    heading->setFont(headingFont);
+    root->addWidget(heading);
+
+    auto* form = new QFormLayout();
+    form->setVerticalSpacing(10);
+    field_ = new QLineEdit(initial, surface);
+    field_->setMinimumHeight(42);
+    field_->setPlaceholderText(label);
+    form->addRow(label, field_);
+    root->addLayout(form);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Cancel | QDialogButtonBox::Save, surface);
+    buttons->button(QDialogButtonBox::Save)->setObjectName(QStringLiteral("primaryButton"));
+    buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("确定"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    for (auto* button : buttons->buttons()) button->setMinimumSize(100, 40);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, this, &SingleTextDialog::acceptDialog);
+    root->addWidget(buttons);
+    field_->setFocus();
+    field_->selectAll();
+}
+
+QString SingleTextDialog::value() const {
+    return field_ ? field_->text().trimmed() : QString();
+}
+
+void SingleTextDialog::acceptDialog() {
+    if (value().isEmpty()) {
+        if (field_) field_->setFocus();
+        return;
+    }
+    accept();
 }
 
 TerminalHostWidget::TerminalHostWidget(QWidget* parent) : QWidget(parent) {
@@ -128,6 +228,10 @@ void ProjectItemDelegate::paint(QPainter* painter,
     const bool hovered = option.state & QStyle::State_MouseOver;
     const QPalette palette = option.palette;
     QColor fill = PaletteColor(option, QPalette::Base);
+    if (option.widget) {
+        const QVariant surface = option.widget->property("projectItemSurface");
+        if (surface.canConvert<QColor>()) fill = surface.value<QColor>();
+    }
     QColor stroke = PaletteColor(option, QPalette::Mid);
     if (selected) {
         fill = PaletteColor(option, QPalette::Highlight);
@@ -135,9 +239,14 @@ void ProjectItemDelegate::paint(QPainter* painter,
     } else if (hovered) {
         fill = palette.color(QPalette::AlternateBase);
     }
-    painter->setPen(QPen(stroke, 1));
+    QPen cardPen(stroke, 1.0);
+    // Cosmetic + half-pixel alignment keeps the outline to exactly one
+    // device pixel.  Drawing a 1 px pen on an integer rectangle straddles two
+    // pixels under antialiasing and looks like a thicker double border.
+    cardPen.setCosmetic(true);
+    painter->setPen(cardPen);
     painter->setBrush(fill);
-    painter->drawRoundedRect(card, 2, 2);
+    painter->drawRoundedRect(QRectF(card).adjusted(0.5, 0.5, -0.5, -0.5), 2, 2);
 
     const bool running = index.data(Qt::UserRole + 2).toBool();
     const QColor stateColor = running ? QColor(73, 203, 145)
@@ -166,7 +275,12 @@ void ProjectItemDelegate::paint(QPainter* painter,
 
     QString name = index.data(Qt::DisplayRole).toString();
     if (name.isEmpty()) name = QStringLiteral("未命名项目");
-    painter->setPen(palette.color(QPalette::Text));
+    QColor itemText = palette.color(QPalette::Text);
+    if (option.widget) {
+        const QVariant text = option.widget->property("projectItemText");
+        if (text.canConvert<QColor>()) itemText = text.value<QColor>();
+    }
+    painter->setPen(itemText);
     QFont font = option.font;
     font.setPixelSize(14);
     painter->setFont(font);
@@ -186,6 +300,7 @@ ProjectListWidget::ProjectListWidget(QWidget* parent) : QListWidget(parent) {
     setDragDropMode(QAbstractItemView::InternalMove);
     setDefaultDropAction(Qt::MoveAction);
     setMouseTracking(true);
+    viewport()->setMouseTracking(true);
     setSpacing(2);
     setUniformItemSizes(true);
     setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
@@ -195,16 +310,51 @@ ProjectListWidget::ProjectListWidget(QWidget* parent) : QListWidget(parent) {
 void ProjectListWidget::SetDragEnabledForQuery(bool enabled) {
     dragAllowed_ = enabled;
     setDragEnabled(enabled);
+    if (!enabled) {
+        unsetCursor();
+        viewport()->unsetCursor();
+    }
+}
+
+void ProjectListWidget::updateGripCursor(const QPoint& position) {
+    const auto* item = itemAt(position);
+    bool over_grip = false;
+    if (dragAllowed_ && item) {
+        const QRect row = visualItemRect(item);
+        // Keep the hit area slightly wider than the three painted bars.  This
+        // makes the native four-way move cursor easy to acquire without
+        // turning the whole item into a drag handle.
+        const QRect grip(row.left(), row.top(), 34, row.height());
+        over_grip = grip.contains(position);
+    }
+    const auto shape = over_grip || dragArmed_ ? Qt::SizeAllCursor : Qt::ArrowCursor;
+    setCursor(shape);
+    viewport()->setCursor(shape);
 }
 
 void ProjectListWidget::mousePressEvent(QMouseEvent* event) {
     dragArmed_ = event->button() == Qt::LeftButton && event->position().x() <= 34;
+    updateGripCursor(event->position().toPoint());
     QListWidget::mousePressEvent(event);
+}
+
+void ProjectListWidget::mouseMoveEvent(QMouseEvent* event) {
+    updateGripCursor(event->position().toPoint());
+    QListWidget::mouseMoveEvent(event);
 }
 
 void ProjectListWidget::mouseReleaseEvent(QMouseEvent* event) {
     QListWidget::mouseReleaseEvent(event);
     if (event->button() == Qt::LeftButton) dragArmed_ = false;
+    updateGripCursor(event->position().toPoint());
+}
+
+void ProjectListWidget::leaveEvent(QEvent* event) {
+    if (!dragArmed_) {
+        unsetCursor();
+        viewport()->unsetCursor();
+    }
+    QListWidget::leaveEvent(event);
 }
 
 void ProjectListWidget::startDrag(Qt::DropActions supportedActions) {
@@ -279,14 +429,71 @@ void TitleBarWidget::mousePressEvent(QMouseEvent* event) {
         QWidget::mousePressEvent(event);
         return;
     }
-    if (auto* handle = window()->windowHandle()) {
-        handle->startSystemMove();
-    }
+    // Do not use QWindow::startSystemMove() here.  On Windows that enters the
+    // native move loop; when this app is initially inactive (or the system's
+    // "show window contents while dragging" option is disabled), DWM draws a
+    // thick gray/white wire-frame around the window.  Track the pointer and
+    // move the complete window ourselves so the rendered window remains the
+    // only drag feedback.
+    drag_pending_ = true;
+    dragging_ = false;
+    drag_press_global_ = event->globalPosition().toPoint();
+    drag_offset_ = drag_press_global_ - window()->frameGeometry().topLeft();
     event->accept();
+}
+
+void TitleBarWidget::mouseMoveEvent(QMouseEvent* event) {
+    if (!(event->buttons() & Qt::LeftButton)) {
+        drag_pending_ = false;
+        dragging_ = false;
+        QWidget::mouseMoveEvent(event);
+        return;
+    }
+
+    const QPoint global = event->globalPosition().toPoint();
+    if (drag_pending_ &&
+        (global - drag_press_global_).manhattanLength() >= QApplication::startDragDistance()) {
+        drag_pending_ = false;
+        dragging_ = true;
+
+        if (window()->isMaximized()) {
+            const QRect normal = window()->normalGeometry();
+            const int currentWidth = std::max(1, window()->width());
+            const qreal horizontalRatio = std::clamp(
+                static_cast<qreal>(drag_press_global_.x() - window()->frameGeometry().left()) /
+                    static_cast<qreal>(currentWidth),
+                0.08, 0.92);
+            window()->showNormal();
+            const QPoint restoredTopLeft(
+                global.x() - static_cast<int>(normal.width() * horizontalRatio),
+                global.y() - std::min(height() / 2, 24));
+            window()->move(restoredTopLeft);
+            drag_offset_ = global - restoredTopLeft;
+        }
+    }
+
+    if (dragging_) {
+        window()->move(global - drag_offset_);
+        event->accept();
+        return;
+    }
+    QWidget::mouseMoveEvent(event);
+}
+
+void TitleBarWidget::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        drag_pending_ = false;
+        dragging_ = false;
+        event->accept();
+        return;
+    }
+    QWidget::mouseReleaseEvent(event);
 }
 
 void TitleBarWidget::mouseDoubleClickEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
+        drag_pending_ = false;
+        dragging_ = false;
         if (window()->isMaximized()) window()->showNormal();
         else window()->showMaximized();
         event->accept();

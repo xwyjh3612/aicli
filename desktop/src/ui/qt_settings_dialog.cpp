@@ -2,8 +2,8 @@
 
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -24,13 +24,25 @@ public:
                       const QString& command,
                       QWidget* parent)
         : QDialog(parent) {
+        setObjectName(QStringLiteral("nameCommandDialog"));
+        setAttribute(Qt::WA_StyledBackground, true);
+        setAutoFillBackground(true);
         setWindowTitle(title);
         setModal(true);
         setMinimumWidth(480);
-        auto* root = new QVBoxLayout(this);
+        auto* shell = new QVBoxLayout(this);
+        shell->setContentsMargins(0, 0, 0, 0);
+        shell->setSpacing(0);
+        auto* surface = new QWidget(this);
+        surface->setObjectName(QStringLiteral("dialogSurface"));
+        surface->setAttribute(Qt::WA_StyledBackground, true);
+        surface->setAutoFillBackground(true);
+        shell->addWidget(surface);
+
+        auto* root = new QVBoxLayout(surface);
         root->setContentsMargins(24, 22, 24, 20);
         root->setSpacing(14);
-        auto* heading = new QLabel(title, this);
+        auto* heading = new QLabel(title, surface);
         QFont font = heading->font();
         font.setPixelSize(20);
         font.setWeight(QFont::DemiBold);
@@ -38,15 +50,21 @@ public:
         root->addWidget(heading);
         auto* form = new QFormLayout();
         form->setVerticalSpacing(12);
-        name_ = new QLineEdit(name, this);
+        name_ = new QLineEdit(name, surface);
+        name_->setMinimumHeight(42);
         name_->setPlaceholderText(QStringLiteral("名称"));
-        command_ = new QLineEdit(command, this);
+        command_ = new QLineEdit(command, surface);
+        command_->setMinimumHeight(42);
         command_->setPlaceholderText(QStringLiteral("启动命令"));
         form->addRow(QStringLiteral("名称"), name_);
         form->addRow(QStringLiteral("启动命令"), command_);
         root->addLayout(form);
-        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Save, this);
+        auto* buttons = new QDialogButtonBox(
+            QDialogButtonBox::Cancel | QDialogButtonBox::Save, surface);
         buttons->button(QDialogButtonBox::Save)->setObjectName(QStringLiteral("primaryButton"));
+        buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("确定"));
+        buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+        for (auto* button : buttons->buttons()) button->setMinimumSize(100, 40);
         connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
         connect(buttons, &QDialogButtonBox::accepted, this, [this] {
             if (name_->text().trimmed().isEmpty() || command_->text().trimmed().isEmpty()) {
@@ -71,6 +89,9 @@ QWidget* PageWithHeading(const QString& title,
                          QVBoxLayout*& layout,
                          QWidget* parent) {
     auto* page = new QWidget(parent);
+    page->setObjectName(QStringLiteral("settingsPage"));
+    page->setAttribute(Qt::WA_StyledBackground, true);
+    page->setAutoFillBackground(false);
     layout = new QVBoxLayout(page);
     layout->setContentsMargins(28, 24, 28, 24);
     layout->setSpacing(14);
@@ -97,6 +118,7 @@ QHBoxLayout* ActionRow(QWidget* parent,
     add->setObjectName(QStringLiteral("primaryButton"));
     edit = new QPushButton(QStringLiteral("编辑"), parent);
     remove = new QPushButton(QStringLiteral("删除"), parent);
+    for (auto* button : {add, edit, remove}) button->setMinimumSize(100, 40);
     row->addWidget(add);
     row->addWidget(edit);
     row->addWidget(remove);
@@ -110,6 +132,12 @@ SettingsDialog::SettingsDialog(app::DesktopController& controller,
                                ThemeCallback themeChanged,
                                QWidget* parent)
     : QDialog(parent), controller_(controller), theme_changed_(std::move(themeChanged)) {
+    setObjectName(QStringLiteral("settingsDialog"));
+    setAttribute(Qt::WA_StyledBackground, true);
+    // The outer frameless window is translucent. Filling its palette paints a
+    // rectangular layer behind settingsSurface, which is especially visible
+    // beneath the rounded corners in the light theme.
+    setAutoFillBackground(false);
     setWindowTitle(QStringLiteral("设置"));
     setModal(true);
     resize(900, 620);
@@ -119,8 +147,20 @@ SettingsDialog::SettingsDialog(app::DesktopController& controller,
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    auto* header = new QWidget(this);
-    header->setObjectName(QStringLiteral("titleBar"));
+    // One surface owns the complete dialog silhouette.  Header, navigation,
+    // and page content are deliberately flat children; giving each child its
+    // own radius creates visible seams and double corners at the joins.
+    auto* surface = new QWidget(this);
+    surface->setObjectName(QStringLiteral("settingsSurface"));
+    surface->setAttribute(Qt::WA_StyledBackground, true);
+    surface->setAutoFillBackground(true);
+    auto* surfaceLayout = new QVBoxLayout(surface);
+    surfaceLayout->setContentsMargins(1, 1, 1, 1);
+    surfaceLayout->setSpacing(0);
+    root->addWidget(surface);
+
+    auto* header = new QWidget(surface);
+    header->setObjectName(QStringLiteral("settingsHeader"));
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(22, 12, 12, 12);
     auto* title = new QLabel(QStringLiteral("设置"), header);
@@ -135,28 +175,53 @@ SettingsDialog::SettingsDialog(app::DesktopController& controller,
     headerLayout->addWidget(title);
     headerLayout->addStretch(1);
     headerLayout->addWidget(close);
-    root->addWidget(header);
+    surfaceLayout->addWidget(header);
 
-    auto* body = new QWidget(this);
+    auto* body = new QWidget(surface);
+    body->setObjectName(QStringLiteral("settingsBody"));
+    body->setAttribute(Qt::WA_StyledBackground, true);
+    body->setAutoFillBackground(false);
     auto* bodyLayout = new QHBoxLayout(body);
     bodyLayout->setContentsMargins(0, 0, 0, 0);
     bodyLayout->setSpacing(0);
-    navigation_ = new QListWidget(body);
-    navigation_->setFixedWidth(210);
+    auto* navigationPanel = new QWidget(body);
+    navigationPanel->setObjectName(QStringLiteral("settingsNavigationPanel"));
+    navigationPanel->setAttribute(Qt::WA_StyledBackground, true);
+    navigationPanel->setAutoFillBackground(true);
+    navigationPanel->setFixedWidth(236);
+    auto* navigationLayout = new QVBoxLayout(navigationPanel);
+    navigationLayout->setContentsMargins(0, 0, 0, 0);
+    navigationLayout->setSpacing(0);
+
+    navigation_ = new QListWidget(navigationPanel);
+    navigation_->setObjectName(QStringLiteral("settingsNavigation"));
+    navigation_->setFrameShape(QFrame::NoFrame);
+    navigation_->viewport()->setAutoFillBackground(false);
     navigation_->addItems({QStringLiteral("外观"), QStringLiteral("访问地址"),
                            QStringLiteral("项目类型"), QStringLiteral("分组管理"),
                            QStringLiteral("已绑定设备")});
     navigation_->setCurrentRow(0);
-    navigation_->setSpacing(4);
+    navigation_->setSpacing(6);
+    navigation_->setUniformItemSizes(true);
+    QFont navigationFont = navigation_->font();
+    navigationFont.setPixelSize(15);
+    navigation_->setFont(navigationFont);
+    navigationLayout->addWidget(navigation_);
     pages_ = new QStackedWidget(body);
+    pages_->setObjectName(QStringLiteral("settingsPages"));
+    pages_->setFrameShape(QFrame::NoFrame);
+    pages_->setLineWidth(0);
+    pages_->setMidLineWidth(0);
+    pages_->setAttribute(Qt::WA_StyledBackground, true);
+    pages_->setAutoFillBackground(false);
     pages_->addWidget(buildAppearancePage());
     pages_->addWidget(buildNetworkPage());
     pages_->addWidget(buildProjectTypesPage());
     pages_->addWidget(buildGroupsPage());
     pages_->addWidget(buildDevicesPage());
-    bodyLayout->addWidget(navigation_);
+    bodyLayout->addWidget(navigationPanel);
     bodyLayout->addWidget(pages_, 1);
-    root->addWidget(body, 1);
+    surfaceLayout->addWidget(body, 1);
     connect(navigation_, &QListWidget::currentRowChanged, this, &SettingsDialog::selectPage);
 
     reloadProjectTypes();
@@ -207,6 +272,9 @@ QWidget* SettingsDialog::buildNetworkPage() {
     listen_port_ = new QLineEdit(ToQString(controller_.store().GetSetting(L"listen_port", L"4280")), page);
     local_address_ = new QLineEdit(ToQString(controller_.store().GetSetting(L"local_address")), page);
     remote_address_ = new QLineEdit(ToQString(controller_.store().GetSetting(L"remote_address")), page);
+    for (auto* field : {listen_address_, listen_port_, local_address_, remote_address_}) {
+        field->setMinimumHeight(42);
+    }
     form->addRow(QStringLiteral("监听地址"), listen_address_);
     form->addRow(QStringLiteral("监听端口"), listen_port_);
     form->addRow(QStringLiteral("本地访问地址"), local_address_);
@@ -215,6 +283,7 @@ QWidget* SettingsDialog::buildNetworkPage() {
     auto* row = new QHBoxLayout();
     auto* save = new QPushButton(QStringLiteral("保存并重启 Agent"), page);
     save->setObjectName(QStringLiteral("primaryButton"));
+    save->setMinimumSize(180, 40);
     network_status_ = new QLabel(page);
     network_status_->setObjectName(QStringLiteral("mutedLabel"));
     row->addWidget(save);
@@ -233,7 +302,10 @@ QWidget* SettingsDialog::buildProjectTypesPage() {
         QStringLiteral("Codex 和 Claude 是预置类型，也可以修改名称和启动命令。"),
         layout, pages_);
     project_types_ = new QListWidget(page);
+    project_types_->setObjectName(QStringLiteral("settingsProjectTypes"));
     project_types_->setAlternatingRowColors(true);
+    project_types_->setUniformItemSizes(true);
+    project_types_->setSpacing(4);
     layout->addWidget(project_types_, 1);
     QPushButton *add{}, *edit{}, *remove{};
     layout->addLayout(ActionRow(page, add, edit, remove));
@@ -250,7 +322,10 @@ QWidget* SettingsDialog::buildGroupsPage() {
         QStringLiteral("分组管理"), QStringLiteral("分组用于整理项目，项目可以随时移动到其他分组。"),
         layout, pages_);
     groups_ = new QListWidget(page);
+    groups_->setObjectName(QStringLiteral("settingsGroups"));
     groups_->setAlternatingRowColors(true);
+    groups_->setUniformItemSizes(true);
+    groups_->setSpacing(4);
     layout->addWidget(groups_, 1);
     QPushButton *add{}, *edit{}, *remove{};
     layout->addLayout(ActionRow(page, add, edit, remove));
@@ -328,6 +403,7 @@ void SettingsDialog::reloadProjectTypes() {
     for (const auto& type : controller_.store().LoadProjectTypes()) {
         auto* item = new QListWidgetItem(
             ToQString(type.name) + QStringLiteral("\n") + ToQString(type.default_command), project_types_);
+        item->setSizeHint(QSize(0, 58));
         item->setData(Qt::UserRole, QVariant::fromValue<qlonglong>(type.id));
         item->setData(Qt::UserRole + 1, type.builtin);
         item->setToolTip(ToQString(type.default_command));
@@ -340,6 +416,7 @@ void SettingsDialog::reloadGroups() {
         auto* item = new QListWidgetItem(
             ToQString(group.name) + QStringLiteral("  (") +
                 QString::number(controller_.ProjectCount(group.name)) + QStringLiteral(")"), groups_);
+        item->setSizeHint(QSize(0, 44));
         item->setData(Qt::UserRole, QVariant::fromValue<qlonglong>(group.id));
         item->setData(Qt::UserRole + 1, group.builtin);
         item->setData(Qt::UserRole + 2, ToQString(group.name));
@@ -401,10 +478,12 @@ void SettingsDialog::deleteProjectType() {
 }
 
 void SettingsDialog::addGroup() {
-    bool ok = false;
-    const QString name = QInputDialog::getText(this, QStringLiteral("新增分组"),
-                                               QStringLiteral("分组名称"), QLineEdit::Normal, {}, &ok).trimmed();
-    if (!ok || name.isEmpty()) return;
+    SingleTextDialog dialog(QStringLiteral("新增分组"), QStringLiteral("分组名称"), {}, this);
+    dialog.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint |
+                          Qt::NoDropShadowWindowHint);
+    dialog.setAttribute(Qt::WA_TranslucentBackground, true);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QString name = dialog.value();
     std::wstring error;
     if (!controller_.store().AddGroup(ToWideString(name), &error)) { showError(error); return; }
     controller_.ReloadModels();
@@ -416,11 +495,13 @@ void SettingsDialog::editGroup() {
     const auto values = controller_.store().LoadGroups();
     if (row < 0 || row >= static_cast<int>(values.size())) return;
     const auto& group = values[static_cast<std::size_t>(row)];
-    bool ok = false;
-    const QString name = QInputDialog::getText(this, QStringLiteral("编辑分组"),
-                                               QStringLiteral("分组名称"), QLineEdit::Normal,
-                                               ToQString(group.name), &ok).trimmed();
-    if (!ok || name.isEmpty()) return;
+    SingleTextDialog dialog(QStringLiteral("编辑分组"), QStringLiteral("分组名称"),
+                            ToQString(group.name), this);
+    dialog.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint |
+                          Qt::NoDropShadowWindowHint);
+    dialog.setAttribute(Qt::WA_TranslucentBackground, true);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QString name = dialog.value();
     std::wstring error;
     if (!controller_.store().RenameGroup(group.id, ToWideString(name), &error)) { showError(error); return; }
     controller_.ReloadModels();

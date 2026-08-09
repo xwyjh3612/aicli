@@ -39,6 +39,7 @@ public:
     void StopAll();
     void SetVisible(bool visible);
     void SetTheme(bool light);
+    void RefreshTerminalViewport();
     void Resize(RECT rc);
     HWND Window() const;
     bool Active() const;

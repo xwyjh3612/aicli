@@ -18,28 +18,43 @@ namespace aicli::ui::qt {
 
 BindingDialog::BindingDialog(app::DesktopController& controller, QWidget* parent)
     : QDialog(parent), controller_(controller) {
+    setObjectName(QStringLiteral("bindingDialog"));
+    setAttribute(Qt::WA_StyledBackground, true);
+    // executeModal() makes the top-level dialog translucent.  Keep that outer
+    // window transparent and let one styled child own the complete modal
+    // background/border, matching the project and settings dialogs.
+    setAutoFillBackground(false);
     setWindowTitle(QStringLiteral("绑定 Android 手机"));
     setModal(true);
     resize(820, 560);
     setMinimumSize(720, 520);
 
-    auto* root = new QVBoxLayout(this);
+    auto* shell = new QVBoxLayout(this);
+    shell->setContentsMargins(0, 0, 0, 0);
+    shell->setSpacing(0);
+    auto* surface = new QWidget(this);
+    surface->setObjectName(QStringLiteral("bindingSurface"));
+    surface->setAttribute(Qt::WA_StyledBackground, true);
+    surface->setAutoFillBackground(true);
+    shell->addWidget(surface);
+
+    auto* root = new QVBoxLayout(surface);
     root->setContentsMargins(28, 24, 28, 22);
     root->setSpacing(12);
-    auto* heading = new QLabel(QStringLiteral("绑定 Android 手机"), this);
+    auto* heading = new QLabel(QStringLiteral("绑定 Android 手机"), surface);
     QFont font = heading->font();
     font.setPixelSize(21);
     font.setWeight(QFont::DemiBold);
     heading->setFont(font);
     root->addWidget(heading);
     auto* subtitle = new QLabel(
-        QStringLiteral("请使用 AI CLI App 内的扫码入口；电脑只需确认这一次。"), this);
+        QStringLiteral("请使用 AI CLI App 内的扫码入口；电脑只需确认这一次。"), surface);
     subtitle->setObjectName(QStringLiteral("mutedLabel"));
     root->addWidget(subtitle);
 
     auto* content = new QHBoxLayout();
     content->setSpacing(28);
-    qr_ = new QLabel(this);
+    qr_ = new QLabel(surface);
     qr_->setFixedSize(360, 360);
     qr_->setAlignment(Qt::AlignCenter);
     qr_->setStyleSheet(QStringLiteral("background:#f5f7fa;border-radius:8px;"));
@@ -47,17 +62,17 @@ BindingDialog::BindingDialog(app::DesktopController& controller, QWidget* parent
 
     auto* information = new QVBoxLayout();
     information->setSpacing(10);
-    auto* wait = new QLabel(QStringLiteral("等待手机扫码"), this);
+    auto* wait = new QLabel(QStringLiteral("等待手机扫码"), surface);
     QFont waitFont = wait->font();
     waitFont.setPixelSize(17);
     waitFont.setWeight(QFont::DemiBold);
     wait->setFont(waitFont);
     information->addWidget(wait);
-    details_ = new QLabel(this);
+    details_ = new QLabel(surface);
     details_->setObjectName(QStringLiteral("mutedLabel"));
     details_->setWordWrap(true);
     information->addWidget(details_);
-    device_ = new QLabel(this);
+    device_ = new QLabel(surface);
     device_->setWordWrap(true);
     information->addWidget(device_);
     information->addStretch(1);
@@ -65,11 +80,11 @@ BindingDialog::BindingDialog(app::DesktopController& controller, QWidget* parent
     root->addLayout(content, 1);
 
     auto* actions = new QHBoxLayout();
-    auto* refresh = new QPushButton(QStringLiteral("刷新二维码"), this);
-    approve_ = new QPushButton(QStringLiteral("确认绑定"), this);
+    auto* refresh = new QPushButton(QStringLiteral("刷新二维码"), surface);
+    approve_ = new QPushButton(QStringLiteral("确认绑定"), surface);
     approve_->setObjectName(QStringLiteral("primaryButton"));
-    reject_ = new QPushButton(QStringLiteral("拒绝"), this);
-    auto* close = new QPushButton(QStringLiteral("关闭"), this);
+    reject_ = new QPushButton(QStringLiteral("拒绝"), surface);
+    auto* close = new QPushButton(QStringLiteral("关闭"), surface);
     actions->addWidget(refresh);
     actions->addStretch(1);
     actions->addWidget(approve_);

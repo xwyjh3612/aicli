@@ -168,7 +168,15 @@ bool DesktopController::AttachTerminal(HWND parent, int width, int height,
                                        std::wstring* error) {
     terminal_owner_ = parent;
     RECT rect{0, 0, std::max(1, width), std::max(1, height)};
-    if (terminal_.Attach(parent, rect)) return true;
+    if (terminal_.Attach(parent, rect)) {
+        // InitializePersistentState() has already loaded the persisted theme,
+        // while XamlIslandAdapter starts with a conservative dark default.
+        // Synchronize the island before the first project/session is created;
+        // otherwise a light-theme app reopened from disk gets a black shell
+        // until the user toggles the theme again.
+        terminal_.SetTheme(theme_manager_.light());
+        return true;
+    }
     if (error) {
         *error = terminal_.LastError().empty()
             ? L"无法初始化 Windows Terminal 控件"
@@ -581,6 +589,10 @@ void DesktopController::SetTheme(bool light) {
     theme_manager_.LoadMode(light ? ui::ThemeMode::Light : ui::ThemeMode::Dark);
     terminal_.SetTheme(light);
     NotifyState();
+}
+
+void DesktopController::RefreshTerminalViewport() {
+    terminal_.RefreshTerminalViewport();
 }
 
 std::size_t DesktopController::BoundDeviceCount() {

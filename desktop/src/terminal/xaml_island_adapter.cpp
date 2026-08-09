@@ -37,6 +37,12 @@
 namespace aicli::terminal {
 using aicli::app::LocalActivationFactory;
 constexpr UINT kXamlIslandSubclassId = 0xA1C11;
+// The XAML island does not always forward PointerEntered/PointerExited to the
+// WinUI ScrollBar when it is hosted by a native Qt child window.  A lightweight
+// timer lets us mirror the stock Windows Terminal hover state from the global
+// pointer position without painting a second scrollbar or touching ConPTY.
+constexpr UINT_PTR kScrollbarHoverTimerId = 0xA1C12;
+constexpr UINT kScrollbarHoverTimerMs = 80;
 
 namespace {
 
@@ -135,6 +141,13 @@ LRESULT CALLBACK XamlIslandSubclassProc(
 
 struct XamlIslandAdapter::Impl {
 public:
+    ~Impl() {
+        if (hwnd_) {
+            KillTimer(hwnd_, kScrollbarHoverTimerId);
+            RemoveWindowSubclass(hwnd_, XamlIslandSubclassProc, kXamlIslandSubclassId);
+        }
+    }
+
     bool Attach(HWND parent, RECT rc) {
         std::wstring stage = L"prepare";
         try {
@@ -157,6 +170,9 @@ public:
                     reinterpret_cast<DWORD_PTR>(this))) {
                 winrt::throw_last_error();
             }
+            // Keep hover state correct even when the pointer leaves the island
+            // without generating another WM_MOUSEMOVE for this child HWND.
+            SetTimer(hwnd_, kScrollbarHoverTimerId, kScrollbarHoverTimerMs, nullptr);
             grid_=winrt::Windows::UI::Xaml::Controls::Grid();
             const auto background = light_theme_
                 ? winrt::Windows::UI::Color{0xff, 0xf7, 0xf8, 0xfa}
@@ -321,12 +337,20 @@ public:
                 if (visible_) next->control.WindowVisibilityChanged(true);
             } catch (...) {}
         }
-        if (focus || changed) {
-            try {
+        try {
+            if (focus) {
                 next->control.Focus(winrt::Windows::UI::Xaml::FocusState::Programmatic);
+            }
+            if (focus || changed) {
                 EnsureNativeScrollbar(next);
-            } catch (...) {}
-        }
+            }
+        } catch (...) {}
+        // DesktopWindowXamlSource owns a native child HWND.  Qt's stacked
+        // widget can place its page above that HWND when switching from the
+        // pre-start card or between sessions, leaving a perfectly live
+        // ConPTY rendered as an empty black surface.  Re-assert the island's
+        // child z-order after every activation without stealing focus.
+        RaiseIsland();
         return true;
     }
     void Stop(std::wstring_view project_id) {
@@ -364,7 +388,10 @@ public:
     void SetVisible(bool visible) {
         if (!hwnd_) return;
         if (visible_ == visible) {
-            if (visible) EnsureNativeScrollbar();
+            if (visible) {
+                RaiseIsland();
+                EnsureNativeScrollbar();
+            }
             return;
         }
         try {
@@ -373,6 +400,7 @@ public:
             }
             visible_ = visible;
             ShowWindow(hwnd_, visible ? SW_SHOW : SW_HIDE);
+            if (visible) RaiseIsland();
             if (auto* active = ActiveSession()) {
                 if (visible) {
                     EnsureNativeScrollbar(active);
@@ -380,10 +408,10 @@ public:
             }
         } catch (...) {
             ShowWindow(hwnd_, visible ? SW_SHOW : SW_HIDE);
+            if (visible) RaiseIsland();
         }
     }
     void SetTheme(bool light) {
-        if (light_theme_ == light) return;
         light_theme_ = light;
         try {
             if (grid_) {
@@ -392,7 +420,7 @@ public:
                     : winrt::Windows::UI::Color{0xff, 0x0c, 0x0c, 0x0c};
                 grid_.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(background));
             }
-            for (auto& [project_id, session] : sessions_) {
+            for (auto& [_, session] : sessions_) {
                 if (!session->control || !session->control_settings) continue;
                 if (session->conpty_connection)
                     session->conpty_connection->SetLightTheme(light);
@@ -401,13 +429,36 @@ public:
                 session->control.UpdateControlSettings(
                     session->control_settings, session->unfocused_settings);
                 session->control.UpdateLayout();
-                if (session->conpty_connection && active_project_id_ == project_id && visible_) {
-                    session->conpty_connection->RefreshViewport();
-                }
             }
             if (grid_) grid_.UpdateLayout();
+            // Qt can complete the host layout after UpdateControlSettings.
+            // Refresh only after the parent grid has settled so the one-column
+            // ConPTY probe is not immediately replaced by the old composer
+            // frame. This is especially important for light -> dark, where
+            // the existing composer cell contains the light RGB value.
+            if (auto* active = ActiveSession(); active && active->conpty_connection) {
+                active->control.UpdateLayout();
+                active->conpty_connection->RefreshViewport();
+            }
         } catch (...) {
             OutputDebugStringW(L"AI CLI TermControl: live theme update failed\n");
+        }
+    }
+    void RefreshTerminalViewport() noexcept {
+        try {
+            // Match the pre-Qt host's synchronous workspace repaint. Qt's
+            // palette/style pass does not automatically invalidate the native
+            // DesktopWindowXamlSource child.
+            if (hwnd_) {
+                RedrawWindow(hwnd_, nullptr, nullptr,
+                             RDW_INVALIDATE | RDW_UPDATENOW |
+                                 RDW_NOERASE | RDW_ALLCHILDREN);
+            }
+            if (auto* active = ActiveSession(); active && active->conpty_connection) {
+                active->conpty_connection->RefreshViewport();
+            }
+        } catch (...) {
+            OutputDebugStringW(L"AI CLI TermControl: deferred viewport refresh failed\n");
         }
     }
     void Resize(RECT rc) {
@@ -542,7 +593,10 @@ public:
         }
     }
     void OnIslandDestroyed(HWND window) noexcept {
-        if (hwnd_ == window) hwnd_ = nullptr;
+        if (hwnd_ == window) {
+            KillTimer(hwnd_, kScrollbarHoverTimerId);
+            hwnd_ = nullptr;
+        }
     }
     void UpdateNativeScrollbarHover() {
         auto* session = ActiveSession();
@@ -552,19 +606,43 @@ public:
         POINT cursor{};
         RECT terminal_rect{};
         if (!GetCursorPos(&cursor) || !GetWindowRect(hwnd_, &terminal_rect)) return;
-        const UINT dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
-        const double scale = dpi ? static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI : 1.0;
+
+        // ActualWidth is expressed in XAML DIPs while GetWindowRect returns
+        // physical pixels.  Use the larger of the native width and a small
+        // 24-DIP activation strip so the thin idle thumb remains easy to grab.
+        UINT dpi = GetDpiForWindow(hwnd_);
+        if (!dpi) dpi = parent_ ? GetDpiForWindow(parent_) : USER_DEFAULT_SCREEN_DPI;
+        const double scale = static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI;
+        double actual_width = 0.0;
+        try { actual_width = session->native_scrollbar.ActualWidth(); } catch (...) {}
         const int scrollbar_width = std::max(
-            16, static_cast<int>(std::ceil(session->native_scrollbar.ActualWidth() * scale)));
-        const bool expanded = PtInRect(&terminal_rect, cursor) &&
-                              cursor.x >= terminal_rect.right - scrollbar_width;
-        SetNativeScrollbarVisual(*session, expanded);
+            static_cast<int>(std::ceil(24.0 * scale)),
+            static_cast<int>(std::ceil(actual_width * scale)));
+        const bool inside_island =
+            cursor.x >= terminal_rect.left && cursor.x < terminal_rect.right &&
+            cursor.y >= terminal_rect.top && cursor.y < terminal_rect.bottom;
+        const bool over_scrollbar = inside_island &&
+                                    cursor.x >= terminal_rect.right - scrollbar_width;
+        SetNativeScrollbarVisual(*session, over_scrollbar);
     }
     void CollapseNativeScrollbar() {
-        if (auto* session = ActiveSession()) SetNativeScrollbarVisual(*session, false);
+        // Re-evaluate using the screen pointer.  WM_MOUSELEAVE can be raised
+        // while crossing between the native island and its XAML content, so a
+        // blind collapse here would make the thumb disappear while still
+        // hovering the scrollbar.
+        UpdateNativeScrollbarHover();
     }
     const std::wstring& LastError() const { return last_error_; }
 private:
+    void RaiseIsland() noexcept {
+        if (!hwnd_ || !parent_ || !visible_) return;
+        RECT rect{};
+        if (!GetClientRect(parent_, &rect)) return;
+        SetWindowPos(hwnd_, HWND_TOP, 0, 0,
+                     rect.right - rect.left, rect.bottom - rect.top,
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
+
     struct TerminalSession {
         winrt::Microsoft::Terminal::Control::TermControl control{nullptr};
         winrt::Microsoft::Terminal::Settings::Model::TerminalSettings control_settings{nullptr};
@@ -763,6 +841,10 @@ LRESULT CALLBACK XamlIslandSubclassProc(
             adapter->UpdateNativeScrollbarHover();
         }
         if (message == WM_MOUSELEAVE) adapter->CollapseNativeScrollbar();
+        if (message == WM_TIMER && wparam == kScrollbarHoverTimerId) {
+            adapter->UpdateNativeScrollbarHover();
+            return 0;
+        }
         if (message == WM_NCDESTROY) {
             adapter->OnIslandDestroyed(hwnd);
             RemoveWindowSubclass(hwnd, XamlIslandSubclassProc, subclass_id);
@@ -822,6 +904,10 @@ void XamlIslandAdapter::SetVisible(bool visible) {
 
 void XamlIslandAdapter::SetTheme(bool light) {
     if (impl_) impl_->SetTheme(light);
+}
+
+void XamlIslandAdapter::RefreshTerminalViewport() {
+    if (impl_) impl_->RefreshTerminalViewport();
 }
 
 void XamlIslandAdapter::Resize(RECT rc) {

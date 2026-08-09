@@ -79,6 +79,7 @@ public:
     void ReloadModels();
     void SetGroup(const std::wstring& group);
     void SetTheme(bool light);
+    void RefreshTerminalViewport();
 
     std::vector<int> VisibleProjectIndices(const std::wstring& query) const;
     int ProjectIndex(const std::wstring& project_id) const;

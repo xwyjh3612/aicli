@@ -18,6 +18,9 @@ ProjectDialog::ProjectDialog(app::DesktopController& controller,
                              QWidget* parent,
                              const Project* existing)
     : QDialog(parent), controller_(controller), editing_(existing != nullptr) {
+    setObjectName(QStringLiteral("projectDialog"));
+    setAttribute(Qt::WA_StyledBackground, true);
+    setAutoFillBackground(true);
     setWindowTitle(editing_ ? QStringLiteral("编辑项目") : QStringLiteral("新增项目"));
     setModal(true);
     setMinimumWidth(560);
@@ -25,11 +28,20 @@ ProjectDialog::ProjectDialog(app::DesktopController& controller,
 
     if (existing) draft_ = *existing;
 
-    auto* root = new QVBoxLayout(this);
+    auto* shell = new QVBoxLayout(this);
+    shell->setContentsMargins(0, 0, 0, 0);
+    shell->setSpacing(0);
+    auto* surface = new QWidget(this);
+    surface->setObjectName(QStringLiteral("dialogSurface"));
+    surface->setAttribute(Qt::WA_StyledBackground, true);
+    surface->setAutoFillBackground(true);
+    shell->addWidget(surface);
+
+    auto* root = new QVBoxLayout(surface);
     root->setContentsMargins(28, 24, 28, 22);
     root->setSpacing(16);
 
-    auto* heading = new QLabel(editing_ ? QStringLiteral("编辑项目") : QStringLiteral("创建项目"), this);
+    auto* heading = new QLabel(editing_ ? QStringLiteral("编辑项目") : QStringLiteral("创建项目"), surface);
     QFont headingFont = heading->font();
     headingFont.setPixelSize(21);
     headingFont.setWeight(QFont::DemiBold);
@@ -38,7 +50,7 @@ ProjectDialog::ProjectDialog(app::DesktopController& controller,
 
     auto* subtitle = new QLabel(
         editing_ ? QStringLiteral("修改项目名称、分组、目录和启动命令")
-                 : QStringLiteral("选择项目类型后，启动命令会自动填充，可按需修改"), this);
+                 : QStringLiteral("选择项目类型后，启动命令会自动填充，可按需修改"), surface);
     subtitle->setObjectName(QStringLiteral("mutedLabel"));
     root->addWidget(subtitle);
 
@@ -48,44 +60,54 @@ ProjectDialog::ProjectDialog(app::DesktopController& controller,
     form->setHorizontalSpacing(16);
     form->setVerticalSpacing(12);
 
-    name_ = new QLineEdit(this);
+    name_ = new QLineEdit(surface);
+    name_->setMinimumHeight(42);
     name_->setPlaceholderText(QStringLiteral("例如：默认 Codex 会话"));
     name_->setObjectName(QStringLiteral("dialogField"));
     form->addRow(QStringLiteral("项目名称"), name_);
 
-    type_ = new QComboBox(this);
+    type_ = new QComboBox(surface);
+    type_->setMinimumHeight(42);
     type_->setObjectName(QStringLiteral("dialogCombo"));
     for (const auto& type : controller_.projectTypes()) {
         type_->addItem(ToQString(type.name), QVariant::fromValue<qlonglong>(type.id));
     }
     form->addRow(QStringLiteral("项目类型"), type_);
 
-    group_ = new QComboBox(this);
+    group_ = new QComboBox(surface);
+    group_->setMinimumHeight(42);
     group_->setObjectName(QStringLiteral("dialogCombo"));
     for (const auto& group : controller_.groups()) group_->addItem(ToQString(group.name));
     form->addRow(QStringLiteral("分组"), group_);
 
-    auto* folderRow = new QWidget(this);
+    auto* folderRow = new QWidget(surface);
     auto* folderLayout = new QHBoxLayout(folderRow);
     folderLayout->setContentsMargins(0, 0, 0, 0);
     folderLayout->setSpacing(8);
     folder_ = new QLineEdit(folderRow);
+    folder_->setMinimumHeight(42);
     folder_->setPlaceholderText(QStringLiteral("选择项目文件夹"));
     auto* browse = new QPushButton(QStringLiteral("选择文件夹"), folderRow);
     browse->setObjectName(QStringLiteral("toolbarButton"));
+    browse->setMinimumHeight(40);
     browse->setFixedWidth(112);
     folderLayout->addWidget(folder_, 1);
     folderLayout->addWidget(browse);
     connect(browse, &QPushButton::clicked, this, &ProjectDialog::browseFolder);
     form->addRow(QStringLiteral("项目目录"), folderRow);
 
-    command_ = new QLineEdit(this);
+    command_ = new QLineEdit(surface);
+    command_->setMinimumHeight(42);
     command_->setPlaceholderText(QStringLiteral("启动命令"));
     form->addRow(QStringLiteral("启动命令"), command_);
     root->addLayout(form);
 
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Save, this);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Cancel | QDialogButtonBox::Save, surface);
     buttons->button(QDialogButtonBox::Save)->setObjectName(QStringLiteral("primaryButton"));
+    buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("确定"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
+    for (auto* button : buttons->buttons()) button->setMinimumSize(100, 40);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, this, &ProjectDialog::acceptDialog);
     root->addWidget(buttons);

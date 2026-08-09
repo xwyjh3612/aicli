@@ -87,7 +87,12 @@ if (Test-Path -LiteralPath $stdout) { $resultText = Get-Content -LiteralPath $st
 if (Test-Path -LiteralPath $stderr) { $errorText = Get-Content -LiteralPath $stderr -Raw }
 if ($resultText) { $resultText | Out-Host }
 if ($errorText) { $errorText | Out-Host }
-if ($test.ExitCode -ne 0 -or $resultText -notmatch 'OK \(1 test\)' -or
-    $resultText -match 'INSTRUMENTATION_STATUS_CODE:\s*-2|FAILURES!!!|Process crashed') {
+# `adb shell am instrument -w` can report -1 through Start-Process even after
+# the runner has emitted its normal successful result.  The streamed runner
+# output is the authoritative status for this test; accept it when exactly one
+# test completed and no crash/failure marker was produced.
+$instrumentationOk = $resultText -match 'OK \(1 test\)' -and
+    $resultText -notmatch 'INSTRUMENTATION_STATUS_CODE:\s*-2|FAILURES!!!|Process crashed'
+if (!$instrumentationOk) {
     throw "Android pairing instrumentation failed: $($test.ExitCode)"
 }

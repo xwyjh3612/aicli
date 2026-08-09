@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include <QMainWindow>
 #include <QPointer>
 
@@ -64,6 +66,8 @@ private:
     void openProjectFolder();
     void moveSelectedProject(const std::wstring& group);
     void stopSelectedProject(const std::wstring& status);
+    void prepareTerminalSurface();
+    void showRunningProject(const std::wstring& project_id);
 
     app::DesktopController& controller_;
     QWidget* root_{};
@@ -89,6 +93,8 @@ private:
     bool terminal_attached_{};
     bool refreshing_{};
     bool shutting_down_{};
+    bool native_frame_configured_{};
+    std::uint64_t theme_refresh_serial_{};
 };
 
 } // namespace aicli::ui::qt
