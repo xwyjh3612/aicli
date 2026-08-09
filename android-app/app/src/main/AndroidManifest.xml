@@ -6,7 +6,9 @@
 
     <application
         android:allowBackup="false"
+        android:icon="@drawable/ic_launcher"
         android:label="AI CLI"
+        android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.Aicli">
         <activity android:name=".AicliCaptureActivity" android:screenOrientation="portrait" android:exported="false" />

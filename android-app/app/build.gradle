@@ -2,6 +2,17 @@ plugins {
     id "com.android.application"
 }
 
+def releaseStoreFile = System.getenv("AICLI_RELEASE_KEYSTORE")
+def releaseStorePassword = System.getenv("AICLI_RELEASE_STORE_PASSWORD")
+def releaseKeyAlias = System.getenv("AICLI_RELEASE_KEY_ALIAS")
+def releaseKeyPassword = System.getenv("AICLI_RELEASE_KEY_PASSWORD")
+def hasReleaseSigning = [
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword
+].every { value -> value != null && !value.trim().isEmpty() }
+
 android {
     namespace "com.aitest.aicli"
     compileSdk 35
@@ -11,8 +22,35 @@ android {
         minSdk 26
         targetSdk 35
         versionCode 1
-        versionName "0.1.0"
+        versionName "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    if (hasReleaseSigning) {
+        signingConfigs {
+            release {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+                enableV4Signing true
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+        }
     }
 
     buildFeatures {

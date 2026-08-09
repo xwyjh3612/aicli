@@ -8,6 +8,24 @@
 
 当前环境使用缓存的 Gradle 8.2 和 JDK 17 构建。
 
+## 正式版构建
+
+在项目根目录执行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File android-app/tools/build-release.ps1
+```
+
+脚本会生成并验证可安装的 Release APK。发布密钥保存在
+`F:\Android\AI-CLI\signing\ai-cli-release.p12`，随机密码使用当前 Windows
+账户的 DPAPI 加密保存，不会写入 Git。后续正式版本必须继续使用同一把密钥，
+否则 Android 无法覆盖升级已经安装的正式版。
+
+输出文件位于：
+
+`app/build/outputs/apk/release/AI-CLI-Android-<版本>-release.apk`
+
 ## 已实现
 
 - Java/XML 主页面
