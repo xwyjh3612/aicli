@@ -744,7 +744,6 @@ public:
         if (!session || !session->control) return false;
         try {
             if (!session->control.HasSelection()) return false;
-            session->control.Focus(winrt::Windows::UI::Xaml::FocusState::Programmatic);
             return session->control.CopySelectionToClipboard(
                 true,
                 false,
@@ -794,6 +793,36 @@ public:
         if (key == 'C') copy_shortcut_active_ = false;
     }
     void CancelClipboardShortcut() noexcept { copy_shortcut_active_ = false; }
+    bool PreTranslateMessage(const MSG& message) noexcept {
+        if (!visible_ || !hwnd_ || !ActiveSession()) return false;
+
+        const auto belongs_to_terminal = [this](HWND window) noexcept {
+            return window && (window == hwnd_ || IsChild(hwnd_, window));
+        };
+        // Depending on the Windows build, the queued key message can target
+        // either the DesktopWindowXamlSource child or a deeper XAML input HWND.
+        // GetFocus covers the latter without stealing shortcuts from the app's
+        // normal edit controls.
+        if (!belongs_to_terminal(message.hwnd) &&
+            !belongs_to_terminal(GetFocus())) {
+            return false;
+        }
+
+        switch (message.message) {
+        case WM_KEYDOWN:
+        case WM_SYSKEYDOWN:
+            return HandleClipboardKeyDown(message.wParam, message.lParam);
+        case WM_CHAR:
+        case WM_SYSCHAR:
+            return HandleClipboardCharacter(message.wParam);
+        case WM_KEYUP:
+        case WM_SYSKEYUP:
+            FinishClipboardKey(message.wParam);
+            return false;
+        default:
+            return false;
+        }
+    }
     void FocusActiveTerminal() noexcept {
         try {
             if (auto* session = ActiveSession(); session && session->control) {
@@ -1220,6 +1249,10 @@ bool XamlIslandAdapter::SubmitInput(std::wstring_view project_id,
 }
 bool XamlIslandAdapter::SendKey(std::wstring_view project_id, UINT virtual_key) {
     return impl_ && impl_->SendKey(project_id, virtual_key);
+}
+
+bool XamlIslandAdapter::PreTranslateMessage(const MSG& message) noexcept {
+    return impl_ && impl_->PreTranslateMessage(message);
 }
 
 void XamlIslandAdapter::UpdateNativeScrollbarHover() {

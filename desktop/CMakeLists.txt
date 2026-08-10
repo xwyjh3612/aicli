@@ -179,6 +179,15 @@ target_link_libraries(aicli_data_store_tests PRIVATE
 )
 
 if (MSVC)
+    # Merge the Windows 10/11 compatibility declaration into the executable's
+    # real RT_MANIFEST resource. A manifest embedded from the .rc file is
+    # overwritten by link.exe's generated UAC manifest, which leaves loose Qt
+    # builds without MaxVersionTested and makes WindowsXamlManager fail with
+    # 0x8000FFFF before the first window is created.
+    target_link_options(aicli PRIVATE
+        "/MANIFEST:EMBED"
+        "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/src/app/aicli.manifest"
+    )
     target_compile_options(aicli PRIVATE /W4 /EHsc /utf-8 /FS)
     target_compile_options(aicli_data_store_tests PRIVATE /W4 /EHsc /utf-8 /FS)
 endif()

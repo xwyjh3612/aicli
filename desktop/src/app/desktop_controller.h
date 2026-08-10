@@ -57,6 +57,7 @@ public:
     // Handles only messages posted by RemoteAgent and the terminal publisher.
     // Returns true when the message was consumed.
     bool HandleNativeMessage(UINT message, WPARAM wparam, LPARAM lparam);
+    bool PreTranslateTerminalMessage(const MSG& message) noexcept;
     bool TakeTerminalDirty() noexcept;
     void PublishDirtySnapshots();
 

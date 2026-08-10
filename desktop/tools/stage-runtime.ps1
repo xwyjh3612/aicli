@@ -9,6 +9,7 @@ param(
     [string]$ApplicationLogo = ''
 )
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
 
 if ($PackageIdentityName -notmatch '^[A-Za-z0-9.-]+$') {
     throw "Invalid package identity name: $PackageIdentityName"
@@ -42,6 +43,92 @@ function Copy-FileIfDifferent {
         }
     }
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
+}
+
+function Export-ScaledLogo {
+    param(
+        [Parameter(Mandatory = $true)][System.Drawing.Image]$Source,
+        [Parameter(Mandatory = $true)][int]$Size,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $bitmap = [System.Drawing.Bitmap]::new(
+        $Size,
+        $Size,
+        [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.Clear([System.Drawing.Color]::Transparent)
+        $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+        $graphics.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+        $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $graphics.DrawImage(
+            $Source,
+            [System.Drawing.Rectangle]::new(0, 0, $Size, $Size))
+        $bitmap.Save($Destination, [System.Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
+function Export-PackageLogoAssets {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$DestinationDirectory
+    )
+
+    # The taskbar uses target-size package assets when buttons are combined.
+    # Supplying the unplated variants prevents Windows from placing the app
+    # icon on an opaque system-accent (#0078d7) square.
+    $sourceImage = [System.Drawing.Image]::FromFile($Source)
+    try {
+        Export-ScaledLogo -Source $sourceImage -Size 44 `
+            -Destination (Join-Path $DestinationDirectory 'Square44x44Logo.png')
+        Export-ScaledLogo -Source $sourceImage -Size 150 `
+            -Destination (Join-Path $DestinationDirectory 'Square150x150Logo.png')
+        Export-ScaledLogo -Source $sourceImage -Size 50 `
+            -Destination (Join-Path $DestinationDirectory 'StoreLogo.png')
+
+        $scaleSizes = [ordered]@{
+            100 = 44
+            125 = 55
+            150 = 66
+            200 = 88
+            400 = 176
+        }
+        foreach ($entry in $scaleSizes.GetEnumerator()) {
+            Export-ScaledLogo -Source $sourceImage -Size $entry.Value `
+                -Destination (Join-Path $DestinationDirectory `
+                    "Square44x44Logo.scale-$($entry.Key).png")
+        }
+
+        $tileScaleSizes = [ordered]@{
+            100 = 150
+            125 = 188
+            150 = 225
+            200 = 300
+            400 = 600
+        }
+        foreach ($entry in $tileScaleSizes.GetEnumerator()) {
+            Export-ScaledLogo -Source $sourceImage -Size $entry.Value `
+                -Destination (Join-Path $DestinationDirectory `
+                    "Square150x150Logo.scale-$($entry.Key).png")
+        }
+
+        foreach ($size in @(16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256)) {
+            $plated = Join-Path $DestinationDirectory `
+                "Square44x44Logo.targetsize-$size.png"
+            $unplated = Join-Path $DestinationDirectory `
+                "Square44x44Logo.targetsize-$($size)_altform-unplated.png"
+            Export-ScaledLogo -Source $sourceImage -Size $size -Destination $plated
+            Copy-Item -LiteralPath $plated -Destination $unplated -Force
+        }
+    } finally {
+        $sourceImage.Dispose()
+    }
 }
 
 function Save-XmlUtf8 {
@@ -286,6 +373,14 @@ $mainLayoutRoot = Join-Path $workingFull 'main-layout'
 New-Item -ItemType Directory -Force -Path $mainLayoutRoot | Out-Null
 Copy-Item -LiteralPath $xamlPri -Destination (Join-Path $mainLayoutRoot 'Microsoft.UI.Xaml.pri') -Force
 Copy-Item -LiteralPath $terminalStringSource -Destination (Join-Path $mainLayoutRoot 'Resources') -Recurse -Force
+$logoSource = if ($ApplicationLogo) { $ApplicationLogo } else { Join-Path $xaml 'logo.png' }
+if (!(Test-Path -LiteralPath $logoSource)) {
+    throw "Application logo was not found: $logoSource"
+}
+$mainLayoutAssets = Join-Path $mainLayoutRoot 'Assets'
+New-Item -ItemType Directory -Force -Path $mainLayoutAssets | Out-Null
+Copy-Item -LiteralPath $logoSource -Destination (Join-Path $mainLayoutAssets 'Logo.png') -Force
+Export-PackageLogoAssets -Source $logoSource -DestinationDirectory $mainLayoutAssets
 $mainPriConfig = Join-Path $workingFull 'main-priconfig.xml'
 & $makePri createconfig /cf $mainPriConfig /dq en-US /pv 10.0.0 /o | Out-Null
 if ($LASTEXITCODE) { throw "Failed to create main PRI configuration: $LASTEXITCODE" }
@@ -322,11 +417,7 @@ $manifestText = [Text.RegularExpressions.Regex]::Replace(
     [Text.RegularExpressions.RegexOptions]::IgnoreCase)
 [IO.File]::WriteAllText($manifestOutput, $manifestText, [Text.UTF8Encoding]::new($false))
 Copy-Item (Join-Path $PSScriptRoot 'configure-agent-firewall.ps1') $Output -Force
-$logoSource = if ($ApplicationLogo) { $ApplicationLogo } else { Join-Path $xaml 'logo.png' }
-if (!(Test-Path -LiteralPath $logoSource)) {
-    throw "Application logo was not found: $logoSource"
-}
-Copy-Item -LiteralPath $logoSource -Destination (Join-Path $assets 'Logo.png') -Force
+Copy-Item -Path (Join-Path $mainLayoutAssets '*') -Destination $assets -Force
 $openssl = 'F:\deps\aicli\openssl'
 Copy-FileIfDifferent -Source (Join-Path $openssl 'libssl-4-x64.dll') -Destination (Join-Path $Output 'libssl-4-x64.dll')
 Copy-FileIfDifferent -Source (Join-Path $openssl 'libcrypto-4-x64.dll') -Destination (Join-Path $Output 'libcrypto-4-x64.dll')

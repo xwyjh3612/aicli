@@ -123,25 +123,12 @@ bool DesktopController::InitializePersistentState(std::wstring* error) {
         }
     }
 
-    if (store_.GetSetting(L"seeded_projects", L"0") != L"1" && projects_.empty()) {
-        const auto cwd = std::filesystem::current_path().wstring();
-        Project codex{};
-        codex.name = L"默认 Codex 会话";
-        codex.type = L"Codex";
-        codex.group = L"默认分组";
-        codex.folder = cwd;
-        codex.command = DefaultCommandForType(codex.type);
-        store_.SaveProject(codex, error);
-
-        Project claude{};
-        claude.name = L"Claude 工作区";
-        claude.type = L"Claude";
-        claude.group = L"默认分组";
-        claude.folder = cwd;
-        claude.command = DefaultCommandForType(claude.type);
-        store_.SaveProject(claude, error);
+    // Keep Codex and Claude as built-in project types, but let a fresh Qt
+    // installation start with an empty project/session list just like the
+    // legacy desktop UI. Mark the old sample-project migration as handled so
+    // another front-end sharing this database cannot recreate those sessions.
+    if (store_.GetSetting(L"seeded_projects", L"0") != L"1") {
         store_.SetSetting(L"seeded_projects", L"1");
-        projects_ = store_.LoadProjects();
     }
 
     group_name_ = store_.GetSetting(L"last_group", L"默认分组");
@@ -817,6 +804,11 @@ bool DesktopController::HandleNativeMessage(UINT message, WPARAM, LPARAM lparam)
         return true;
     }
     return false;
+}
+
+bool DesktopController::PreTranslateTerminalMessage(
+    const MSG& message) noexcept {
+    return terminal_.PreTranslateMessage(message);
 }
 
 } // namespace aicli::app

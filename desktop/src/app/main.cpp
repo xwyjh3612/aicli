@@ -82,7 +82,6 @@ constexpr int ID_SEARCH_PROJECTS = 1015;
 constexpr int ID_DEVICES = 1016;
 constexpr int ID_CTX_PAUSE = 3001;
 constexpr int ID_CTX_CONTINUE = 3002;
-constexpr int ID_CTX_CANCEL = 3003;
 constexpr int ID_CTX_RESTART = 3004;
 constexpr int ID_CTX_EDIT = 3005;
 constexpr int ID_CTX_DELETE = 3006;
@@ -303,7 +302,8 @@ bool MoveMainChild(HWND control,int x,int y,int width,int height){
     if(EqualRect(&actual,&desired))return false;
     SetWindowPos(control,nullptr,desired.left,desired.top,
                  desired.right-desired.left,desired.bottom-desired.top,
-                 SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_NOSENDCHANGING);
+                 SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER|
+                 SWP_NOSENDCHANGING|SWP_NOCOPYBITS);
     return true;
 }
 bool SetMainChildVisible(HWND control,bool visible){
@@ -445,12 +445,13 @@ bool InitializePersistentState() {
             g_store.UpdateProjectStatus(project.id,project.status);
         }
     }
-    if(g_store.GetSetting(L"seeded_projects",L"0")!=L"1"&&g_projects.empty()){
-        const auto cwd=std::filesystem::current_path().wstring();
-        Project codex{};codex.name=L"默认 Codex 会话";codex.type=L"Codex";codex.group=L"默认分组";codex.folder=cwd;codex.command=DefaultProjectCommand(codex.type);g_store.SaveProject(codex);
-        Project claude{};claude.name=L"Claude 工作区";claude.type=L"Claude";claude.group=L"默认分组";claude.folder=cwd;claude.command=DefaultProjectCommand(claude.type);g_store.SaveProject(claude);
-        g_store.SetSetting(L"seeded_projects",L"1");g_projects=g_store.LoadProjects();
-    }
+    // A fresh installation starts with an empty project/session list. Codex
+    // and Claude remain built-in project types, but the user explicitly
+    // creates the first project and chooses its folder, group and command.
+    // Mark the legacy seed migration as handled so another front-end sharing
+    // this database cannot recreate the removed sample sessions later.
+    if(g_store.GetSetting(L"seeded_projects",L"0")!=L"1")
+        g_store.SetSetting(L"seeded_projects",L"1");
     g_group_name=g_store.GetSetting(L"last_group",L"默认分组");
     if(g_group_name!=kAllGroupsName&&std::none_of(g_groups.begin(),g_groups.end(),[&](const ProjectGroup& group){return group.name==g_group_name;}))g_group_name=L"默认分组";
     g_last_project_id=g_store.GetSetting(L"last_project_id");
@@ -499,10 +500,32 @@ void Layout(){
     if(r.right<=left+80 || r.bottom<=top+bottom+120)return;
     MoveMainChild(g_group,168,10,154,32);
     MoveMainChild(g_group_add,326,10,34,32);
-    const int captionReserve=MulDiv(144,(int)GetDpiForWindow(g_hwnd),96);const int settingsX=std::max(860,(int)r.right-captionReserve-82);
-    MoveMainChild(g_bind,std::max(700,settingsX-220),10,96,32);
-    MoveMainChild(g_devices,std::max(700,settingsX-116),10,106,32);
-    MoveMainChild(g_settings,settingsX,10,72,32);
+    // Anchor the complete phone/settings cluster from the native caption
+    // buttons and lay each control out sequentially. Clamping every button to
+    // its own minimum X made the first two overlap on narrower/high-DPI
+    // windows even though the cluster as a whole still had enough room.
+    constexpr int headerGap=8;
+    constexpr int bindWidth=104;
+    constexpr int devicesWidth=116;
+    constexpr int settingsWidth=72;
+    const int captionReserve=MulDiv(144,(int)GetDpiForWindow(g_hwnd),96);
+    const int clusterRight=(int)r.right-captionReserve-8;
+    const int settingsX=clusterRight-settingsWidth;
+    const int devicesX=settingsX-headerGap-devicesWidth;
+    const int bindX=devicesX-headerGap-bindWidth;
+    const bool headerControlsMoved =
+        MoveMainChild(g_bind,bindX,10,bindWidth,32) |
+        MoveMainChild(g_devices,devicesX,10,devicesWidth,32) |
+        MoveMainChild(g_settings,settingsX,10,settingsWidth,32);
+    if(headerControlsMoved){
+        // During interactive horizontal resizing USER32 otherwise preserves
+        // pixels from the controls' old positions.  The parent title bar is
+        // custom-painted, so those copied pixels can survive as overlapping
+        // button ghosts until another full repaint.
+        RECT titleBar{0,0,r.right,top};
+        RedrawWindow(g_hwnd,&titleBar,nullptr,
+                     RDW_INVALIDATE|RDW_NOERASE|RDW_ALLCHILDREN);
+    }
 
     RECT search_rect{6,top+6,left-6,top+44};aicli::ui::LayoutStyledInput(g_search,search_rect,2,9);
     MoveMainChild(g_sidebar_title,9,top+54,200,24);
@@ -886,16 +909,16 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(id>=static_cast<UINT>(ID_CTX_MOVE_GROUP_BASE)&&id<moveGroupEnd){MoveSelectedProjectToGroup(g_groups[id-ID_CTX_MOVE_GROUP_BASE].name);return 0;}
         if(id==ID_CTX_MOVE_DEFAULT){MoveSelectedProjectToDefaultGroup();return 0;}
         if(id==ID_CTX_RESTART){StartSession(true);return 0;}
-        if(id==ID_CTX_CANCEL||id==ID_CTX_PAUSE){
-            const int selected=SelectedProjectIndex();const bool pausing=id==ID_CTX_PAUSE;
+        if(id==ID_CTX_PAUSE){
+            const int selected=SelectedProjectIndex();
             if(selected>=0&&selected<(int)g_projects.size()){
                 auto& project=g_projects[selected];
                 SetProjectWorkingState(project.id,false);
                 g_island.Stop(project.id);
-                project.status=pausing?L"paused":L"cancelled";
+                project.status=L"paused";
                 g_store.UpdateProjectStatus(project.id,project.status);
             }
-            SetText(g_status,pausing?L"会话已暂停":L"会话已取消");
+            SetText(g_status,L"会话已暂停");
             RefreshProjectDetails();RefreshProjectList();Layout();return 0;
         }
         if(id==ID_CTX_CONTINUE){StartSession();return 0;}
@@ -1096,7 +1119,7 @@ int WINAPI wWinMain(HINSTANCE instance,
         WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX |
         WS_CLIPCHILDREN;
     g_hwnd = CreateWindowExW(0, kClassName, L"\x200B", window_style,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 1280, 800,
+                             CW_USEDEFAULT, CW_USEDEFAULT, 1100, 700,
                              nullptr, nullptr, instance, nullptr);
     ApplyWindowChromeTheme();
     ShowWindow(g_hwnd, show_command);
@@ -1104,6 +1127,7 @@ int WINAPI wWinMain(HINSTANCE instance,
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0)) {
+        if (g_island.PreTranslateMessage(message)) continue;
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }

@@ -70,7 +70,6 @@ void ShowProjectContextMenu(HWND owner,LPARAM position){
     ContextMenuEntry move{L"\xE8AB",L"移动到分组",true};
     ContextMenuEntry restart{L"\xE72C",L"重新启动项目",false};
     ContextMenuEntry session{L"\xE769",paused?L"继续会话":L"暂停会话",false};
-    ContextMenuEntry cancel{L"\xE711",L"取消会话",false};
     ContextMenuEntry close{L"\xE74D",L"关闭项目",false};
     ContextMenuEntry separator{L"",L"",false};
     AppendContextEntry(menu,MF_ENABLED,ID_CTX_OPEN_FOLDER,open);
@@ -83,7 +82,6 @@ void ShowProjectContextMenu(HWND owner,LPARAM position){
     AppendMenuW(menu,MF_OWNERDRAW|MF_POPUP,(UINT_PTR)groups,reinterpret_cast<LPCWSTR>(&move));
     AppendContextEntry(menu,MF_ENABLED,ID_CTX_RESTART,restart);
     AppendContextEntry(menu,(running||paused)?MF_ENABLED:MF_GRAYED,paused?ID_CTX_CONTINUE:ID_CTX_PAUSE,session);
-    AppendContextEntry(menu,(running||paused)?MF_ENABLED:MF_GRAYED,ID_CTX_CANCEL,cancel);
     AppendContextEntry(menu,MF_DISABLED,0,separator);
     AppendContextEntry(menu,MF_ENABLED,ID_CTX_DELETE,close);
     SetForegroundWindow(owner);

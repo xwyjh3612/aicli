@@ -1,5 +1,6 @@
 #include <windows.h>
 
+#include <QAbstractNativeEventFilter>
 #include <QApplication>
 #include <QIcon>
 #include <QImage>
@@ -17,6 +18,27 @@
 
 namespace {
 constexpr wchar_t kApplicationUserModelId[] = AICLI_APPLICATION_USER_MODEL_ID;
+
+class TerminalShortcutFilter final : public QAbstractNativeEventFilter {
+public:
+    explicit TerminalShortcutFilter(
+        aicli::app::DesktopController& controller) noexcept
+        : controller_(controller) {}
+
+    bool nativeEventFilter(const QByteArray&,
+                           void* message,
+                           qintptr* result) override {
+        const auto* native = static_cast<const MSG*>(message);
+        if (!native || !controller_.PreTranslateTerminalMessage(*native)) {
+            return false;
+        }
+        if (result) *result = 0;
+        return true;
+    }
+
+private:
+    aicli::app::DesktopController& controller_;
+};
 }
 
 int WINAPI wWinMain(HINSTANCE instance,
@@ -82,9 +104,17 @@ int WINAPI wWinMain(HINSTANCE instance,
         return 1;
     }
 
+    // TermControl keyboard focus is hosted below Qt's HWND hierarchy.  A
+    // process-wide native filter is the Qt equivalent of the legacy Win32
+    // message-loop pre-translation stage: Ctrl+V pastes, while Ctrl+C copies
+    // only when the terminal has a selection and otherwise remains SIGINT.
+    TerminalShortcutFilter terminal_shortcuts(controller);
+    application.installNativeEventFilter(&terminal_shortcuts);
+
     if (show_command == SW_SHOWMAXIMIZED) window.showMaximized();
     else window.show();
     const int result = application.exec();
+    application.removeNativeEventFilter(&terminal_shortcuts);
     controller.Shutdown();
     winrt::uninit_apartment();
     return result;

@@ -72,7 +72,7 @@ private:
     std::wstring selectedProjectIdFromList() const;
     void openProjectFolder();
     void moveSelectedProject(const std::wstring& group);
-    void stopSelectedProject(const std::wstring& status);
+    void pauseSelectedProject();
     void prepareTerminalSurface();
     void showRunningProject(const std::wstring& project_id);
 

@@ -91,7 +91,7 @@ MainWindow::MainWindow(app::DesktopController& controller)
     setAttribute(Qt::WA_NativeWindow, true);
     setWindowTitle(QStringLiteral("AI CLI"));
     setMinimumSize(900, 600);
-    resize(1280, 800);
+    resize(1100, 700);
     buildUi();
     wireController();
 }
@@ -662,10 +662,8 @@ void MainWindow::showProjectContextMenu(const QPoint& point) {
         ? QStringLiteral("激活会话") : QStringLiteral("开始 / 继续"));
     QAction* restart = menu.addAction(QStringLiteral("重新开始"));
     QAction* pause = nullptr;
-    QAction* cancel = nullptr;
     if (controller_.HasSession(project->id)) {
         pause = menu.addAction(QStringLiteral("暂停"));
-        cancel = menu.addAction(QStringLiteral("取消"));
     }
     menu.addSeparator();
     QAction* edit = menu.addAction(QStringLiteral("编辑项目"));
@@ -679,8 +677,7 @@ void MainWindow::showProjectContextMenu(const QPoint& point) {
     QAction* chosen = menu.exec(project_list_->viewport()->mapToGlobal(point));
     if (chosen == start) startSelectedProject();
     else if (chosen == restart) controller_.StartProject(project->id, true);
-    else if (pause && chosen == pause) stopSelectedProject(L"paused");
-    else if (cancel && chosen == cancel) stopSelectedProject(L"cancelled");
+    else if (pause && chosen == pause) pauseSelectedProject();
     else if (chosen == edit) editSelectedProject();
     else if (chosen == open) openProjectFolder();
     else if (chosen == remove) deleteSelectedProject();
@@ -804,11 +801,11 @@ void MainWindow::moveSelectedProject(const std::wstring& group) {
     setStatus(L"项目已移动到 " + group);
 }
 
-void MainWindow::stopSelectedProject(const std::wstring& status) {
+void MainWindow::pauseSelectedProject() {
     const auto id = controller_.selectedProjectId();
     if (id.empty()) return;
-    controller_.StopProject(id, status);
-    setStatus(status == L"paused" ? L"会话已暂停" : L"会话已取消");
+    controller_.StopProject(id, L"paused");
+    setStatus(L"会话已暂停");
 }
 
 void MainWindow::prepareTerminalSurface() {

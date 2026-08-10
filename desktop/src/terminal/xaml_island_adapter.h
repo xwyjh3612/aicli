@@ -50,6 +50,10 @@ public:
     bool WriteInput(std::wstring_view project_id, const std::wstring& value);
     bool SubmitInput(std::wstring_view project_id, const std::wstring& value);
     bool SendKey(std::wstring_view project_id, UINT virtual_key);
+    // Called by the legacy Win32 message loop before TranslateMessage. XAML
+    // keyboard focus lives below the island host HWND, so terminal clipboard
+    // shortcuts must be intercepted at the thread-message boundary.
+    bool PreTranslateMessage(const MSG& message) noexcept;
     void UpdateNativeScrollbarHover();
     void CollapseNativeScrollbar();
     const std::wstring& LastError() const;

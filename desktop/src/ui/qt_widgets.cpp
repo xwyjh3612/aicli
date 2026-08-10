@@ -59,82 +59,106 @@ QString BuildApplicationStyle(const ThemePalette& theme) {
     const QColor hover = ToQColor(theme.hover);
     const QColor pressed = ToQColor(theme.pressed);
 
-    return QStringLiteral(R"(
-QWidget#qtRoot, QMainWindow, QWidget#mainSurface { background: %1; color: %2; }
-QWidget#titleBar { background: %3; }
+    // Use named color tokens. QString::arg() replaces the lowest numbered
+    // placeholder rather than binding arguments to their literal numbers;
+    // the old sheet skipped %4/%5, shifting every later color two positions.
+    // That made ordinary fields, setting rows and buttons inherit the accent
+    // color (#539cff in the dark theme).
+    QString style = QStringLiteral(R"(
+QWidget#qtRoot, QMainWindow, QWidget#mainSurface { background: @window@; color: @text@; }
+QWidget#titleBar { background: @titlebar@; }
+QWidget#sidebar, QWidget#footer { background: @panel@; }
 QLabel#appLogo { background: transparent; border: none; }
-QLabel#appTitle { color: %6; }
-QPushButton { background: %7; color: %8; border: 1px solid %9; border-radius: 8px; padding: 0 12px; }
-QPushButton:hover { background: %10; border-color: %11; }
-QPushButton:pressed { background: %12; }
-QPushButton#primaryButton { background: %13; color: white; border-color: %14; }
-QPushButton#primaryButton:hover { background: %15; }
+QLabel#appTitle { color: @titlebarText@; }
+QPushButton { background: @surface@; color: @text@; border: 1px solid @border@; border-radius: 8px; padding: 0 12px; }
+QPushButton:hover { background: @hover@; border-color: @accent@; }
+QPushButton:focus { background: @surface@; border-color: @accent@; }
+QPushButton:pressed { background: @pressed@; }
+QPushButton#primaryButton { background: @accentStrong@; color: white; border-color: @accent@; }
+QPushButton#primaryButton:hover, QPushButton#primaryButton:focus { background: @accent@; }
 QPushButton#captionButton, QPushButton#closeButton {
-    background: transparent; border: none; border-radius: 0; padding: 0; color: %6;
+    background: transparent; border: none; border-radius: 0; padding: 0; color: @titlebarText@;
 }
-QPushButton#captionButton:hover { background: %10; }
-QPushButton#captionButton:pressed { background: %12; }
+QPushButton#captionButton:hover { background: @hover@; }
+QPushButton#captionButton:pressed { background: @pressed@; }
 QPushButton#closeButton:hover { background: #e85663; color: white; }
 QPushButton#closeButton:pressed { background: #c63946; color: white; }
-QLineEdit, QComboBox { background: %16; color: %8; border: 1px solid %9; border-radius: 9px; padding: 0 10px; selection-background-color: %17; selection-color: %8; }
-QLineEdit:focus, QComboBox:focus { background: %18; border-color: %11; }
+QLineEdit, QComboBox { background: @field@; color: @text@; border: 1px solid @border@; border-radius: 9px; padding: 0 10px; selection-background-color: @selection@; selection-color: @text@; }
+QLineEdit:focus, QComboBox:focus { background: @fieldFocus@; border-color: @accent@; }
 QComboBox::drop-down { width: 28px; border: none; }
-QComboBox QAbstractItemView { background: %7; color: %8; border: 1px solid %9; selection-background-color: %17; padding: 4px; }
-QListWidget { background: %7; color: %8; border: none; outline: none; padding: 0; }
+QComboBox QAbstractItemView { background: @surface@; color: @text@; border: 1px solid @border@; selection-background-color: @selection@; padding: 4px; }
+QListWidget { background: @surface@; color: @text@; border: none; outline: none; padding: 0; }
 QListWidget::item { border: none; padding: 0; }
-QListWidget#projectList { background: %20; color: %21; border: none; }
+QListWidget#projectList { background: @listSurface@; color: @listText@; border: none; }
 QWidget#workspace, QStackedWidget#workspace,
 QWidget#terminalHost { background: transparent; border: none; padding: 0; }
-QLabel#sidebarTitle { color: %8; }
-QLabel#mutedLabel, QLabel#footerLabel { color: %19; }
-QFrame#separator { background: %9; }
+QLabel#sidebarTitle { color: @text@; }
+QLabel#mutedLabel, QLabel#footerLabel { color: @muted@; }
+QFrame#separator { background: @border@; }
 QScrollBar:vertical { background: transparent; width: 12px; margin: 3px 2px 3px 0; }
-QScrollBar::handle:vertical { background: %9; border-radius: 5px; min-height: 28px; }
-QScrollBar::handle:vertical:hover { background: %11; }
+QScrollBar::handle:vertical { background: @border@; border-radius: 5px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: @accent@; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-QDialog { background: %1; color: %2; border: 1px solid %9; border-radius: 14px; }
+QDialog { background: @window@; color: @text@; border: 1px solid @border@; border-radius: 14px; }
   QDialog#settingsDialog, QDialog#bindingDialog { background: transparent; border: none; border-radius: 0; }
-  QDialog#projectDialog, QDialog#nameCommandDialog { background: %1; }
-  QWidget#settingsSurface, QWidget#bindingSurface { background: %1; color: %8; border: 1px solid %9; border-radius: 14px; }
+  QDialog#projectDialog, QDialog#nameCommandDialog { background: @window@; }
+  QWidget#settingsSurface, QWidget#bindingSurface { background: @window@; color: @text@; border: 1px solid @border@; border-radius: 14px; }
   QWidget#settingsHeader, QWidget#settingsBody, QStackedWidget#settingsPages,
   QWidget#settingsPage {
-      background: transparent; color: %8; border: none; border-radius: 0;
+      background: transparent; color: @text@; border: none; border-radius: 0;
   }
-  QWidget#dialogSurface { background: %1; color: %8; border: none; border-radius: 0; }
+  QWidget#dialogSurface { background: @window@; color: @text@; border: none; border-radius: 0; }
   QWidget#settingsNavigationPanel {
-      background: %7; border: none; border-right: 1px solid %9;
+      background: @surface@; border: none; border-right: 1px solid @border@;
       border-bottom-left-radius: 13px;
   }
   QListWidget#settingsNavigation { background: transparent; border: none; }
 QListWidget#settingsNavigation::item { min-height: 38px; padding: 0 14px; border-radius: 7px; }
-QListWidget#settingsNavigation::item:hover { background: %10; }
-QListWidget#settingsNavigation::item:selected { background: %17; color: %8; }
+QListWidget#settingsNavigation::item:hover { background: @hover@; }
+QListWidget#settingsNavigation::item:selected { background: @selection@; color: @text@; }
 QListWidget#settingsProjectTypes::item, QListWidget#settingsGroups::item {
     padding: 0 12px; border-radius: 7px;
 }
 QListWidget#settingsProjectTypes::item:hover, QListWidget#settingsGroups::item:hover {
-    background: %10;
+    background: @hover@;
 }
 QListWidget#settingsProjectTypes::item:selected, QListWidget#settingsGroups::item:selected {
-    background: %17; color: %8;
+    background: @selection@; color: @text@;
 }
 QDialog QLineEdit, QDialog QComboBox { min-height: 42px; padding: 0 14px; }
 QDialog QPushButton { min-height: 40px; padding: 0 18px; }
 QDialog QPushButton#captionButton { min-height: 0; padding: 0; }
 QDialogButtonBox QPushButton { min-width: 100px; }
-QDialog QLabel { color: %8; }
-QDialog QGroupBox { border: 1px solid %9; border-radius: 10px; margin-top: 12px; padding: 12px; }
-QDialog QTabWidget::pane { border: 1px solid %9; border-radius: 8px; }
-QListView, QTreeView, QTableView { background: %7; color: %8; border: 1px solid %9; border-radius: 8px; alternate-background-color: %1; }
-QListView::item:selected, QTreeView::item:selected, QTableView::item:selected { background: %17; color: %8; }
-QToolTip { background: %7; color: %8; border: 1px solid %9; padding: 5px; }
-    )")
-        .arg(Css(window), Css(text), Css(ToQColor(theme.titlebar)), Css(accentStrong),
-             Css(accent), Css(ToQColor(theme.titlebar_text)), Css(surface), Css(text),
-             Css(border), Css(hover), Css(accent), Css(pressed), Css(accentStrong),
-             Css(accent), Css(accent), Css(field), Css(selection), Css(fieldFocus), Css(muted),
-             Css(ToQColor(theme.list_surface)), Css(ToQColor(theme.list_text)));
+QDialog QLabel { color: @text@; }
+QDialog QGroupBox { border: 1px solid @border@; border-radius: 10px; margin-top: 12px; padding: 12px; }
+QDialog QTabWidget::pane { border: 1px solid @border@; border-radius: 8px; }
+QListView, QTreeView, QTableView { background: @surface@; color: @text@; border: 1px solid @border@; border-radius: 8px; alternate-background-color: @window@; }
+QListView::item:selected, QTreeView::item:selected, QTableView::item:selected { background: @selection@; color: @text@; }
+QToolTip { background: @surface@; color: @text@; border: 1px solid @border@; padding: 5px; }
+    )");
+
+    const auto replaceColor = [&style](const char* token, const QColor& color) {
+        style.replace(QString::fromLatin1(token), Css(color));
+    };
+    replaceColor("@window@", window);
+    replaceColor("@panel@", panel);
+    replaceColor("@surface@", surface);
+    replaceColor("@border@", border);
+    replaceColor("@text@", text);
+    replaceColor("@muted@", muted);
+    replaceColor("@accent@", accent);
+    replaceColor("@accentStrong@", accentStrong);
+    replaceColor("@field@", field);
+    replaceColor("@fieldFocus@", fieldFocus);
+    replaceColor("@selection@", selection);
+    replaceColor("@hover@", hover);
+    replaceColor("@pressed@", pressed);
+    replaceColor("@titlebar@", ToQColor(theme.titlebar));
+    replaceColor("@titlebarText@", ToQColor(theme.titlebar_text));
+    replaceColor("@listSurface@", ToQColor(theme.list_surface));
+    replaceColor("@listText@", ToQColor(theme.list_text));
+    return style;
 }
 
 SingleTextDialog::SingleTextDialog(const QString& title,
@@ -531,12 +555,20 @@ void TitleBarWidget::mousePressEvent(QMouseEvent* event) {
         QWidget::mousePressEvent(event);
         return;
     }
-    // Do not use QWindow::startSystemMove() here.  On Windows that enters the
-    // native move loop; when this app is initially inactive (or the system's
-    // "show window contents while dragging" option is disabled), DWM draws a
-    // thick gray/white wire-frame around the window.  Track the pointer and
-    // move the complete window ourselves so the rendered window remains the
-    // only drag feedback.
+    // Hand dragging to Windows whenever possible.  The native move loop is
+    // what enables edge/corner Snap, Snap Assist and dragging a maximized
+    // window back to its restored size.  Keep the manual path below only as a
+    // fallback for platforms where system move is unavailable.
+    if (auto* top = window(); top && top->windowHandle()) {
+        top->activateWindow();
+        if (top->windowHandle()->startSystemMove()) {
+            drag_pending_ = false;
+            dragging_ = false;
+            event->accept();
+            return;
+        }
+    }
+
     drag_pending_ = true;
     dragging_ = false;
     drag_press_global_ = event->globalPosition().toPoint();

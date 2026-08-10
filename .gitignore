@@ -2,6 +2,7 @@
 /desktop/build/
 /desktop/build-qt/
 /desktop/bin/
+/desktop/installer/output/
 /target/
 
 # Android/Gradle build state
