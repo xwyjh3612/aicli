@@ -38,6 +38,51 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
+            android:text="连接优先级"
+            android:textColor="@color/aicli_text"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/computerRoutePreferenceGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            app:selectionRequired="true"
+            app:singleSelection="true">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/computerPreferLocalButton"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="局域网优先"
+                android:textAllCaps="false" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/computerPreferRemoteButton"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="广域网优先"
+                android:textAllCaps="false" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+        <TextView
+            android:id="@+id/computerRoutePreferenceHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:lineSpacingExtra="2dp"
+            android:textColor="@color/aicli_text_tertiary"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
             android:text="访问地址"
             android:textColor="@color/aicli_text"
             android:textSize="15sp"
@@ -56,7 +101,7 @@
             app:boxCornerRadiusTopEnd="14dp"
             app:boxCornerRadiusTopStart="14dp"
             app:boxStrokeColor="@color/aicli_primary"
-            app:helperText="同一局域网下始终优先使用，可留空"
+            app:helperText="用于同一网络内直连，可留空"
             app:hintTextColor="@color/aicli_text_secondary">
 
             <com.google.android.material.textfield.TextInputEditText
@@ -83,7 +128,7 @@
             app:boxCornerRadiusTopEnd="14dp"
             app:boxCornerRadiusTopStart="14dp"
             app:boxStrokeColor="@color/aicli_primary"
-            app:helperText="局域网不可用时自动切换，可留空"
+            app:helperText="用于公网或 Relay 访问，可留空"
             app:hintTextColor="@color/aicli_text_secondary">
 
             <com.google.android.material.textfield.TextInputEditText
@@ -97,13 +142,5 @@
                 android:textColorHint="@color/aicli_text_tertiary" />
         </com.google.android.material.textfield.TextInputLayout>
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:lineSpacingExtra="2dp"
-            android:text="连接策略：局域网优先；失败后自动使用公网；局域网恢复后自动切回。"
-            android:textColor="@color/aicli_text_tertiary"
-            android:textSize="12sp" />
     </LinearLayout>
 </ScrollView>

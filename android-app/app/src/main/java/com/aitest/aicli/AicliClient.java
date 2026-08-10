@@ -54,8 +54,8 @@ public final class AicliClient {
     private static final String PHONE_PREFS = "device_identity";
     private static final String PHONE_NAME_KEY = "deviceName";
     private static final Object SEQUENCE_LOCK = new Object();
-    private static final long LOCAL_RECOVERY_INITIAL_DELAY_SECONDS = 8L;
-    private static final long LOCAL_RECOVERY_INTERVAL_SECONDS = 15L;
+    private static final long PREFERRED_ROUTE_INITIAL_DELAY_SECONDS = 1L;
+    private static final long PREFERRED_ROUTE_INTERVAL_SECONDS = 15L;
 
     public static final class Conversation {
         public final String id;
@@ -107,6 +107,7 @@ public final class AicliClient {
     private volatile String baseUrl = "";
     private volatile String localUrl = "";
     private volatile String remoteUrl = "";
+    private volatile String routePreference = ComputerConnectionStore.ROUTE_LOCAL;
     private volatile String certificateFingerprint = "";
     private volatile String computerId = "";
     private volatile String token = "";
@@ -119,7 +120,7 @@ public final class AicliClient {
     private volatile String eventsConversationId = "";
     private final AtomicLong eventsGeneration = new AtomicLong();
     private ScheduledFuture<?> reconnectTask;
-    private ScheduledFuture<?> localRecoveryTask;
+    private ScheduledFuture<?> preferredRouteRecoveryTask;
     private volatile boolean closed;
     private volatile boolean clientClosed;
 
@@ -151,15 +152,20 @@ public final class AicliClient {
                 ? preferences.getString("localAddress", "") : active.localUrl);
         this.remoteUrl = normalize(active == null
                 ? preferences.getString("remoteAddress", "") : active.remoteUrl);
+        this.routePreference = ComputerConnectionStore.normalizeRoutePreference(active == null
+                ? preferences.getString("routePreference", ComputerConnectionStore.ROUTE_LOCAL)
+                : active.routePreference);
         String requestedAddress = normalize(requestedBaseUrl == null || requestedBaseUrl.trim().isEmpty()
                 ? savedBase : requestedBaseUrl);
-        this.baseUrl = preferredAddress(this.localUrl, this.remoteUrl, requestedAddress);
+        this.baseUrl = startingAddress(this.localUrl, this.remoteUrl,
+                requestedAddress, this.routePreference);
         this.certificateFingerprint = normalizeFingerprint(active == null
                 ? preferences.getString("certificateSha256", "")
                 : active.certificateFingerprint);
         this.computerId = active == null
                 ? preferences.getString("computerId", "") : active.computerId;
         rebuildHttpClient();
+        updatePreferredRouteProbe();
     }
 
     /** Compatibility constructor used only by old callers; it has no identity until configured. */
@@ -178,6 +184,7 @@ public final class AicliClient {
     public String computerId() { return computerId; }
     public String localUrl() { return localUrl; }
     public String remoteUrl() { return remoteUrl; }
+    public String routePreference() { return routePreference; }
 
     public String deviceName() {
         String saved = identityPreferences == null
@@ -216,13 +223,13 @@ public final class AicliClient {
         } else if (preferences != null) {
             preferences.edit().putString("baseUrl", baseUrl).apply();
         }
-        updateLocalRecoveryProbe();
+        updatePreferredRouteProbe();
     }
 
     /** Stop network callbacks when the owning activity is discarded. */
     public void close() {
         clientClosed = true;
-        stopLocalRecoveryProbe();
+        stopPreferredRouteProbe();
         closeEvents();
         executor.shutdownNow();
     }
@@ -241,6 +248,7 @@ public final class AicliClient {
                                             String computerName, boolean persist) {
         localUrl = normalizeAddress(local);
         remoteUrl = normalizeAddress(remote);
+        routePreference = ComputerConnectionStore.ROUTE_LOCAL;
         baseUrl = normalizeAddress(preferred);
         if (baseUrl.isEmpty()) baseUrl = !localUrl.isEmpty() ? localUrl : remoteUrl;
         certificateFingerprint = normalizeFingerprint(fingerprint);
@@ -263,11 +271,12 @@ public final class AicliClient {
             preferences.edit().putString("baseUrl", baseUrl)
                     .putString("localAddress", localUrl)
                     .putString("remoteAddress", remoteUrl)
+                    .putString("routePreference", routePreference)
                     .putString("certificateSha256", certificateFingerprint)
                     .putString("computerId", computerId).apply();
         }
         rebuildHttpClient();
-        if (persist) updateLocalRecoveryProbe();
+        if (persist) updatePreferredRouteProbe();
     }
 
     public void listConversations(String provider, ConversationCallback callback) {
@@ -376,6 +385,11 @@ public final class AicliClient {
                 Request request = signedBuilder("GET", path, "", true)
                         .url(webSocketUrl(connectionAddress, path)).build();
                 eventsSocket = http.newWebSocket(request, new WebSocketListener() {
+                    @Override public void onOpen(@NonNull WebSocket socket,
+                                                 @NonNull Response response) {
+                        if (generation != eventsGeneration.get()) return;
+                        recordSuccessfulAddress(connectionAddress);
+                    }
                     @Override public void onMessage(@NonNull WebSocket socket, @NonNull String text) {
                         if (generation != eventsGeneration.get()) return;
                         EventCallback current = eventsCallback;
@@ -410,7 +424,7 @@ public final class AicliClient {
 
     public void clearConnection() {
         closeEvents();
-        stopLocalRecoveryProbe();
+        stopPreferredRouteProbe();
         localUrl = "";
         remoteUrl = "";
         baseUrl = "";
@@ -423,7 +437,8 @@ public final class AicliClient {
         if (connectionStore != null) connectionStore.removeActive();
         else if (preferences != null) {
             preferences.edit().remove("baseUrl").remove("localAddress")
-                    .remove("remoteAddress").remove("certificateSha256")
+                    .remove("remoteAddress").remove("routePreference")
+                    .remove("certificateSha256")
                     .remove("computerId").apply();
         }
         rebuildHttpClient();
@@ -539,6 +554,7 @@ public final class AicliClient {
                         callback.onError("电脑返回 HTTP " + status + errorText(text));
                         return;
                     }
+                    recordSuccessfulAddress(attemptedAddress);
                     callback.onResponse(parseObject(text), status);
                     return;
                 } catch (Exception exception) {
@@ -754,7 +770,7 @@ public final class AicliClient {
             baseUrl = address;
         }
         synchronized (authLock) { token = ""; tokenExpiresAt = 0L; }
-        updateLocalRecoveryProbe();
+        updatePreferredRouteProbe();
         if (reconnectEvents) reconnectEventsForAddressChange();
         return true;
     }
@@ -766,38 +782,45 @@ public final class AicliClient {
         connectEvents(conversationId, callback);
     }
 
-    private void updateLocalRecoveryProbe() {
-        if (clientClosed || localUrl.isEmpty() || localUrl.equals(baseUrl) ||
+    private void updatePreferredRouteProbe() {
+        String preferred = preferredRouteAddress();
+        if (clientClosed || preferred.isEmpty() || preferred.equals(baseUrl) ||
                 localUrl.equals(remoteUrl)) {
-            stopLocalRecoveryProbe();
+            stopPreferredRouteProbe();
             return;
         }
         synchronized (routeLock) {
-            if (localRecoveryTask != null && !localRecoveryTask.isDone()) return;
+            if (preferredRouteRecoveryTask != null &&
+                    !preferredRouteRecoveryTask.isDone()) return;
             try {
-                localRecoveryTask = executor.scheduleWithFixedDelay(
-                        this::tryRecoverLocalAddress,
-                        LOCAL_RECOVERY_INITIAL_DELAY_SECONDS,
-                        LOCAL_RECOVERY_INTERVAL_SECONDS,
+                preferredRouteRecoveryTask = executor.scheduleWithFixedDelay(
+                        this::tryRecoverPreferredAddress,
+                        PREFERRED_ROUTE_INITIAL_DELAY_SECONDS,
+                        PREFERRED_ROUTE_INTERVAL_SECONDS,
                         TimeUnit.SECONDS);
             } catch (RuntimeException ignored) { }
         }
     }
 
-    private void stopLocalRecoveryProbe() {
+    private void stopPreferredRouteProbe() {
         synchronized (routeLock) {
-            if (localRecoveryTask != null) localRecoveryTask.cancel(false);
-            localRecoveryTask = null;
+            if (preferredRouteRecoveryTask != null) {
+                preferredRouteRecoveryTask.cancel(false);
+            }
+            preferredRouteRecoveryTask = null;
         }
     }
 
-    private void tryRecoverLocalAddress() {
-        if (clientClosed || localUrl.isEmpty() || localUrl.equals(baseUrl)) {
-            stopLocalRecoveryProbe();
+    private void tryRecoverPreferredAddress() {
+        String preferred = preferredRouteAddress();
+        if (clientClosed || preferred.isEmpty() || preferred.equals(baseUrl)) {
+            stopPreferredRouteProbe();
             return;
         }
-        if (!probeAddress(localUrl)) return;
-        switchCurrentAddress(localUrl, true);
+        if (!probeAddress(preferred)) return;
+        if (switchCurrentAddress(preferred, true)) {
+            recordSuccessfulAddress(preferred);
+        }
     }
 
     private boolean probeAddress(String address) {
@@ -823,10 +846,34 @@ public final class AicliClient {
         }
     }
 
-    private static String preferredAddress(String local, String remote, String fallback) {
-        if (local != null && !local.isEmpty()) return local;
-        if (remote != null && !remote.isEmpty()) return remote;
-        return fallback == null ? "" : fallback;
+    private String preferredRouteAddress() {
+        return ComputerConnectionStore.preferredAddress(
+                localUrl, remoteUrl, routePreference);
+    }
+
+    private void recordSuccessfulAddress(String value) {
+        String address = normalize(value);
+        if (address.isEmpty() || !address.equals(baseUrl)) return;
+        if (persistConnectionState && connectionStore != null && !computerId.isEmpty()) {
+            connectionStore.updateBaseUrl(computerId, address);
+        } else if (persistConnectionState && preferences != null) {
+            preferences.edit().putString("baseUrl", address).apply();
+        }
+        updatePreferredRouteProbe();
+    }
+
+    private static String startingAddress(String local, String remote, String lastSuccessful,
+                                          String preference) {
+        String saved = normalize(lastSuccessful);
+        String normalizedLocal = normalize(local);
+        String normalizedRemote = normalize(remote);
+        if (!saved.isEmpty() &&
+                (saved.equals(normalizedLocal) || saved.equals(normalizedRemote))) {
+            return saved;
+        }
+        String preferred = ComputerConnectionStore.preferredAddress(
+                normalizedLocal, normalizedRemote, preference);
+        return preferred.isEmpty() ? saved : preferred;
     }
 
     private static String distinctAddress(String candidate, String current) {

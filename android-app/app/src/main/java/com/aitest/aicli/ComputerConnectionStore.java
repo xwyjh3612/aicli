@@ -15,6 +15,9 @@ import java.util.List;
 
 /** Stores every authorized desktop while exposing one active connection. */
 public final class ComputerConnectionStore {
+    public static final String ROUTE_LOCAL = "local";
+    public static final String ROUTE_REMOTE = "remote";
+
     private static final Object LOCK = new Object();
     private static final String PREFS = "connection";
     private static final String COMPUTERS_KEY = "computers.v1";
@@ -28,6 +31,7 @@ public final class ComputerConnectionStore {
         public final String baseUrl;
         public final String localUrl;
         public final String remoteUrl;
+        public final String routePreference;
         public final String certificateFingerprint;
         public final long pairedAt;
 
@@ -35,11 +39,18 @@ public final class ComputerConnectionStore {
                         String localUrl, String remoteUrl,
                         String certificateFingerprint, long pairedAt) {
             this(computerId, name, "", baseUrl, localUrl, remoteUrl,
-                    certificateFingerprint, pairedAt);
+                    ROUTE_LOCAL, certificateFingerprint, pairedAt);
         }
 
         public Computer(String computerId, String name, String remark, String baseUrl,
                         String localUrl, String remoteUrl,
+                        String certificateFingerprint, long pairedAt) {
+            this(computerId, name, remark, baseUrl, localUrl, remoteUrl,
+                    ROUTE_LOCAL, certificateFingerprint, pairedAt);
+        }
+
+        public Computer(String computerId, String name, String remark, String baseUrl,
+                        String localUrl, String remoteUrl, String routePreference,
                         String certificateFingerprint, long pairedAt) {
             this.computerId = clean(computerId);
             this.name = clean(name);
@@ -47,6 +58,7 @@ public final class ComputerConnectionStore {
             this.baseUrl = normalizeAddress(baseUrl);
             this.localUrl = normalizeAddress(localUrl);
             this.remoteUrl = normalizeAddress(remoteUrl);
+            this.routePreference = normalizeRoutePreference(routePreference);
             this.certificateFingerprint = normalizeFingerprint(certificateFingerprint);
             this.pairedAt = pairedAt;
         }
@@ -65,31 +77,44 @@ public final class ComputerConnectionStore {
 
         public String connectionKey() {
             return computerId + "\n" + baseUrl + "\n" + localUrl + "\n"
-                    + remoteUrl + "\n" + certificateFingerprint;
+                    + remoteUrl + "\n" + routePreference + "\n" + certificateFingerprint;
         }
 
         public Computer withBaseUrl(String value) {
             return new Computer(computerId, name, remark, value, localUrl, remoteUrl,
-                    certificateFingerprint, pairedAt);
+                    routePreference, certificateFingerprint, pairedAt);
         }
 
         public Computer withRemark(String value) {
             return new Computer(computerId, name, value, baseUrl, localUrl, remoteUrl,
-                    certificateFingerprint, pairedAt);
+                    routePreference, certificateFingerprint, pairedAt);
         }
 
         public Computer withName(String value) {
             return new Computer(computerId, value, remark, baseUrl, localUrl, remoteUrl,
-                    certificateFingerprint, pairedAt);
+                    routePreference, certificateFingerprint, pairedAt);
         }
 
         public Computer withAddresses(String local, String remote) {
+            return withConnectionSettings(local, remote, routePreference);
+        }
+
+        public Computer withConnectionSettings(String local, String remote, String preference) {
             String normalizedLocal = normalizeAddress(local);
             String normalizedRemote = normalizeAddress(remote);
-            String preferred = !normalizedLocal.isEmpty() ? normalizedLocal : normalizedRemote;
-            return new Computer(computerId, name, remark, preferred,
-                    normalizedLocal, normalizedRemote, certificateFingerprint, pairedAt);
+            String normalizedPreference = normalizeRoutePreference(preference);
+            String lastSuccessful = normalizeAddress(baseUrl);
+            if (!lastSuccessful.equals(normalizedLocal) &&
+                    !lastSuccessful.equals(normalizedRemote)) {
+                lastSuccessful = preferredAddress(
+                        normalizedLocal, normalizedRemote, normalizedPreference);
+            }
+            return new Computer(computerId, name, remark, lastSuccessful,
+                    normalizedLocal, normalizedRemote, normalizedPreference,
+                    certificateFingerprint, pairedAt);
         }
+
+        public boolean remotePreferred() { return ROUTE_REMOTE.equals(routePreference); }
     }
 
     private final SharedPreferences preferences;
@@ -148,6 +173,7 @@ public final class ComputerConnectionStore {
                 computers.set(index, new Computer(
                         computer.computerId, name, remark, computer.baseUrl,
                         computer.localUrl, computer.remoteUrl,
+                        existing.routePreference,
                         computer.certificateFingerprint,
                         computer.pairedAt > 0 ? computer.pairedAt : existing.pairedAt));
                 computer = computers.get(index);
@@ -167,15 +193,29 @@ public final class ComputerConnectionStore {
         synchronized (LOCK) {
             Computer current = active();
             if (current == null) return false;
-            Computer updated = current.withBaseUrl(value);
+            return updateBaseUrl(current.computerId, value);
+        }
+    }
+
+    public boolean updateBaseUrl(String computerId, String value) {
+        String targetId = clean(computerId);
+        String normalizedValue = normalizeAddress(value);
+        if (targetId.isEmpty() || normalizedValue.isEmpty()) return false;
+        synchronized (LOCK) {
             List<Computer> computers = readComputers();
             for (int index = 0; index < computers.size(); index++) {
-                if (computers.get(index).computerId.equals(current.computerId)) {
-                    computers.set(index, updated);
-                    writeComputers(computers);
+                Computer current = computers.get(index);
+                if (!current.computerId.equals(targetId)) continue;
+                if (!normalizedValue.equals(current.localUrl) &&
+                        !normalizedValue.equals(current.remoteUrl)) return false;
+                if (normalizedValue.equals(current.baseUrl)) return true;
+                Computer updated = current.withBaseUrl(normalizedValue);
+                computers.set(index, updated);
+                writeComputers(computers);
+                if (targetId.equals(preferences.getString(ACTIVE_KEY, ""))) {
                     mirrorActive(updated);
-                    return true;
                 }
+                return true;
             }
             return false;
         }
@@ -217,6 +257,13 @@ public final class ComputerConnectionStore {
     }
 
     public boolean updateAddresses(String computerId, String localUrl, String remoteUrl) {
+        Computer existing = find(computerId);
+        String preference = existing == null ? ROUTE_LOCAL : existing.routePreference;
+        return updateConnectionSettings(computerId, localUrl, remoteUrl, preference);
+    }
+
+    public boolean updateConnectionSettings(String computerId, String localUrl,
+                                            String remoteUrl, String routePreference) {
         String targetId = clean(computerId);
         String normalizedLocal = normalizeAddress(localUrl);
         String normalizedRemote = normalizeAddress(remoteUrl);
@@ -228,7 +275,8 @@ public final class ComputerConnectionStore {
             for (int index = 0; index < computers.size(); index++) {
                 Computer computer = computers.get(index);
                 if (!computer.computerId.equals(targetId)) continue;
-                Computer updated = computer.withAddresses(normalizedLocal, normalizedRemote);
+                Computer updated = computer.withConnectionSettings(
+                        normalizedLocal, normalizedRemote, routePreference);
                 computers.set(index, updated);
                 writeComputers(computers);
                 if (targetId.equals(preferences.getString(ACTIVE_KEY, ""))) {
@@ -237,6 +285,16 @@ public final class ComputerConnectionStore {
                 return true;
             }
             return false;
+        }
+    }
+
+    private Computer find(String computerId) {
+        String targetId = clean(computerId);
+        synchronized (LOCK) {
+            for (Computer computer : readComputers()) {
+                if (computer.computerId.equals(targetId)) return computer;
+            }
+            return null;
         }
     }
 
@@ -315,6 +373,7 @@ public final class ComputerConnectionStore {
                         stringValue(value, "remark"),
                         stringValue(value, "baseUrl"), stringValue(value, "localUrl"),
                         stringValue(value, "remoteUrl"),
+                        stringValue(value, "routePreference"),
                         stringValue(value, "certificateFingerprint"),
                         longValue(value, "pairedAt"));
                 if (!computer.computerId.isEmpty()) result.add(computer);
@@ -333,6 +392,7 @@ public final class ComputerConnectionStore {
             value.addProperty("baseUrl", computer.baseUrl);
             value.addProperty("localUrl", computer.localUrl);
             value.addProperty("remoteUrl", computer.remoteUrl);
+            value.addProperty("routePreference", computer.routePreference);
             value.addProperty("certificateFingerprint", computer.certificateFingerprint);
             value.addProperty("pairedAt", computer.pairedAt);
             array.add(value);
@@ -344,12 +404,14 @@ public final class ComputerConnectionStore {
         SharedPreferences.Editor editor = preferences.edit();
         if (computer == null) {
             editor.remove("baseUrl").remove("localAddress").remove("remoteAddress")
-                    .remove("certificateSha256").remove("computerId").apply();
+                    .remove("routePreference").remove("certificateSha256")
+                    .remove("computerId").apply();
             return;
         }
         editor.putString("baseUrl", computer.baseUrl)
                 .putString("localAddress", computer.localUrl)
                 .putString("remoteAddress", computer.remoteUrl)
+                .putString("routePreference", computer.routePreference)
                 .putString("certificateSha256", computer.certificateFingerprint)
                 .putString("computerId", computer.computerId).apply();
     }
@@ -384,6 +446,19 @@ public final class ComputerConnectionStore {
 
     private static String normalizeFingerprint(String value) {
         return clean(value).replace(":", "").replace(" ", "").toUpperCase(java.util.Locale.US);
+    }
+
+    public static String normalizeRoutePreference(String value) {
+        return ROUTE_REMOTE.equalsIgnoreCase(clean(value)) ? ROUTE_REMOTE : ROUTE_LOCAL;
+    }
+
+    public static String preferredAddress(String local, String remote, String preference) {
+        String normalizedLocal = normalizeAddress(local);
+        String normalizedRemote = normalizeAddress(remote);
+        if (ROUTE_REMOTE.equals(normalizeRoutePreference(preference))) {
+            return !normalizedRemote.isEmpty() ? normalizedRemote : normalizedLocal;
+        }
+        return !normalizedLocal.isEmpty() ? normalizedLocal : normalizedRemote;
     }
 
     private static boolean containsComputer(List<Computer> computers, String computerId) {

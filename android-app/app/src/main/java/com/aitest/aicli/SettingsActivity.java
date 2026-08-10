@@ -16,6 +16,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.button.MaterialButtonToggleGroup;
 import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.android.material.textfield.TextInputEditText;
 import com.google.android.material.textfield.TextInputLayout;
@@ -255,6 +256,9 @@ public final class SettingsActivity extends AppCompatActivity {
         TextInputLayout remoteLayout = content.findViewById(R.id.computerRemoteAddressLayout);
         TextInputEditText localInput = content.findViewById(R.id.computerLocalAddressInput);
         TextInputEditText remoteInput = content.findViewById(R.id.computerRemoteAddressInput);
+        MaterialButtonToggleGroup routeGroup = content.findViewById(
+                R.id.computerRoutePreferenceGroup);
+        TextView routeHint = content.findViewById(R.id.computerRoutePreferenceHint);
 
         ComputerConnectionStore.Computer active = connectionStore.active();
         boolean isActive = active != null && active.computerId.equals(computer.computerId);
@@ -266,10 +270,21 @@ public final class SettingsActivity extends AppCompatActivity {
         metadata.setText("电脑名称：" + desktopName
                 + "\n服务端 ID：" + computer.computerId
                 + "\n绑定时间：" + pairedTime
+                + "\n上次可用地址：" + (computer.baseUrl.isEmpty() ? "尚未记录" : computer.baseUrl)
                 + "\n证书指纹：" + (computer.certificateFingerprint.isEmpty()
                 ? "未固定" : computer.certificateFingerprint));
         localInput.setText(computer.localUrl);
         remoteInput.setText(computer.remoteUrl);
+        routeGroup.check(computer.remotePreferred()
+                ? R.id.computerPreferRemoteButton : R.id.computerPreferLocalButton);
+        updateRoutePreferenceHint(routeHint, computer.routePreference);
+        routeGroup.addOnButtonCheckedListener((group, checkedId, isChecked) -> {
+            if (!isChecked) return;
+            updateRoutePreferenceHint(routeHint,
+                    checkedId == R.id.computerPreferRemoteButton
+                            ? ComputerConnectionStore.ROUTE_REMOTE
+                            : ComputerConnectionStore.ROUTE_LOCAL);
+        });
 
         AlertDialog dialog = new MaterialAlertDialogBuilder(this)
                 .setTitle(computer.displayName())
@@ -302,7 +317,12 @@ public final class SettingsActivity extends AppCompatActivity {
                         localInput.requestFocus();
                         return;
                     }
-                    if (!connectionStore.updateAddresses(computer.computerId, local, remote)) {
+                    String routePreference = routeGroup.getCheckedButtonId()
+                            == R.id.computerPreferRemoteButton
+                            ? ComputerConnectionStore.ROUTE_REMOTE
+                            : ComputerConnectionStore.ROUTE_LOCAL;
+                    if (!connectionStore.updateConnectionSettings(
+                            computer.computerId, local, remote, routePreference)) {
                         Toast.makeText(this, "服务端地址保存失败", Toast.LENGTH_LONG).show();
                         return;
                     }
@@ -312,7 +332,7 @@ public final class SettingsActivity extends AppCompatActivity {
                         updateStatus();
                     }
                     dialog.dismiss();
-                    Toast.makeText(this, "服务端地址已保存", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "服务端连接设置已保存", Toast.LENGTH_SHORT).show();
                 }));
         dialog.show();
     }
@@ -393,17 +413,28 @@ public final class SettingsActivity extends AppCompatActivity {
         }
         String actualName = !active.remark.isEmpty() && !active.name.isEmpty()
                 ? "\n电脑名称：" + active.name : "";
-        String preferredAddress = !active.localUrl.isEmpty()
-                ? active.localUrl : active.remoteUrl;
+        String preferredAddress = ComputerConnectionStore.preferredAddress(
+                active.localUrl, active.remoteUrl, active.routePreference);
+        String preferenceLabel = active.remotePreferred() ? "广域网优先" : "局域网优先";
         computerStatus.setText("当前服务端：" + active.displayName()
                 + actualName
-                + "\n连接策略：局域网优先，公网自动兜底"
+                + "\n连接策略：" + preferenceLabel + "，失败时自动切换"
                 + "\n首选地址：" + preferredAddress
+                + "\n上次可用：" + (active.baseUrl.isEmpty() ? "尚未记录" : active.baseUrl)
                 + (active.localUrl.isEmpty() ? "" : "\n局域网地址：" + active.localUrl)
                 + (active.remoteUrl.isEmpty() ? "" : "\n公网/Relay：" + active.remoteUrl)
                 + "\n证书指纹：" + (client.certificateFingerprint().isEmpty()
                 ? "未固定（请优先使用扫码绑定）" : client.certificateFingerprint())
                 + "\n手机 ID：" + client.phoneId());
+    }
+
+    private static void updateRoutePreferenceHint(TextView view, String preference) {
+        if (ComputerConnectionStore.ROUTE_REMOTE.equals(
+                ComputerConnectionStore.normalizeRoutePreference(preference))) {
+            view.setText("优先使用公网；公网不可用时切到局域网，并在后台探测公网，恢复后自动切回。");
+        } else {
+            view.setText("优先使用局域网；局域网不可用时切到公网，并在后台探测局域网，恢复后自动切回。");
+        }
     }
 
     private static String textOf(TextInputEditText input) {

@@ -92,6 +92,10 @@ final class ComputerConnectionAdapter
         if (!routes.isEmpty()) {
             if (value.length() > 0) value.append("  ·  ");
             value.append(routes);
+            if (!computer.localUrl.isEmpty() && !computer.remoteUrl.isEmpty()) {
+                value.append("  ·  ").append(computer.remotePreferred()
+                        ? "广域网优先" : "局域网优先");
+            }
         }
         if (value.length() == 0) value.append(computer.computerId);
         return value.toString();

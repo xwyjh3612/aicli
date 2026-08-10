@@ -35,6 +35,7 @@ public final class MainActivity extends AppCompatActivity {
     private static final String BASE_URL_KEY = "baseUrl";
     private static final String APP_PREFS = "app_settings";
     private static final String ALL_GROUPS = "__all__";
+    private static final String LAST_CONVERSATION_PREFIX = "last_conversation.";
     private static final long[] POST_SEND_REPLAY_DELAYS_MS = {220L, 900L};
 
     private final List<AicliClient.Conversation> allConversations = new ArrayList<>();
@@ -45,6 +46,7 @@ public final class MainActivity extends AppCompatActivity {
     private ConversationAdapter conversationAdapter;
     private String selectedGroup = ALL_GROUPS;
     private String selectedConversationId;
+    private String pendingConversationId;
     private AicliClient.Conversation selectedConversation;
     private long lastEventId;
     private String configuredConnectionKey = "";
@@ -207,6 +209,8 @@ public final class MainActivity extends AppCompatActivity {
                 ? preferences.getString(BASE_URL_KEY, "") + "\n"
                     + preferences.getString("localAddress", "") + "\n"
                     + preferences.getString("remoteAddress", "") + "\n"
+                    + preferences.getString("routePreference",
+                            ComputerConnectionStore.ROUTE_LOCAL) + "\n"
                     + preferences.getString("certificateSha256", "") + "\n"
                     + preferences.getString("computerId", "")
                 : activeComputer.connectionKey();
@@ -244,6 +248,7 @@ public final class MainActivity extends AppCompatActivity {
                     allConversations.clear();
                     allConversations.addAll(conversations);
                     refreshComputerSelector(connectionStore.active());
+                    prepareLastConversationRestore(conversations);
                     rebuildGroupSelector(conversations);
                     setConnectionStatus(activeComputerName() + " · 已连接 · "
                             + conversations.size() + " 个项目");
@@ -305,6 +310,7 @@ public final class MainActivity extends AppCompatActivity {
                 ? "全部分组 · " + filtered.size() + " 个项目"
                 : selectedGroup + " · " + filtered.size() + " 个项目");
         if (filtered.isEmpty()) {
+            pendingConversationId = null;
             selectedConversationId = null;
             selectedConversation = null;
             conversationAdapter.select(null);
@@ -314,17 +320,24 @@ public final class MainActivity extends AppCompatActivity {
         }
 
         AicliClient.Conversation selected = null;
-        if (!selectFirst && selectedConversationId != null) {
+        String desiredConversationId = selectFirst ? null : selectedConversationId;
+        if (desiredConversationId == null && !selectFirst) {
+            desiredConversationId = pendingConversationId;
+        }
+        if (desiredConversationId != null) {
             for (AicliClient.Conversation value : filtered) {
-                if (value.id.equals(selectedConversationId)) {
+                if (value.id.equals(desiredConversationId)) {
                     selected = value;
                     break;
                 }
             }
         }
+        pendingConversationId = null;
         if (selected == null) selected = filtered.get(0);
         updateProjectHeader(selected);
-        if (!selected.id.equals(selectedConversationId)) selectConversation(selected);
+        if (!selected.id.equals(selectedConversationId) || selectedConversation == null) {
+            selectConversation(selected);
+        }
         else {
             selectedConversation = selected;
             conversationAdapter.select(selected.id);
@@ -340,11 +353,13 @@ public final class MainActivity extends AppCompatActivity {
         final long requestGeneration = serverGeneration;
         selectedConversationId = conversation.id;
         selectedConversation = conversation;
+        rememberSelectedConversation(conversation.id);
         updateProjectHeader(conversation);
         conversationAdapter.select(conversation.id);
         drawerLayout.closeDrawer(GravityCompat.START);
         lastEventId = 0L;
         terminalRenderer.selectSession(conversation.id);
+        terminalRenderer.followBottom();
         terminalView.setVisibility(View.VISIBLE);
         updateProjectControls(conversation);
         hideEmptyState();
@@ -354,6 +369,7 @@ public final class MainActivity extends AppCompatActivity {
                     if (client != requestClient || serverGeneration != requestGeneration ||
                             !conversation.id.equals(selectedConversationId)) return;
                     for (String event : events) consumeEvent(event);
+                    terminalRenderer.followBottom();
                     connectRealtime(conversation.id);
                 });
             }
@@ -363,6 +379,7 @@ public final class MainActivity extends AppCompatActivity {
                     if (client != requestClient || serverGeneration != requestGeneration ||
                             !conversation.id.equals(selectedConversationId)) return;
                     appendOutput("[历史记录] " + message);
+                    terminalRenderer.followBottom();
                     connectRealtime(conversation.id);
                 });
             }
@@ -422,12 +439,16 @@ public final class MainActivity extends AppCompatActivity {
 
     private void startSelectedProject() {
         if (selectedConversationId == null || client == null) return;
+        String conversationId = selectedConversationId;
+        terminalRenderer.followBottom();
         startProjectButton.setEnabled(false);
         startProjectButton.setText("正在启动…");
-        client.control(selectedConversationId, "start", new AicliClient.ActionCallback() {
+        client.control(conversationId, "start", new AicliClient.ActionCallback() {
             @Override public void onSuccess() {
                 runOnUiThread(() -> terminalView.postDelayed(() -> {
-                    if (selectedConversationId != null) loadConversations();
+                    if (!conversationId.equals(selectedConversationId)) return;
+                    terminalRenderer.followBottom();
+                    loadConversations();
                 }, 350L));
             }
 
@@ -667,6 +688,7 @@ public final class MainActivity extends AppCompatActivity {
         postSendReplayGeneration++;
         terminalReconnectScheduled = false;
         selectedConversationId = null;
+        pendingConversationId = null;
         selectedConversation = null;
         lastEventId = 0L;
         allConversations.clear();
@@ -679,6 +701,40 @@ public final class MainActivity extends AppCompatActivity {
         drawerGroupLabel.setText("暂无项目");
         terminalRenderer.clearAll();
         hideConversation();
+    }
+
+    private void prepareLastConversationRestore(
+            List<AicliClient.Conversation> conversations) {
+        pendingConversationId = null;
+        if (selectedConversationId != null || conversations == null || conversations.isEmpty()) {
+            return;
+        }
+        String savedId = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
+                .getString(lastConversationPreferenceKey(), "");
+        if (savedId == null || savedId.isEmpty()) return;
+        for (AicliClient.Conversation conversation : conversations) {
+            if (!savedId.equals(conversation.id)) continue;
+            pendingConversationId = savedId;
+            selectedGroup = conversation.group.isEmpty()
+                    ? "默认分组" : conversation.group;
+            getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit()
+                    .putString("selected_group", selectedGroup).apply();
+            return;
+        }
+    }
+
+    private void rememberSelectedConversation(String conversationId) {
+        if (conversationId == null || conversationId.isEmpty()) return;
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit()
+                .putString(lastConversationPreferenceKey(), conversationId).apply();
+    }
+
+    private String lastConversationPreferenceKey() {
+        ComputerConnectionStore.Computer active = connectionStore == null
+                ? null : connectionStore.active();
+        String computerId = active == null ? "legacy" : active.computerId;
+        if (computerId == null || computerId.isEmpty()) computerId = "legacy";
+        return LAST_CONVERSATION_PREFIX + computerId;
     }
 
     private String activeComputerName() {
