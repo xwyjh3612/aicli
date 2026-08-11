@@ -499,8 +499,8 @@ void Layout(){
     const int left=g_layout_metrics.sidebar_width;
     const int bottom=g_layout_metrics.footer_height;
     if(r.right<=left+80 || r.bottom<=top+bottom+120)return;
-    MoveMainChild(g_group,168,10,154,32);
-    MoveMainChild(g_group_add,326,10,34,32);
+    MoveMainChild(g_group,168,4,154,32);
+    MoveMainChild(g_group_add,326,4,34,32);
     // Anchor the complete phone/settings cluster from the native caption
     // buttons and lay each control out sequentially. Clamping every button to
     // its own minimum X made the first two overlap on narrower/high-DPI
@@ -515,9 +515,9 @@ void Layout(){
     const int devicesX=settingsX-headerGap-devicesWidth;
     const int bindX=devicesX-headerGap-bindWidth;
     const bool headerControlsMoved =
-        MoveMainChild(g_bind,bindX,10,bindWidth,32) |
-        MoveMainChild(g_devices,devicesX,10,devicesWidth,32) |
-        MoveMainChild(g_settings,settingsX,10,settingsWidth,32);
+        MoveMainChild(g_bind,bindX,4,bindWidth,32) |
+        MoveMainChild(g_devices,devicesX,4,devicesWidth,32) |
+        MoveMainChild(g_settings,settingsX,4,settingsWidth,32);
     if(headerControlsMoved){
         // During interactive horizontal resizing USER32 otherwise preserves
         // pixels from the controls' old positions.  The parent title bar is
@@ -528,7 +528,7 @@ void Layout(){
                      RDW_INVALIDATE|RDW_NOERASE|RDW_ALLCHILDREN);
     }
 
-    RECT search_rect{6,top+6,left-6,top+44};aicli::ui::LayoutStyledInput(g_search,search_rect,2,9);
+    RECT search_rect{6,top+6,left-6,top+41};aicli::ui::LayoutStyledInput(g_search,search_rect,2,9);
     MoveMainChild(g_sidebar_title,9,top+54,200,24);
     MoveMainChild(g_new_project,left-42,top+48,36,34);
     SetWindowPos(g_new_project,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
@@ -886,6 +886,10 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_DRAWITEM:{auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){DrawContextMenuItem(item);return TRUE;}if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){DrawProjectItem(item);return TRUE;}}break;
     case WM_SIZE:
         if(w==SIZE_MINIMIZED){g_island.SetVisible(false);return 0;}
+        // Remove the compositor rim while maximized, then restore it with the
+        // normal shadow/border as soon as the window returns to a floating
+        // size. This keeps the client surface flush with every monitor edge.
+        g_window_chrome.UpdateSizeState(h,border);
         if(aicli::ui::HasActiveModal(h))ResizeModalHosts(h);
         Layout();return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshots.MarkDirtyMessageHandled();if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;

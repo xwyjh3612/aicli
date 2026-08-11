@@ -33,6 +33,7 @@ public:
                     COLORREF border_color,
                     bool repaint = true) const;
     void ExtendFrame(HWND window) const;
+    void UpdateSizeState(HWND window, COLORREF border_color) const;
 
     RECT ButtonRect(HWND window, int id) const;
     int ButtonAtPoint(HWND window, POINT client_point) const;

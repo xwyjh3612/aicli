@@ -17,6 +17,7 @@ class QLineEdit;
 class QPushButton;
 class QStackedWidget;
 class QTimer;
+class QWindow;
 
 namespace aicli::ui::qt {
 
@@ -109,6 +110,7 @@ private:
     bool restoring_ime_{};
     std::uint64_t ime_focus_serial_{};
     std::uint64_t theme_refresh_serial_{};
+    std::uint64_t hover_enter_serial_{};
 };
 
 } // namespace aicli::ui::qt

@@ -109,6 +109,11 @@ int WINAPI wWinMain(HINSTANCE instance,
         return 1;
     }
 
+    // The terminal surface needs one native child HWND, but the surrounding
+    // Qt controls must stay alien widgets in the main backing store. Without
+    // this, enabling WA_NativeWindow on the terminal also promotes every
+    // sibling (title bar, sidebar, footer) to a separate native window.
+    QApplication::setAttribute(Qt::AA_DontCreateNativeWidgetSiblings);
     QApplication application(__argc, __argv);
     application.setApplicationName(QStringLiteral("AI CLI"));
     application.setOrganizationName(QStringLiteral("AI CLI"));

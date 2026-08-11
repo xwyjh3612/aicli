@@ -8,7 +8,7 @@ namespace aicli::ui {
 // base values are expressed at 96 DPI and scaled at the window boundary.
 struct LayoutMetrics {
     int dpi{96};
-    int title_bar_height{52};
+    int title_bar_height{40};
     int footer_height{30};
     int sidebar_width{286};
     int caption_button_width{46};
@@ -22,7 +22,7 @@ struct LayoutMetrics {
         const auto scale = [result](int value) {
             return MulDiv(value, result.dpi, 96);
         };
-        result.title_bar_height = scale(52);
+        result.title_bar_height = scale(40);
         result.footer_height = scale(30);
         result.sidebar_width = scale(286);
         result.caption_button_width = scale(46);

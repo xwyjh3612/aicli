@@ -13,6 +13,24 @@
 
 namespace aicli::ui {
 
+namespace {
+
+// DWMWA_BORDER_COLOR uses this sentinel to suppress the compositor-owned
+// outline. A maximized custom-frame window must not retain that outline: it
+// otherwise remains visible as a one-pixel strip at the monitor edge.
+constexpr COLORREF kDwmColorNone = static_cast<COLORREF>(0xFFFFFFFEu);
+
+COLORREF CompositorBorder(HWND window, COLORREF normal_border) noexcept {
+    return IsZoomed(window) ? kDwmColorNone : normal_border;
+}
+
+MARGINS CompositorMargins(HWND window) noexcept {
+    const int rim = IsZoomed(window) ? 0 : 1;
+    return MARGINS{rim, rim, rim, rim};
+}
+
+} // namespace
+
 WindowChrome::WindowChrome(CaptionButtonIds ids) noexcept : ids_(ids) {}
 
 bool WindowChrome::SetActive(bool active) noexcept {
@@ -41,8 +59,9 @@ void WindowChrome::ApplyTheme(HWND window,
     BOOL dark = light ? FALSE : TRUE;
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
                           &dark, sizeof(dark));
+    const COLORREF compositor_border = CompositorBorder(window, border_color);
     DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
-                          &border_color, sizeof(border_color));
+                          &compositor_border, sizeof(compositor_border));
     SetWindowPos(window, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                      SWP_FRAMECHANGED);
@@ -61,11 +80,21 @@ void WindowChrome::ExtendFrame(HWND window) const {
     DWM_WINDOW_CORNER_PREFERENCE corners = DWMWCP_ROUND;
     DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE,
                           &corners, sizeof(corners));
-    MARGINS compositor_rim{1, 1, 1, 1};
+    const MARGINS compositor_rim = CompositorMargins(window);
     DwmExtendFrameIntoClientArea(window, &compositor_rim);
     SetWindowPos(window, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                      SWP_FRAMECHANGED);
+}
+
+void WindowChrome::UpdateSizeState(HWND window,
+                                   COLORREF border_color) const {
+    if (!window) return;
+    const COLORREF compositor_border = CompositorBorder(window, border_color);
+    DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
+                          &compositor_border, sizeof(compositor_border));
+    const MARGINS compositor_rim = CompositorMargins(window);
+    DwmExtendFrameIntoClientArea(window, &compositor_rim);
 }
 
 RECT WindowChrome::ButtonRect(HWND window, int id) const {
@@ -96,7 +125,8 @@ void WindowChrome::InvalidateTitleBar(HWND window) const {
     GetClientRect(window, &rect);
     rect.bottom = std::min<LONG>(rect.bottom, height);
     RedrawWindow(window, &rect, nullptr,
-                 RDW_INVALIDATE | RDW_FRAME | RDW_NOERASE);
+                 RDW_INVALIDATE | RDW_FRAME | RDW_NOERASE |
+                     RDW_ALLCHILDREN);
 }
 
 void WindowChrome::InvalidateButtons(HWND window) const {

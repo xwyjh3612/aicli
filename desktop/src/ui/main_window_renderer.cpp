@@ -68,13 +68,13 @@ void PaintMainWindow(HDC target_dc,
     (void)search;
 
     if (app_icon) {
-        DrawIconEx(dc, 14, 10, app_icon, 32, 32, 0, nullptr, DI_NORMAL);
+        DrawIconEx(dc, 14, 8, app_icon, 24, 24, 0, nullptr, DI_NORMAL);
     }
 
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, chrome.Text(theme));
     SelectObject(dc, medium_font);
-    TextOutW(dc, 58, 11, L"AI CLI", 6);
+    TextOutW(dc, 48, 10, L"AI CLI", 6);
 
     footer_status.Draw(
         dc, client, metrics.footer_height, small_font, theme);

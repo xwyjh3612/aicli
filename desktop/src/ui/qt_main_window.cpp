@@ -4,6 +4,8 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QCoreApplication>
+#include <QCursor>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QEventLoop>
@@ -13,6 +15,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPalette>
 #include <QPainter>
 #include <QPushButton>
@@ -22,6 +25,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWindow>
 
 #include <dwmapi.h>
 #include <imm.h>
@@ -144,7 +148,7 @@ void MainWindow::buildUi() {
     search_ = new QLineEdit(sidebar);
     search_->setPlaceholderText(QStringLiteral("搜索会话"));
     search_->setClearButtonEnabled(true);
-    search_->setFixedHeight(38);
+    search_->setFixedHeight(35);
     // The application-wide IME coordinator restores Windows text-input focus
     // for this and every other Qt editor after TermControl was active.
     search_->setAttribute(Qt::WA_InputMethodEnabled, true);
@@ -310,6 +314,10 @@ bool MainWindow::Initialize(std::wstring* error) {
     // changes the default compatibility context used by Qt's IMM32 backend;
     // retaining the original context lets Qt editors restore it on focus.
     captureQtInputContext(window);
+    if (!ime_filter_installed_ && qApp) {
+        qApp->installEventFilter(this);
+        ime_filter_installed_ = true;
+    }
     if (!controller_.Initialize(window, error)) return false;
 
     const HWND terminalParent = reinterpret_cast<HWND>(terminal_host_->winId());
@@ -916,6 +924,51 @@ void MainWindow::publishTerminalSnapshots() {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    // Qt's Windows platform plugin deliberately drops the first WM_MOUSEMOVE
+    // received after its window-under-pointer state becomes null, notably
+    // when a minimized window is restored beneath the cursor. The window gets
+    // Enter but no move, so tooltip timers and item-hover tracking do not run.
+    // Defer one standard Qt mouse move after Enter and cancel it when the real
+    // move arrives. This stays entirely inside Qt's public event pipeline.
+    if (event) {
+        if (auto* entered_window = qobject_cast<QWindow*>(watched)) {
+            if (event->type() == QEvent::MouseMove) {
+                ++hover_enter_serial_;
+            } else if (event->type() == QEvent::Enter &&
+                       QApplication::mouseButtons() == Qt::NoButton) {
+                const auto serial = ++hover_enter_serial_;
+                const QPointer<QWindow> guarded_window(entered_window);
+                QTimer::singleShot(0, this, [this, guarded_window, serial] {
+                    if (shutting_down_ || serial != hover_enter_serial_ ||
+                        !guarded_window || !guarded_window->isVisible() ||
+                        QApplication::mouseButtons() != Qt::NoButton) {
+                        return;
+                    }
+
+                    const QPoint global = QCursor::pos();
+                    const QPointF local = guarded_window->mapFromGlobal(global);
+                    if (!QRectF(QPointF(), QSizeF(guarded_window->size())).contains(local)) {
+                        return;
+                    }
+
+                    QWidget* target = QApplication::widgetAt(global);
+                    if (!target || target->window() != this ||
+                        (terminal_host_ &&
+                         (target == terminal_host_ || terminal_host_->isAncestorOf(target)))) {
+                        return;
+                    }
+
+                    QCoreApplication::postEvent(
+                        guarded_window,
+                        new QMouseEvent(QEvent::MouseMove, local, local,
+                                        QPointF(global), Qt::NoButton,
+                                        Qt::NoButton,
+                                        QApplication::keyboardModifiers()));
+                });
+            }
+        }
+    }
+
     if (event && event->type() == QEvent::FocusIn) {
         if (auto* editor = qobject_cast<QLineEdit*>(watched)) {
             // QWindowsInputContext handles the same FocusIn after this event

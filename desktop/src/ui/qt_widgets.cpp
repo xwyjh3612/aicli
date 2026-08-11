@@ -243,6 +243,7 @@ void SingleTextDialog::acceptDialog() {
 }
 
 TerminalHostWidget::TerminalHostWidget(QWidget* parent) : QWidget(parent) {
+    setAttribute(Qt::WA_DontCreateNativeAncestors, true);
     setAttribute(Qt::WA_NativeWindow, true);
     setAttribute(Qt::WA_NoSystemBackground, true);
     setAttribute(Qt::WA_OpaquePaintEvent, true);
