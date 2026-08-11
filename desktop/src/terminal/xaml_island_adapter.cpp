@@ -610,6 +610,29 @@ public:
     HWND Window() const { return hwnd_; }
     bool Active() const { return ActiveSession() != nullptr; }
     bool Active(std::wstring_view project_id) const { return HasSession(project_id); }
+    bool IsParentResizeBorder(LPARAM screen_coordinates) const noexcept {
+        if (!parent_ || !IsWindow(parent_)) return false;
+        // In the Qt host, parent_ is the native terminalHost child rather than
+        // the top-level frame. Ask the root HWND which border owns the point;
+        // the legacy Win32 host naturally resolves to the same window here.
+        HWND resize_owner = GetAncestor(parent_, GA_ROOT);
+        if (!resize_owner) resize_owner = parent_;
+        const LRESULT hit = SendMessageW(
+            resize_owner, WM_NCHITTEST, 0, screen_coordinates);
+        switch (hit) {
+        case HTLEFT:
+        case HTRIGHT:
+        case HTTOP:
+        case HTTOPLEFT:
+        case HTTOPRIGHT:
+        case HTBOTTOM:
+        case HTBOTTOMLEFT:
+        case HTBOTTOMRIGHT:
+            return true;
+        default:
+            return false;
+        }
+    }
     std::wstring ReadEntireBuffer(std::wstring_view project_id = {}) const {
         const auto* session = project_id.empty() ? ActiveSession() : FindSession(project_id);
         if (!session || !session->control) return {};
@@ -1113,6 +1136,15 @@ LRESULT CALLBACK XamlIslandSubclassProc(
     DWORD_PTR reference_data) {
     auto* adapter = reinterpret_cast<XamlIslandAdapter::Impl*>(reference_data);
     if (adapter) {
+        // The DesktopWindowXamlSource child fills the terminal workspace all
+        // the way to the host's right edge. Without passing sizing hit tests
+        // through, the island consumes the pointer before the custom frame can
+        // return HTRIGHT/HTBOTTOMRIGHT. HTTRANSPARENT lets USER32 continue the
+        // same hit test with the parent window while preserving normal input
+        // everywhere inside the terminal.
+        if (message == WM_NCHITTEST && adapter->IsParentResizeBorder(lparam)) {
+            return HTTRANSPARENT;
+        }
         if (message == WM_MOUSEMOVE) {
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};
             TrackMouseEvent(&tracking);

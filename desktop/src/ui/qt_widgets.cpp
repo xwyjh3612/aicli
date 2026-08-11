@@ -245,7 +245,7 @@ void TerminalHostWidget::resizeEvent(QResizeEvent* event) {
 ProjectItemDelegate::ProjectItemDelegate(QObject* parent) : QStyledItemDelegate(parent) {}
 
 QSize ProjectItemDelegate::sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const {
-    return QSize(220, 50);
+    return QSize(220, 40);
 }
 
 void ProjectItemDelegate::paint(QPainter* painter,
@@ -262,21 +262,14 @@ void ProjectItemDelegate::paint(QPainter* painter,
         const QVariant surface = option.widget->property("projectItemSurface");
         if (surface.canConvert<QColor>()) fill = surface.value<QColor>();
     }
-    QColor stroke = PaletteColor(option, QPalette::Mid);
     if (selected) {
         fill = PaletteColor(option, QPalette::Highlight);
-        stroke = PaletteColor(option, QPalette::Link);
     } else if (hovered) {
         fill = palette.color(QPalette::AlternateBase);
     }
-    QPen cardPen(stroke, 1.0);
-    // Cosmetic + half-pixel alignment keeps the outline to exactly one
-    // device pixel.  Drawing a 1 px pen on an integer rectangle straddles two
-    // pixels under antialiasing and looks like a thicker double border.
-    cardPen.setCosmetic(true);
-    painter->setPen(cardPen);
+    painter->setPen(Qt::NoPen);
     painter->setBrush(fill);
-    painter->drawRoundedRect(QRectF(card).adjusted(0.5, 0.5, -0.5, -0.5), 2, 2);
+    painter->drawRoundedRect(QRectF(card), 2, 2);
 
     const bool running = index.data(ProjectSessionRole).toBool();
     const bool working = index.data(ProjectWorkingRole).toBool();
@@ -363,6 +356,8 @@ ProjectListWidget::ProjectListWidget(QWidget* parent) : QListWidget(parent) {
     setSpacing(2);
     setUniformItemSizes(true);
     setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setContextMenuPolicy(Qt::CustomContextMenu);
     spinner_timer_ = new QTimer(this);
     spinner_timer_->setInterval(75);

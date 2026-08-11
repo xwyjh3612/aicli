@@ -121,7 +121,11 @@ void MainWindow::buildUi() {
     auto* content = new QWidget(root_);
     content->setObjectName(QStringLiteral("mainSurface"));
     auto* contentLayout = new QHBoxLayout(content);
-    contentLayout->setContentsMargins(0, 0, 0, 0);
+    // Keep the XAML Island off the outermost right edge. HTTRANSPARENT from a
+    // DesktopWindowXamlSource child does not reliably bubble through its Qt
+    // native-host ancestors, so this small logical-pixel strip guarantees the
+    // top-level frame itself owns the initial right-edge resize gesture.
+    contentLayout->setContentsMargins(0, 0, 2, 0);
     contentLayout->setSpacing(0);
 
     auto* sidebar = new QWidget(content);

@@ -19,25 +19,53 @@
 namespace {
 constexpr wchar_t kApplicationUserModelId[] = AICLI_APPLICATION_USER_MODEL_ID;
 
-class TerminalShortcutFilter final : public QAbstractNativeEventFilter {
+class DesktopNativeEventFilter final : public QAbstractNativeEventFilter {
 public:
-    explicit TerminalShortcutFilter(
-        aicli::app::DesktopController& controller) noexcept
-        : controller_(controller) {}
+    DesktopNativeEventFilter(aicli::app::DesktopController& controller,
+                             HWND frame_window) noexcept
+        : controller_(controller), frame_window_(frame_window) {}
 
     bool nativeEventFilter(const QByteArray&,
                            void* message,
                            qintptr* result) override {
         const auto* native = static_cast<const MSG*>(message);
-        if (!native || !controller_.PreTranslateTerminalMessage(*native)) {
-            return false;
+        if (!native) return false;
+
+        // Qt promotes several widgets to native child HWNDs once the XAML
+        // terminal host is created. Those children cover every edge of the
+        // frameless top-level window and normally answer WM_NCHITTEST with
+        // HTCLIENT before MainWindow can return a sizing hit. Make only the
+        // root frame's resize band transparent through every descendant; the
+        // same-thread hit-test walk will then reach the top-level HWND.
+        if (native->message == WM_NCHITTEST && frame_window_ &&
+            native->hwnd != frame_window_ &&
+            GetAncestor(native->hwnd, GA_ROOT) == frame_window_) {
+            const LRESULT frame_hit = SendMessageW(
+                frame_window_, WM_NCHITTEST, 0, native->lParam);
+            switch (frame_hit) {
+            case HTLEFT:
+            case HTRIGHT:
+            case HTTOP:
+            case HTTOPLEFT:
+            case HTTOPRIGHT:
+            case HTBOTTOM:
+            case HTBOTTOMLEFT:
+            case HTBOTTOMRIGHT:
+                if (result) *result = HTTRANSPARENT;
+                return true;
+            default:
+                break;
+            }
         }
+
+        if (!controller_.PreTranslateTerminalMessage(*native)) return false;
         if (result) *result = 0;
         return true;
     }
 
 private:
     aicli::app::DesktopController& controller_;
+    HWND frame_window_{};
 };
 }
 
@@ -108,13 +136,14 @@ int WINAPI wWinMain(HINSTANCE instance,
     // process-wide native filter is the Qt equivalent of the legacy Win32
     // message-loop pre-translation stage: Ctrl+V pastes, while Ctrl+C copies
     // only when the terminal has a selection and otherwise remains SIGINT.
-    TerminalShortcutFilter terminal_shortcuts(controller);
-    application.installNativeEventFilter(&terminal_shortcuts);
+    DesktopNativeEventFilter native_events(
+        controller, reinterpret_cast<HWND>(window.winId()));
+    application.installNativeEventFilter(&native_events);
 
     if (show_command == SW_SHOWMAXIMIZED) window.showMaximized();
     else window.show();
     const int result = application.exec();
-    application.removeNativeEventFilter(&terminal_shortcuts);
+    application.removeNativeEventFilter(&native_events);
     controller.Shutdown();
     winrt::uninit_apartment();
     return result;

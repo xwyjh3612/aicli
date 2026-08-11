@@ -173,18 +173,14 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     // two-pixel corner radius as requested for the compact sidebar.
     RECT card{row.left+1,row.top+1,row.right-1,row.bottom-1};
     COLORREF cardFill=g_light_theme?RGB(250,251,253):RGB(22,25,32);
-    COLORREF cardStroke=g_light_theme?RGB(222,227,234):RGB(38,43,52);
     if(sourceDragging){
         cardFill=panel;
-        cardStroke=g_light_theme?RGB(169,181,197):RGB(72,84,102);
     }else if(selected){
         cardFill=g_light_theme?RGB(238,245,254):RGB(25,37,54);
-        cardStroke=g_light_theme?RGB(119,163,218):RGB(61,102,157);
     }else if(hovered){
         cardFill=g_light_theme?RGB(243,247,252):RGB(29,34,43);
-        cardStroke=g_light_theme?RGB(193,207,224):RGB(55,65,79);
     }
-    DrawSmoothRoundedRect(item->hDC,card,2.0f,cardFill,cardStroke,1.0f,sourceDragging);
+    DrawSmoothRoundedRect(item->hDC,card,2.0f,cardFill,cardFill,0.0f);
 
     COLORREF stateColor=g_light_theme?RGB(100,113,131):RGB(139,157,183);
     enum class StateIcon{Idle,Running,Paused,Warning};

@@ -98,6 +98,7 @@ constexpr UINT_PTR kXamlIslandSubclassId = 0xA1C11;
 constexpr UINT_PTR kTerminalSnapshotTimerId = 2;
 constexpr UINT_PTR kProjectSpinnerTimerId = 3;
 constexpr UINT kProjectSpinnerIntervalMs = 75;
+constexpr UINT kProjectListItemHeight = 40;
 
 
 using aicli::DeviceRecord;
@@ -536,7 +537,16 @@ void Layout(){
     const int git_left=g_footer_status.git_bounds().left;
     MoveMainChild(g_list,6,top+88,left-12,std::max(80,footer_top-(top+88)-6));
 
-    RECT terminal{left,top,r.right,r.bottom-bottom};
+    // WM_NCCALCSIZE makes the complete custom frame part of the client area.
+    // Keep the XAML Island off the outermost right-hand compositor rim so the
+    // parent HWND always owns a real, directly hittable resize strip. The
+    // island may otherwise visually cover the border and consume the initial
+    // drag even when its outer host returns HTTRANSPARENT.
+    const int terminalRightInset=IsZoomed(g_hwnd)
+        ?0
+        :std::max(2,MulDiv(2,static_cast<int>(GetDpiForWindow(g_hwnd)),96));
+    const LONG terminalRight=std::max<LONG>(left+1,r.right-terminalRightInset);
+    RECT terminal{left,top,terminalRight,r.bottom-bottom};
     const int selectedIndex=SelectedProjectIndex();
     const bool selectedRunning=selectedIndex>=0&&selectedIndex<(int)g_projects.size()&&
         g_island.HasSession(g_projects[selectedIndex].id);
@@ -838,7 +848,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY); g_font=CreateFontW(-15,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_medium=CreateFontW(-17,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_small=CreateFontW(-13,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_sidebar_title=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_project_list=CreateFontW(-14,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_modal_title=CreateFontW(-21,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_icon_font=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe MDL2 Assets");
         g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
         g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputFocusBorderOnly(g_search);
-        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
+        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SendMessageW(g_list,LB_SETITEMHEIGHT,0,kProjectListItemHeight);g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
         g_detail_title=CreateWindowW(L"STATIC",L"选择一个项目",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         g_detail_folder=CreateWindowW(L"STATIC",L"文件夹: 未设置",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         g_detail_command=CreateWindowW(L"STATIC",L"启动命令: 未设置",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -872,7 +882,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_LBUTTONDOWN:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(g_window_chrome.OnLeftButtonDown(h,point))return 0;break;}
     case WM_LBUTTONUP:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const auto action=g_window_chrome.OnLeftButtonUp(h,point);if(action.has_value()){if(*action)ExecuteTitleButton(h,*action);return 0;}break;}
     case WM_CAPTURECHANGED:g_window_chrome.OnCaptureChanged(h);break;
-    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);item->itemWidth=218;item->itemHeight=entry&&!entry->label[0]?10:38;return TRUE;}if(item->CtlID==ID_PROJECT_LIST){item->itemHeight=50;return TRUE;}}break;
+    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);item->itemWidth=218;item->itemHeight=entry&&!entry->label[0]?10:38;return TRUE;}if(item->CtlID==ID_PROJECT_LIST){item->itemHeight=kProjectListItemHeight;return TRUE;}}break;
     case WM_DRAWITEM:{auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){DrawContextMenuItem(item);return TRUE;}if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){DrawProjectItem(item);return TRUE;}}break;
     case WM_SIZE:
         if(w==SIZE_MINIMIZED){g_island.SetVisible(false);return 0;}

@@ -95,6 +95,7 @@ void DrawSmoothRoundedRect(HDC dc,
     AddRoundedPath(path, bounds, radius);
     Gdiplus::SolidBrush brush(SmoothColor(fill));
     graphics.FillPath(&brush, &path);
+    if (stroke_width <= 0.0f) return;
     Gdiplus::Pen pen(SmoothColor(stroke), stroke_width);
     if (dashed) pen.SetDashStyle(Gdiplus::DashStyleDash);
     graphics.DrawPath(&pen, &path);
