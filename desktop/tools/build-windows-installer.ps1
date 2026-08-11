@@ -21,6 +21,7 @@ $applicationUserModelId = if ($useQtUi) {
 $installerPrefix = if ($useQtUi) { 'AI-CLI-Qt-Setup' } else { 'AI-CLI-Setup' }
 $installerScript = Join-Path $desktopRoot 'installer\aicli.iss'
 $installerOutput = Join-Path $desktopRoot 'installer\output'
+$publishDirectory = Join-Path $repositoryRoot 'release'
 $stageRuntime = Join-Path $desktopRoot 'tools\stage-runtime.ps1'
 
 if (!$BuildDirectory) {
@@ -132,5 +133,12 @@ $hashPath = "$installerPath.sha256"
     "$hash  $([IO.Path]::GetFileName($installerPath))`r`n",
     [Text.UTF8Encoding]::new($false))
 
+New-Item -ItemType Directory -Force -Path $publishDirectory | Out-Null
+$publishedInstaller = Join-Path $publishDirectory ([IO.Path]::GetFileName($installerPath))
+$publishedHash = "$publishedInstaller.sha256"
+Copy-Item -LiteralPath $installerPath -Destination $publishedInstaller -Force
+Copy-Item -LiteralPath $hashPath -Destination $publishedHash -Force
+
 Write-Host "Installer: $installerPath"
+Write-Host "Published: $publishedInstaller"
 Write-Host "SHA256:   $hash"

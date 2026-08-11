@@ -111,9 +111,20 @@ $versionName = $versionMatch.Groups[1].Value
 $publishedApk = Join-Path $releaseDirectory "AI-CLI-Android-$versionName-release.apk"
 Copy-Item -LiteralPath $builtApk -Destination $publishedApk -Force
 $hash = (Get-FileHash -LiteralPath $publishedApk -Algorithm SHA256).Hash
+$repositoryRoot = Split-Path -Parent $projectDirectory
+$publishDirectory = Join-Path $repositoryRoot "release"
+New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null
+$rootPublishedApk = Join-Path $publishDirectory ([IO.Path]::GetFileName($publishedApk))
+$rootHashFile = "$rootPublishedApk.sha256"
+Copy-Item -LiteralPath $publishedApk -Destination $rootPublishedApk -Force
+[IO.File]::WriteAllText(
+    $rootHashFile,
+    "$hash  $([IO.Path]::GetFileName($rootPublishedApk))`r`n",
+    [Text.UTF8Encoding]::new($false))
 
 Write-Output ""
 Write-Output "Release APK: $publishedApk"
+Write-Output "Published APK: $rootPublishedApk"
 Write-Output $packageLine.Line
 Write-Output "SHA256: $hash"
 Write-Output "Signing key: $keystore"
