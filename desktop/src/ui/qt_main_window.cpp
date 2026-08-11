@@ -39,7 +39,7 @@
 namespace aicli::ui::qt {
 namespace {
 
-constexpr int kTitleBarHeight = 52;
+constexpr int kTitleBarHeight = 40;
 constexpr int kFooterHeight = 30;
 constexpr int kSidebarWidth = 286;
 // Windows 11's documented sentinel for suppressing the DWM-drawn outer
@@ -260,8 +260,16 @@ void MainWindow::buildUi() {
     connect(project_list_, &ProjectListWidget::selectionCommitted,
             this, [this](const QString& projectId) {
                 if (refreshing_ || projectId.isEmpty()) return;
-                controller_.SetSelectedProject(ToWideString(projectId));
+                const auto id = ToWideString(projectId);
+                if (controller_.HasSession(id)) prepareTerminalSurface();
+                controller_.SetSelectedProject(id);
                 refreshProjectDetails();
+            });
+    connect(project_list_, &ProjectListWidget::dragActivityChanged,
+            this, [this](bool active) {
+                if (active || !deferred_refresh_pending_ || shutting_down_) return;
+                QMetaObject::invokeMethod(this, &MainWindow::refreshAll,
+                                          Qt::QueuedConnection);
             });
     connect(terminal_host_, &TerminalHostWidget::hostResized, this,
             [this](int width, int height) {
@@ -461,7 +469,13 @@ void MainWindow::restoreQtInputContext(QWidget* editor) {
 }
 
 void MainWindow::refreshAll() {
-    if (refreshing_ || shutting_down_) return;
+    if (shutting_down_) return;
+    if (project_list_ && project_list_->IsDragActive()) {
+        deferred_refresh_pending_ = true;
+        return;
+    }
+    if (refreshing_) return;
+    deferred_refresh_pending_ = false;
     refreshing_ = true;
     title_bar_->groupButton()->setText(
         ToQString(controller_.group()) + QStringLiteral(" (") +
@@ -476,7 +490,12 @@ void MainWindow::refreshAll() {
 }
 
 void MainWindow::refreshProjectList() {
-    if (refreshing_ || shutting_down_) return;
+    if (shutting_down_) return;
+    if (project_list_ && project_list_->IsDragActive()) {
+        deferred_refresh_pending_ = true;
+        return;
+    }
+    if (refreshing_) return;
     refreshing_ = true;
     const QSignalBlocker blocker(project_list_);
     const std::wstring preferred = controller_.selectedProjectId();
@@ -580,6 +599,12 @@ void MainWindow::refreshProjectDetails() {
 void MainWindow::projectSelectionChanged() {
     if (refreshing_) return;
     const auto id = selectedProjectIdFromList();
+    // A native XAML child cannot be reliably shown while its QStackedWidget
+    // page is still hidden. Expose the host first, then activate the existing
+    // TermControl. Starting a new project already follows this order through
+    // prepareTerminalSurface(), which is why starting a third session used to
+    // make two apparently stuck sessions switch correctly again.
+    if (!id.empty() && controller_.HasSession(id)) prepareTerminalSurface();
     controller_.SetSelectedProject(id);
     refreshProjectDetails();
 }

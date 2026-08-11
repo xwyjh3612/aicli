@@ -6,6 +6,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
+#include <QStringList>
 #include <QStyledItemDelegate>
 #include <QWidget>
 
@@ -82,11 +83,13 @@ public:
     explicit ProjectListWidget(QWidget* parent = nullptr);
     void SetDragEnabledForQuery(bool enabled);
     void SetWorkingAnimationActive(bool active);
+    bool IsDragActive() const noexcept { return dragArmed_ || dragInProgress_; }
     qreal spinnerAngle() const noexcept { return spinner_angle_; }
 
 signals:
     void orderChanged();
     void selectionCommitted(const QString& projectId);
+    void dragActivityChanged(bool active);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -94,14 +97,18 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void startDrag(Qt::DropActions supportedActions) override;
-    void dropEvent(QDropEvent* event) override;
+    virtual void executeNativeDrag(Qt::DropActions supportedActions);
 
 private:
+    QListWidgetItem* findProjectItem(const QString& projectId) const;
+    QStringList projectOrder() const;
     void updateGripCursor(const QPoint& position);
     void advanceWorkingAnimation();
     bool dragArmed_{};
+    bool dragInProgress_{};
     bool dragAllowed_{true};
     QString dragProjectId_;
+    QString selectionBeforeDragId_;
     QTimer* spinner_timer_{};
     qreal spinner_angle_{-90.0};
 };

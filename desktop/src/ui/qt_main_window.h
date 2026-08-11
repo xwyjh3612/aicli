@@ -101,6 +101,7 @@ private:
     UINT taskbar_button_created_message_{};
     bool terminal_attached_{};
     bool refreshing_{};
+    bool deferred_refresh_pending_{};
     bool shutting_down_{};
     bool native_frame_configured_{};
     HIMC qt_input_context_{};

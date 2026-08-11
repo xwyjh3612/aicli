@@ -3,6 +3,8 @@ project(aicli LANGUAGES C CXX RC)
 
 option(AICLI_SKIP_PACKAGED_ACTIVATION "Run the desktop executable directly for local UI smoke tests" OFF)
 option(AICLI_USE_QT_UI "Build the Qt desktop UI instead of the legacy Win32 UI" ON)
+set(AICLI_DATA_DIRECTORY_OVERRIDE "" CACHE STRING
+    "Optional fixed data directory for isolated desktop integration tests")
 set(AICLI_APPLICATION_USER_MODEL_ID "AiCli.Desktop.Dev_jw3zr00rmb0ym!App"
     CACHE STRING "Application user model ID used for packaged activation")
 set(AICLI_PACKAGE_IDENTITY_NAME "AiCli.Desktop.Dev"
@@ -104,6 +106,11 @@ endif()
 target_compile_definitions(aicli PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN USE_WEBSOCKET NO_SSL_DL OPENSSL_API_3_0
 )
+if (AICLI_DATA_DIRECTORY_OVERRIDE)
+    file(TO_CMAKE_PATH "${AICLI_DATA_DIRECTORY_OVERRIDE}" AICLI_DATA_DIRECTORY_OVERRIDE_NORMALIZED)
+    target_compile_definitions(aicli PRIVATE
+        "AICLI_DATA_DIRECTORY_OVERRIDE=L\"${AICLI_DATA_DIRECTORY_OVERRIDE_NORMALIZED}\"")
+endif()
 if (AICLI_SKIP_PACKAGED_ACTIVATION)
     target_compile_definitions(aicli PRIVATE AICLI_SKIP_PACKAGED_ACTIVATION)
 endif()

@@ -846,6 +846,9 @@ std::wstring DataStore::LastError() const {
 }
 
 std::wstring DefaultDataDirectory() {
+#ifdef AICLI_DATA_DIRECTORY_OVERRIDE
+    return AICLI_DATA_DIRECTORY_OVERRIDE;
+#endif
     if (wchar_t configured[32768]{};
         GetEnvironmentVariableW(L"AICLI_DATA_DIR", configured,
                                 static_cast<DWORD>(std::size(configured))) > 0) {

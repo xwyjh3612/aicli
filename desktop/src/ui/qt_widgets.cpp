@@ -1,6 +1,7 @@
 #include "ui/qt_widgets.h"
 
 #include <QApplication>
+#include <QCursor>
 #include <QDrag>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -14,6 +15,7 @@
 #include <QStyle>
 #include <QPixmap>
 #include <QSignalBlocker>
+#include <QStringList>
 #include <QTimer>
 #include <QVariant>
 #include <QVBoxLayout>
@@ -384,11 +386,14 @@ ProjectListWidget::ProjectListWidget(QWidget* parent) : QListWidget(parent) {
 void ProjectListWidget::SetDragEnabledForQuery(bool enabled) {
     dragAllowed_ = enabled;
     setDragEnabled(enabled);
-    if (!enabled) {
+    if (!enabled && !dragInProgress_) {
+        const bool wasActive = dragArmed_;
         dragArmed_ = false;
         dragProjectId_.clear();
+        selectionBeforeDragId_.clear();
         unsetCursor();
         viewport()->unsetCursor();
+        if (wasActive) emit dragActivityChanged(false);
     }
 }
 
@@ -448,13 +453,20 @@ void ProjectListWidget::mousePressEvent(QMouseEvent* event) {
     // the first mouse-move event arrives.
     if (dragArmed_) {
         dragProjectId_ = pressedItem->data(ProjectIdRole).toString();
-        const QSignalBlocker blocker(this);
-        setCurrentItem(pressedItem, QItemSelectionModel::ClearAndSelect);
+        selectionBeforeDragId_ = currentItem()
+            ? currentItem()->data(ProjectIdRole).toString()
+            : QString{};
+        {
+            const QSignalBlocker blocker(this);
+            setCurrentItem(pressedItem, QItemSelectionModel::ClearAndSelect);
+        }
+        emit dragActivityChanged(true);
         updateGripCursor(position);
         QListWidget::mousePressEvent(event);
         return;
     } else {
         dragProjectId_.clear();
+        selectionBeforeDragId_.clear();
     }
     updateGripCursor(position);
     QListWidget::mousePressEvent(event);
@@ -466,14 +478,17 @@ void ProjectListWidget::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void ProjectListWidget::mouseReleaseEvent(QMouseEvent* event) {
-    const bool commitSelection = dragArmed_ && event->button() == Qt::LeftButton;
+    const bool commitSelection = dragArmed_ && !dragInProgress_ &&
+                                 event->button() == Qt::LeftButton;
     const QString projectId = dragProjectId_;
     QListWidget::mouseReleaseEvent(event);
-    if (event->button() == Qt::LeftButton) {
+    if (commitSelection) {
         dragArmed_ = false;
         dragProjectId_.clear();
+        selectionBeforeDragId_.clear();
+        if (!projectId.isEmpty()) emit selectionCommitted(projectId);
+        emit dragActivityChanged(false);
     }
-    if (commitSelection && !projectId.isEmpty()) emit selectionCommitted(projectId);
     updateGripCursor(event->position().toPoint());
 }
 
@@ -487,32 +502,66 @@ void ProjectListWidget::leaveEvent(QEvent* event) {
 
 void ProjectListWidget::startDrag(Qt::DropActions supportedActions) {
     if (!dragAllowed_ || !dragArmed_) return;
-    QListWidget::startDrag(supportedActions);
+    dragInProgress_ = true;
+    const QStringList orderBefore = projectOrder();
+    executeNativeDrag(supportedActions);
+    const bool orderChangedByDrop = projectOrder() != orderBefore;
 
-    // A cancelled drag has no dropEvent, but the original press should still
-    // select that project just like a normal click on the grip.
-    if (dragArmed_) {
-        const QString projectId = dragProjectId_;
-        dragArmed_ = false;
-        dragProjectId_.clear();
-        if (!projectId.isEmpty()) emit selectionCommitted(projectId);
+    // The temporary selection is only required to let QAbstractItemView start
+    // a native drag on the first grip press. It must never become the active
+    // terminal session. Restore the real selection while signals are blocked.
+    {
+        const QSignalBlocker blocker(this);
+        if (auto* selected = findProjectItem(selectionBeforeDragId_)) {
+            setCurrentItem(selected, QItemSelectionModel::ClearAndSelect);
+        } else {
+            setCurrentItem(nullptr);
+        }
     }
-}
-
-void ProjectListWidget::dropEvent(QDropEvent* event) {
-    QListWidget::dropEvent(event);
-    const QString projectId = dragProjectId_;
     dragArmed_ = false;
     dragProjectId_.clear();
-    if (event->isAccepted()) {
-        if (!projectId.isEmpty()) emit selectionCommitted(projectId);
-        emit orderChanged();
+    selectionBeforeDragId_.clear();
+
+    // QDrag runs a nested event loop. Do not save, reload, or clear the list
+    // until both that loop and QAbstractItemView's outer mouse event have
+    // returned. Background terminal notifications are deferred by MainWindow
+    // while dragInProgress_ remains true.
+    QTimer::singleShot(0, this, [this, orderChangedByDrop] {
+        dragInProgress_ = false;
+        if (orderChangedByDrop) emit orderChanged();
+        emit dragActivityChanged(false);
+        updateGripCursor(viewport()->mapFromGlobal(QCursor::pos()));
+    });
+}
+
+void ProjectListWidget::executeNativeDrag(Qt::DropActions supportedActions) {
+    QListWidget::startDrag(supportedActions);
+}
+
+QListWidgetItem* ProjectListWidget::findProjectItem(
+    const QString& projectId) const {
+    if (projectId.isEmpty()) return nullptr;
+    for (int row = 0; row < count(); ++row) {
+        auto* candidate = item(row);
+        if (candidate && candidate->data(ProjectIdRole).toString() == projectId)
+            return candidate;
     }
+    return nullptr;
+}
+
+QStringList ProjectListWidget::projectOrder() const {
+    QStringList result;
+    result.reserve(count());
+    for (int row = 0; row < count(); ++row) {
+        if (auto* project = item(row))
+            result.push_back(project->data(ProjectIdRole).toString());
+    }
+    return result;
 }
 
 TitleBarWidget::TitleBarWidget(QWidget* parent) : QWidget(parent) {
     setObjectName(QStringLiteral("titleBar"));
-    setFixedHeight(52);
+    setFixedHeight(40);
     setMouseTracking(true);
 
     auto* layout = new QHBoxLayout(this);
@@ -522,8 +571,8 @@ TitleBarWidget::TitleBarWidget(QWidget* parent) : QWidget(parent) {
     auto* logo = new QLabel(this);
     logo->setObjectName(QStringLiteral("appLogo"));
     logo->setAlignment(Qt::AlignCenter);
-    logo->setFixedSize(32, 32);
-    const QPixmap app_icon = qApp->windowIcon().pixmap(26, 26);
+    logo->setFixedSize(28, 28);
+    const QPixmap app_icon = qApp->windowIcon().pixmap(22, 22);
     if (!app_icon.isNull()) logo->setPixmap(app_icon);
     else logo->setText(QStringLiteral(">_"));
     layout->addWidget(logo);
@@ -538,7 +587,7 @@ TitleBarWidget::TitleBarWidget(QWidget* parent) : QWidget(parent) {
     auto makeButton = [this](const QString& text, const QString& name, int width) {
         auto* button = new QPushButton(text, this);
         button->setObjectName(name);
-        button->setFixedSize(width, 32);
+        button->setFixedSize(width, 30);
         button->setFocusPolicy(Qt::NoFocus);
         return button;
     };
@@ -561,7 +610,7 @@ TitleBarWidget::TitleBarWidget(QWidget* parent) : QWidget(parent) {
     // 11 caption controls so the custom title bar remains visually native.
     auto* caption_buttons = new QWidget(this);
     caption_buttons->setObjectName(QStringLiteral("captionButtons"));
-    caption_buttons->setFixedSize(138, 52);
+    caption_buttons->setFixedSize(138, 40);
     auto* caption_layout = new QHBoxLayout(caption_buttons);
     caption_layout->setContentsMargins(0, 0, 0, 0);
     caption_layout->setSpacing(0);
@@ -575,7 +624,7 @@ TitleBarWidget::TitleBarWidget(QWidget* parent) : QWidget(parent) {
                                  const QString& accessibleName) {
         auto* button = new QPushButton(QString(glyph), caption_buttons);
         button->setObjectName(name);
-        button->setFixedSize(46, 52);
+        button->setFixedSize(46, 40);
         button->setFocusPolicy(Qt::NoFocus);
         button->setFont(caption_font);
         button->setAccessibleName(accessibleName);

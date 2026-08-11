@@ -11,7 +11,6 @@ $desktopRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $desktopRoot '..'))
 $useQtUi = $Qt.IsPresent
 $releaseDirectory = Join-Path $desktopRoot $(if ($useQtUi) { 'bin\Qt\Release' } else { 'bin\Release' })
-$runtimeOutputRoot = Join-Path $desktopRoot $(if ($useQtUi) { 'bin\Qt' } else { 'bin' })
 $packageIdentity = if ($useQtUi) { 'AiCli.Desktop.QtRelease' } else { 'AiCli.Desktop.Release' }
 $applicationUserModelId = if ($useQtUi) {
     'AiCli.Desktop.QtRelease_jw3zr00rmb0ym!App'
@@ -40,6 +39,7 @@ if (!$BuildDirectory) {
     }
 }
 $BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
+$isolatedRuntimeRoot = Join-Path $BuildDirectory 'runtime'
 
 $cmakeCandidates = @(
     'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe',
@@ -66,7 +66,8 @@ if (!$SkipBuild) {
     $qtOption = if ($useQtUi) { 'ON' } else { 'OFF' }
     & $cmake -S $desktopRoot -B $BuildDirectory -G 'Visual Studio 17 2022' -A x64 `
         "-DAICLI_USE_QT_UI=$qtOption" `
-        "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$($runtimeOutputRoot.Replace('\', '/'))" `
+        "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$($isolatedRuntimeRoot.Replace('\', '/'))" `
+        "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$($releaseDirectory.Replace('\', '/'))" `
         "-DAICLI_PACKAGE_IDENTITY_NAME=$packageIdentity" `
         "-DAICLI_APPLICATION_USER_MODEL_ID=$applicationUserModelId"
     if ($LASTEXITCODE) { throw "CMake configuration failed: $LASTEXITCODE" }
@@ -95,6 +96,19 @@ foreach ($required in @($executable, $manifestPath, $mainPri, $controlPri)) {
     if (!(Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Required Release file is missing: $required"
     }
+}
+
+# A multi-configuration CMake tree can also build Debug.  Historically the
+# installer tree shared desktop\bin\Qt with the development tree, so an
+# accidental Debug build silently replaced QtDev's executable with a binary
+# compiled for QtRelease.  Direct launch then activated a different package
+# and WindowsXamlManager intermittently ran without the intended package
+# manifest.  Keep non-Release outputs isolated above and reject any stale or
+# cross-flavour executable before producing an installer.
+$executableUnicode = [Text.Encoding]::Unicode.GetString(
+    [IO.File]::ReadAllBytes($executable))
+if (!$executableUnicode.Contains($applicationUserModelId)) {
+    throw "Release executable has the wrong application identity: expected $applicationUserModelId"
 }
 
 [xml]$manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8)
