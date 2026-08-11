@@ -286,6 +286,47 @@ final class VtTerminalEmulator {
         revision++;
     }
 
+    void loadPlainSnapshot(List<String> lines, int requestedRows,
+                           int requestedColumns) {
+        reset(requestedRows, requestedColumns);
+        List<String> values = lines == null ? new ArrayList<>() : lines;
+        int firstScreenLine = Math.max(0, values.size() - rows);
+        for (int index = 0; index < firstScreenLine; index++) {
+            normal.history.add(plainLine(values.get(index)));
+        }
+        int screenLines = values.size() - firstScreenLine;
+        int screenOffset = Math.max(0, rows - screenLines);
+        for (int row = 0; row < screenLines && row < rows; row++) {
+            normal.rows.set(screenOffset + row,
+                    plainLine(values.get(firstScreenLine + row)));
+        }
+        normal.cursorRow = Math.max(0, Math.min(rows - 1,
+                screenOffset + screenLines - 1));
+        normal.cursorColumn = screenLines <= 0 ? 0
+                : Math.min(columns - 1, normal.rows.get(normal.cursorRow).usedColumns());
+        active = normal;
+        alternateActive = false;
+        cursorVisible = true;
+        wrapPending = false;
+        trimHistory(normal);
+        revision++;
+    }
+
+    int prependPlainHistory(List<String> lines) {
+        if (lines == null || lines.isEmpty()) return 0;
+        int capacity = Math.max(0, MAX_SCROLLBACK_LINES - totalLines());
+        int count = Math.min(capacity, lines.size());
+        if (count <= 0) return 0;
+        int first = lines.size() - count;
+        ArrayList<Line> added = new ArrayList<>(count);
+        for (int index = first; index < lines.size(); index++) {
+            added.add(plainLine(lines.get(index)));
+        }
+        active.history.addAll(0, added);
+        revision++;
+        return count;
+    }
+
     int rows() { return rows; }
     int columns() { return columns; }
     int totalLines() { return active.history.size() + active.rows.size(); }
@@ -586,8 +627,25 @@ final class VtTerminalEmulator {
     }
 
     private static void trimHistory(Screen screen) {
-        int overflow = screen.history.size() - MAX_SCROLLBACK_LINES;
+        int maximumHistory = Math.max(0, MAX_SCROLLBACK_LINES - screen.rows.size());
+        int overflow = screen.history.size() - maximumHistory;
         if (overflow > 0) screen.history.subList(0, overflow).clear();
+    }
+
+    private Line plainLine(String text) {
+        Line line = new Line(columns, currentColors(), styleFlags);
+        if (text == null || text.isEmpty()) return line;
+        int column = 0;
+        for (int offset = 0; offset < text.length() && column < columns;) {
+            int codePoint = text.codePointAt(offset);
+            offset += Character.charCount(codePoint);
+            int width = cellWidth(codePoint);
+            if (width <= 0) continue;
+            if (width == 2 && column == columns - 1) break;
+            line.put(column, codePoint, width, currentColors(), styleFlags);
+            column += width;
+        }
+        return line;
     }
 
     private void insertLines(int requested) {

@@ -78,6 +78,26 @@ public final class AicliClient {
         }
     }
 
+    public static final class TerminalHistoryPage {
+        public final String historyToken;
+        public final List<String> lines;
+        public final int startLine;
+        public final int totalLines;
+        public final boolean hasMore;
+        public final boolean expired;
+
+        TerminalHistoryPage(String historyToken, List<String> lines,
+                            int startLine, int totalLines,
+                            boolean hasMore, boolean expired) {
+            this.historyToken = historyToken;
+            this.lines = lines;
+            this.startLine = startLine;
+            this.totalLines = totalLines;
+            this.hasMore = hasMore;
+            this.expired = expired;
+        }
+    }
+
     public interface ConversationCallback { void onSuccess(List<Conversation> conversations); void onError(String message); }
     public interface ActionCallback { void onSuccess(); void onError(String message); }
     public interface EventCallback {
@@ -87,6 +107,10 @@ public final class AicliClient {
         default long terminalSequence() { return 0L; }
     }
     public interface HistoryCallback { void onSuccess(List<String> events); void onError(String message); }
+    public interface TerminalHistoryCallback {
+        void onSuccess(TerminalHistoryPage page);
+        void onError(String message);
+    }
 
     public interface PairingCallback {
         void onStatus(String status, String message);
@@ -342,6 +366,32 @@ public final class AicliClient {
                 List<String> events = new ArrayList<>();
                 for (JsonElement item : items) events.add(item.toString());
                 callback.onSuccess(events);
+            }
+            @Override public void onError(String message) { callback.onError(message); }
+        });
+    }
+
+    public void loadTerminalHistory(String conversationId, String historyToken,
+                                    int beforeLine, int limit,
+                                    TerminalHistoryCallback callback) {
+        String path = "/api/conversations/" + safePath(conversationId)
+                + "/terminal/history?token=" + safePath(historyToken)
+                + "&beforeLine=" + Math.max(0, beforeLine)
+                + "&limit=" + Math.max(1, Math.min(200, limit));
+        signedRequest("GET", path, "", new ResponseCallback() {
+            @Override public void onResponse(JsonObject root, int status) {
+                JsonArray values = root.has("lines") && root.get("lines").isJsonArray()
+                        ? root.getAsJsonArray("lines") : new JsonArray();
+                List<String> lines = new ArrayList<>();
+                for (JsonElement value : values) {
+                    lines.add(value == null || value.isJsonNull() ? "" : value.getAsString());
+                }
+                callback.onSuccess(new TerminalHistoryPage(
+                        stringValue(root, "historyToken"), lines,
+                        root.has("startLine") ? root.get("startLine").getAsInt() : 0,
+                        root.has("totalLines") ? root.get("totalLines").getAsInt() : 0,
+                        root.has("hasMore") && root.get("hasMore").getAsBoolean(),
+                        root.has("expired") && root.get("expired").getAsBoolean()));
             }
             @Override public void onError(String message) { callback.onError(message); }
         });

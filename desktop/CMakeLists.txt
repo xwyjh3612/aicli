@@ -88,6 +88,12 @@ add_executable(aicli_data_store_tests
     src/data/data_store.cpp
 )
 
+add_executable(aicli_terminal_stream_tests
+    tests/terminal_stream_publisher_tests.cpp
+    src/agent/terminal_stream_publisher.cpp
+    src/core/text_utils.cpp
+)
+
 target_compile_definitions(aicli PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN USE_WEBSOCKET NO_SSL_DL OPENSSL_API_3_0
 )
@@ -96,6 +102,10 @@ if (AICLI_SKIP_PACKAGED_ACTIVATION)
 endif()
 
 target_compile_definitions(aicli_data_store_tests PRIVATE
+    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+)
+
+target_compile_definitions(aicli_terminal_stream_tests PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
 )
 
@@ -120,6 +130,11 @@ target_include_directories(aicli PRIVATE
 
 target_include_directories(aicli_data_store_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_include_directories(aicli_terminal_stream_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "F:/deps/aicli"
 )
 
 target_link_libraries(aicli PRIVATE
@@ -178,6 +193,10 @@ target_link_libraries(aicli_data_store_tests PRIVATE
     shell32
 )
 
+target_link_libraries(aicli_terminal_stream_tests PRIVATE
+    ole32
+)
+
 if (MSVC)
     # Merge the Windows 10/11 compatibility declaration into the executable's
     # real RT_MANIFEST resource. A manifest embedded from the .rc file is
@@ -190,4 +209,5 @@ if (MSVC)
     )
     target_compile_options(aicli PRIVATE /W4 /EHsc /utf-8 /FS)
     target_compile_options(aicli_data_store_tests PRIVATE /W4 /EHsc /utf-8 /FS)
+    target_compile_options(aicli_terminal_stream_tests PRIVATE /W4 /EHsc /utf-8 /FS)
 endif()

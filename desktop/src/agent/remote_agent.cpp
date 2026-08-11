@@ -32,6 +32,7 @@ namespace aicli::agent {
 namespace {
 
 using json = nlohmann::json;
+constexpr std::size_t kMaximumWireMessageBytes = 1024 * 1024;
 
 std::int64_t Now() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -287,6 +288,7 @@ void RemoteAgent::SetControlCallback(ControlCallback callback) { std::scoped_loc
 void RemoteAgent::SetConversationsCallback(ConversationsCallback callback) { std::scoped_lock l(mutex_); conversations_callback_=std::move(callback); }
 void RemoteAgent::SetEventsCallback(EventsCallback callback) { std::scoped_lock l(mutex_); events_callback_=std::move(callback); }
 void RemoteAgent::SetTerminalReplayCallback(TerminalReplayCallback callback) { std::scoped_lock l(mutex_); terminal_replay_callback_=std::move(callback); }
+void RemoteAgent::SetTerminalHistoryCallback(TerminalHistoryCallback callback) { std::scoped_lock l(mutex_); terminal_history_callback_=std::move(callback); }
 void RemoteAgent::SetStatusCallback(StatusCallback callback) { std::scoped_lock l(mutex_); status_callback_=std::move(callback); }
 
 PairingInfo RemoteAgent::CreatePairing(std::int64_t lifetime_seconds) {
@@ -343,6 +345,7 @@ bool RemoteAgent::RevokeDevice(const std::wstring& phone_id) {
 }
 
 void RemoteAgent::BroadcastEvent(const std::wstring& project_id, const std::string& event_json) {
+    if (event_json.size() > kMaximumWireMessageBytes) return;
     std::vector<std::shared_ptr<WsClient>> clients;
     {std::scoped_lock l(mutex_);clients=websocket_clients_;}
     for(const auto& client:clients){if(!client||client->closed||!client->ready||(!client->project_id.empty()&&client->project_id!=project_id))continue;std::scoped_lock write(client->write_mutex);if(client->closed||!client->ready||!client->connection)continue;if(mg_websocket_write(client->connection,MG_WEBSOCKET_OPCODE_TEXT,event_json.data(),event_json.size())<=0)client->closed=true;}
@@ -356,8 +359,13 @@ int RemoteAgent::HandleWsData(struct mg_connection* connection,int bits,char* da
 void RemoteAgent::HandleWsClose(const struct mg_connection* connection,void* callback_data){static_cast<RemoteAgent*>(callback_data)->OnWsClose(connection);}
 
 void RemoteAgent::WriteJson(struct mg_connection* connection, int status, const std::string& body) const {
-    const char* phrase=status==200?"OK":status==201?"Created":status==202?"Accepted":status==400?"Bad Request":status==401?"Unauthorized":status==403?"Forbidden":status==404?"Not Found":status==409?"Conflict":"Error";
-    mg_printf(connection,"HTTP/1.1 %d %s\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",status,phrase,body.size(),body.data());
+    static const std::string too_large =
+        R"({"ok":false,"error":"响应超过 1MB 安全上限"})";
+    const bool oversized = body.size() > kMaximumWireMessageBytes;
+    const int response_status = oversized ? 413 : status;
+    const std::string& response_body = oversized ? too_large : body;
+    const char* phrase=response_status==200?"OK":response_status==201?"Created":response_status==202?"Accepted":response_status==400?"Bad Request":response_status==401?"Unauthorized":response_status==403?"Forbidden":response_status==404?"Not Found":response_status==409?"Conflict":response_status==413?"Payload Too Large":"Error";
+    mg_printf(connection,"HTTP/1.1 %d %s\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",response_status,phrase,response_body.size(),response_body.data());
 }
 
 void RemoteAgent::WriteError(struct mg_connection* connection,int status,const std::wstring& message) const { WriteJson(connection,status,JsonString(json{{"ok",false},{"error",Utf8(message)}})); }
@@ -423,6 +431,26 @@ int RemoteAgent::OnHttp(struct mg_connection* connection) {
                 WriteJson(connection,200,callback?callback(project_id,after):"{\"items\":[]}");
                 return 200;
             }
+            if(action=="terminal/history"&&method=="GET"){
+                const auto token=Wide(QueryValue(info,"token"));
+                std::int64_t before_value=0,limit_value=200;
+                ParseInt64(QueryValue(info,"beforeLine"),before_value);
+                ParseInt64(QueryValue(info,"limit"),limit_value);
+                TerminalHistoryCallback callback;
+                {std::scoped_lock l(mutex_);callback=terminal_history_callback_;}
+                const auto page=callback?callback(
+                    project_id,token,
+                    static_cast<std::size_t>(std::max<std::int64_t>(0,before_value)),
+                    static_cast<std::size_t>(std::clamp<std::int64_t>(limit_value,1,200)))
+                    :TerminalHistoryPage{};
+                WriteJson(connection,200,JsonString(json{
+                    {"ok",page.found},{"expired",!page.found},
+                    {"historyToken",Utf8(page.token)},
+                    {"startLine",page.start_line},
+                    {"totalLines",page.total_lines},
+                    {"hasMore",page.has_more},{"lines",page.lines}}));
+                return 200;
+            }
             const auto value=body.empty()?json::object():json::parse(body);
             if(action=="input"||action=="chat"){
                 auto input=Wide(value.value(action=="chat"?"message":"input",std::string{}));
@@ -466,8 +494,8 @@ int RemoteAgent::OnWsConnect(const struct mg_connection* connection) {
 void RemoteAgent::OnWsReady(struct mg_connection* connection){
     auto* handle=static_cast<std::shared_ptr<WsClient>*>(mg_get_user_connection_data(connection));if(!handle||!*handle)return;const auto client=*handle;
     TerminalReplayCallback replay_callback;{std::scoped_lock l(mutex_);replay_callback=terminal_replay_callback_;}
-    const std::string hello=JsonString(json{{"type","hello"},{"computerId",Utf8(computer_id_)},{"computerName",Utf8(config_.computer_name)},{"certificateSha256",Utf8(certificate_fingerprint_)},{"terminalProtocol",1}});
-    auto send=[&](const std::string& value){if(client->closed||!client->connection)return false;if(mg_websocket_write(connection,MG_WEBSOCKET_OPCODE_TEXT,value.data(),value.size())<=0){client->closed=true;return false;}return true;};
+    const std::string hello=JsonString(json{{"type","hello"},{"computerId",Utf8(computer_id_)},{"computerName",Utf8(config_.computer_name)},{"certificateSha256",Utf8(certificate_fingerprint_)},{"terminalProtocol",2}});
+    auto send=[&](const std::string& value){if(value.size()>kMaximumWireMessageBytes||client->closed||!client->connection)return false;if(mg_websocket_write(connection,MG_WEBSOCKET_OPCODE_TEXT,value.data(),value.size())<=0){client->closed=true;return false;}return true;};
     std::scoped_lock write(client->write_mutex);
     if(!send(hello))return;
     TerminalReplayBatch first;

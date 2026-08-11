@@ -45,6 +45,11 @@ public final class TerminalView extends View {
     private int visualWrapColumns = -1;
     private int visualLogicalLines = -1;
     private int[] visualStarts = new int[0];
+    private HistoryLoadListener historyLoadListener;
+
+    interface HistoryLoadListener {
+        void onHistoryLoadRequested();
+    }
 
     private static final class VisualLine {
         final int logicalRow;
@@ -108,6 +113,7 @@ public final class TerminalView extends View {
             @Override public boolean onScroll(MotionEvent first, MotionEvent current,
                                               float distanceX, float distanceY) {
                 scrollByClamped(Math.round(distanceX), Math.round(distanceY));
+                if (distanceY < 0f) maybeRequestOlderHistory();
                 return true;
             }
 
@@ -174,6 +180,23 @@ public final class TerminalView extends View {
             invalidate();
             awakenScrollBars();
         });
+    }
+
+    void setHistoryLoadListener(@Nullable HistoryLoadListener listener) {
+        historyLoadListener = listener;
+    }
+
+    int captureHistoryContentHeight() {
+        return contentHeight();
+    }
+
+    void terminalHistoryPrepended(int previousContentHeight, int previousScrollY) {
+        invalidateVisualLayout();
+        int nextHeight = contentHeight();
+        scrollToClamped(getScrollX(), previousScrollY +
+                Math.max(0, nextHeight - previousContentHeight));
+        invalidate();
+        awakenScrollBars();
     }
 
     boolean isNearBottom() {
@@ -348,6 +371,13 @@ public final class TerminalView extends View {
     private void scrollByClamped(int deltaX, int deltaY) {
         scrollToClamped(getScrollX() + deltaX, getScrollY() + deltaY);
         awakenScrollBars();
+    }
+
+    private void maybeRequestOlderHistory() {
+        HistoryLoadListener listener = historyLoadListener;
+        if (listener == null) return;
+        int threshold = Math.max(Math.round(cellHeight * 2f), Math.round(32f * density));
+        if (getScrollY() <= threshold) listener.onHistoryLoadRequested();
     }
 
     private void scrollToClamped(int x, int y) {

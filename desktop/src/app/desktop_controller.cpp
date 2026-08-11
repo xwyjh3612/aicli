@@ -224,6 +224,11 @@ void DesktopController::ConfigureRemoteAgent() {
                std::uint64_t after) {
             return terminal_streams_.Replay(project, session, after);
         });
+    remote_agent_.SetTerminalHistoryCallback(
+        [this](const std::wstring& project, const std::wstring& token,
+               std::size_t before, std::size_t limit) {
+            return terminal_streams_.History(project, token, before, limit);
+        });
     remote_agent_.SetConversationsCallback([this] { return ConversationsJson(); });
     remote_agent_.SetEventsCallback(
         [this](const std::wstring& project, std::int64_t after) {
@@ -650,7 +655,7 @@ bool DesktopController::TakeTerminalDirty() noexcept {
 }
 
 void DesktopController::PublishDirtySnapshots() {
-    terminal_snapshots_.Publish(terminal_, conversation_bridge_);
+    terminal_snapshots_.Publish(terminal_, conversation_bridge_, terminal_streams_);
 }
 
 bool DesktopController::SelectProjectFromRemote(const std::wstring& project_id) {

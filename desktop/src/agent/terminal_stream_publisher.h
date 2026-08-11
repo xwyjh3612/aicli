@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace aicli::agent {
 
@@ -31,10 +32,19 @@ public:
     void PublishResize(const std::wstring& project_id,
                        std::uint32_t rows,
                        std::uint32_t columns);
+    void PublishSnapshot(const std::wstring& project_id,
+                         std::wstring_view snapshot,
+                         std::uint64_t snapshot_sequence);
+
+    std::uint64_t CurrentSequence(const std::wstring& project_id) const;
 
     TerminalReplayBatch Replay(const std::wstring& project_id,
                                const std::wstring& requested_session_id,
-                               std::uint64_t after_sequence) const;
+                               std::uint64_t after_sequence);
+    TerminalHistoryPage History(const std::wstring& project_id,
+                                const std::wstring& history_token,
+                                std::size_t before_line,
+                                std::size_t limit) const;
 
 private:
     enum class ChunkType { Data, Resize };
@@ -52,12 +62,26 @@ private:
     };
 
     struct StreamState {
+        struct RenderedSnapshot {
+            std::vector<std::string> lines;
+            std::uint64_t sequence{};
+            std::uint32_t rows{32};
+            std::uint32_t columns{120};
+        };
+        struct HistorySnapshot {
+            std::wstring token;
+            std::vector<std::string> lines;
+            std::uint64_t created_at_ms{};
+        };
+
         std::wstring session_id;
         std::uint64_t next_sequence{1};
         std::uint32_t rows{32};
         std::uint32_t columns{120};
         std::deque<Chunk> chunks;
         std::size_t retained_bytes{};
+        RenderedSnapshot snapshot;
+        std::deque<HistorySnapshot> history_snapshots;
     };
 
     static std::wstring NewSessionId();
@@ -77,7 +101,16 @@ private:
                                    std::uint64_t sequence,
                                    std::uint32_t rows,
                                    std::uint32_t columns);
+    static std::string BootstrapEvent(const std::wstring& project_id,
+                                      const StreamState& state,
+                                      std::uint64_t sequence,
+                                      const std::wstring& history_token,
+                                      const std::vector<std::string>& lines,
+                                      std::size_t start_line,
+                                      std::size_t total_lines);
+    static std::vector<std::string> SnapshotLines(std::wstring_view snapshot);
     static void Trim(StreamState& state);
+    static void TrimHistorySnapshots(StreamState& state);
 
     mutable std::mutex mutex_;
     std::unordered_map<std::wstring, StreamState> streams_;

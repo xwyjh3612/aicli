@@ -23,6 +23,8 @@ import com.google.android.material.textfield.MaterialAutoCompleteTextView;
 import com.google.android.material.button.MaterialButton;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -112,6 +114,7 @@ public final class MainActivity extends AppCompatActivity {
         drawerGroupLabel = findViewById(R.id.drawerGroupLabel);
         terminalView = findViewById(R.id.terminalView);
         terminalRenderer = new TerminalTextRenderer(terminalView);
+        terminalView.setHistoryLoadListener(this::loadOlderTerminalHistory);
         terminalKeyBar = findViewById(R.id.terminalKeyBar);
         inputBar = findViewById(R.id.inputBar);
         startProjectButton = findViewById(R.id.startProjectButton);
@@ -521,6 +524,24 @@ public final class MainActivity extends AppCompatActivity {
             terminalRenderer.reset(sessionId, baseSequence, rows, columns);
             return true;
         }
+        if ("terminal.bootstrap".equals(type) && event != null && payload != null) {
+            String sessionId = stringValue(event, "terminalSessionId");
+            long sequence = longValue(event, "sequence", 0L);
+            List<String> lines = new ArrayList<>();
+            JsonArray values = payload.has("lines") && payload.get("lines").isJsonArray()
+                    ? payload.getAsJsonArray("lines") : new JsonArray();
+            for (JsonElement value : values) {
+                lines.add(value == null || value.isJsonNull() ? "" : value.getAsString());
+            }
+            TerminalTextRenderer.StreamResult result = terminalRenderer.bootstrap(
+                    sessionId, sequence, intValue(payload, "rows", 32),
+                    intValue(payload, "columns", 120), lines,
+                    stringValue(payload, "historyToken"),
+                    intValue(payload, "startLine", 0),
+                    payload.has("hasMore") && payload.get("hasMore").getAsBoolean());
+            if (result == TerminalTextRenderer.StreamResult.GAP) requestTerminalReplay();
+            return true;
+        }
         if (("terminal.data".equals(type) || "terminal.resize".equals(type)) &&
                 event != null && payload != null) {
             String sessionId = stringValue(event, "terminalSessionId");
@@ -591,6 +612,35 @@ public final class MainActivity extends AppCompatActivity {
                 connectRealtime(conversationId);
             }
         }, 180L);
+    }
+
+    private void loadOlderTerminalHistory() {
+        if (client == null) return;
+        TerminalTextRenderer.HistoryRequest request = terminalRenderer.beginHistoryRequest();
+        if (request == null) return;
+        final AicliClient requestClient = client;
+        final long requestGeneration = serverGeneration;
+        requestClient.loadTerminalHistory(request.projectId, request.historyToken,
+                request.beforeLine, 200, new AicliClient.TerminalHistoryCallback() {
+            @Override public void onSuccess(AicliClient.TerminalHistoryPage page) {
+                runOnUiThread(() -> {
+                    if (client != requestClient || serverGeneration != requestGeneration) {
+                        terminalRenderer.historyFailed(request.projectId,
+                                request.historyToken);
+                        return;
+                    }
+                    String token = page.historyToken.isEmpty()
+                            ? request.historyToken : page.historyToken;
+                    terminalRenderer.historyLoaded(request.projectId, token,
+                            page.startLine, page.lines, page.hasMore, page.expired);
+                });
+            }
+
+            @Override public void onError(String message) {
+                runOnUiThread(() -> terminalRenderer.historyFailed(
+                        request.projectId, request.historyToken));
+            }
+        });
     }
 
     private void recoverMissedEvents() {

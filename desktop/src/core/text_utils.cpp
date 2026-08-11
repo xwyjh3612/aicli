@@ -3,8 +3,67 @@
 #include <windows.h>
 
 #include <iterator>
+#include <utility>
 
 namespace aicli::text {
+namespace {
+
+std::wstring NormalizeTerminalText(std::wstring value,
+                                   size_t max_characters,
+                                   size_t max_lines) {
+    std::wstring normalized;
+    normalized.reserve(value.size());
+    for (size_t index = 0; index < value.size(); ++index) {
+        const wchar_t character = value[index];
+        if (character == L'\r') {
+            if (index + 1 < value.size() && value[index + 1] == L'\n') ++index;
+            normalized.push_back(L'\n');
+        } else {
+            normalized.push_back(character);
+        }
+    }
+
+    size_t line_start = 0;
+    for (size_t index = 0; index <= normalized.size(); ++index) {
+        if (index == normalized.size() || normalized[index] == L'\n') {
+            size_t end = index;
+            while (end > line_start &&
+                   (normalized[end - 1] == L' ' || normalized[end - 1] == L'\t')) {
+                --end;
+            }
+            if (end < index) normalized.erase(end, index - end);
+            index = end;
+            line_start = index + 1;
+        }
+    }
+
+    while (!normalized.empty() &&
+           (normalized.back() == L'\n' || normalized.back() == L' ' ||
+            normalized.back() == L'\t')) {
+        normalized.pop_back();
+    }
+
+    size_t start = normalized.size() > max_characters
+        ? normalized.size() - max_characters
+        : 0;
+    size_t lines = normalized.empty() ? 0 : 1;
+    for (size_t index = normalized.size(); index > start; --index) {
+        if (normalized[index - 1] == L'\n' && ++lines > max_lines) {
+            start = index;
+            break;
+        }
+    }
+    if (start > 0) {
+        if (normalized[start - 1] != L'\n') {
+            const auto next = normalized.find(L'\n', start);
+            start = next == std::wstring::npos ? normalized.size() : next + 1;
+        }
+        normalized.erase(0, start);
+    }
+    return normalized;
+}
+
+} // namespace
 
 std::string Utf8Text(std::wstring_view value) {
     if (value.empty()) return {};
@@ -41,56 +100,14 @@ std::wstring LocalComputerName() {
 }
 
 std::wstring NormalizeTerminalSnapshot(std::wstring value) {
-    std::wstring normalized;
-    normalized.reserve(value.size());
-    for (size_t index = 0; index < value.size(); ++index) {
-        const wchar_t character = value[index];
-        if (character == L'\r') {
-            if (index + 1 < value.size() && value[index + 1] == L'\n') ++index;
-            normalized.push_back(L'\n');
-        } else {
-            normalized.push_back(character);
-        }
-    }
+    return NormalizeTerminalText(std::move(value), 32 * 1024, 300);
+}
 
-    size_t line_start = 0;
-    for (size_t index = 0; index <= normalized.size(); ++index) {
-        if (index == normalized.size() || normalized[index] == L'\n') {
-            size_t end = index;
-            while (end > line_start &&
-                   (normalized[end - 1] == L' ' || normalized[end - 1] == L'\t')) {
-                --end;
-            }
-            if (end < index) normalized.erase(end, index - end);
-            index = end;
-            line_start = index + 1;
-        }
-    }
-
-    while (!normalized.empty() &&
-           (normalized.back() == L'\n' || normalized.back() == L' ' ||
-            normalized.back() == L'\t')) {
-        normalized.pop_back();
-    }
-
-    constexpr size_t max_characters = 32 * 1024;
-    constexpr size_t max_lines = 300;
-    size_t start = normalized.size() > max_characters
-        ? normalized.size() - max_characters
-        : 0;
-    size_t lines = 0;
-    for (size_t index = normalized.size(); index > start; --index) {
-        if (normalized[index - 1] == L'\n' && ++lines >= max_lines) {
-            start = index;
-            break;
-        }
-    }
-    if (start > 0) {
-        const auto next = normalized.find(L'\n', start);
-        start = next == std::wstring::npos ? normalized.size() : next + 1;
-        normalized.erase(0, start);
-    }
-    return normalized;
+std::wstring NormalizeTerminalHistorySnapshot(std::wstring value) {
+    // The phone keeps at most 1000 logical terminal rows. This larger copy is
+    // held in memory for paging; SQLite continues to receive the compact
+    // 300-row recovery snapshot above.
+    return NormalizeTerminalText(std::move(value), 1024 * 1024, 1000);
 }
 
 } // namespace aicli::text

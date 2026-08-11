@@ -21,6 +21,22 @@ final class TerminalTextRenderer {
         int scrollX;
         int scrollY;
         boolean followBottom = true;
+        String historyToken = "";
+        int historyStartLine;
+        boolean historyHasMore;
+        boolean historyLoading;
+    }
+
+    static final class HistoryRequest {
+        final String projectId;
+        final String historyToken;
+        final int beforeLine;
+
+        HistoryRequest(String projectId, String historyToken, int beforeLine) {
+            this.projectId = projectId;
+            this.historyToken = historyToken;
+            this.beforeLine = beforeLine;
+        }
     }
 
     private final TerminalView view;
@@ -94,8 +110,74 @@ final class TerminalTextRenderer {
         state.scrollX = 0;
         state.scrollY = 0;
         state.followBottom = true;
+        state.historyToken = "";
+        state.historyStartLine = 0;
+        state.historyHasMore = false;
+        state.historyLoading = false;
         view.setTerminal(state.terminal, 0, 0, true);
         return StreamResult.APPLIED;
+    }
+
+    synchronized StreamResult bootstrap(String terminalSessionId, long sequence,
+                                        int rows, int columns, java.util.List<String> lines,
+                                        String historyToken, int startLine,
+                                        boolean hasMore) {
+        SessionState state = selectedState();
+        if (state == null || terminalSessionId == null || terminalSessionId.isEmpty()) {
+            return StreamResult.IGNORED;
+        }
+        if (!terminalSessionId.equals(state.terminalSessionId)) return StreamResult.GAP;
+        if (sequence < state.sequence) return StreamResult.IGNORED;
+        state.terminal.loadPlainSnapshot(lines, rows, columns);
+        state.sequence = Math.max(0L, sequence);
+        state.scrollX = 0;
+        state.scrollY = 0;
+        state.followBottom = true;
+        state.historyToken = historyToken == null ? "" : historyToken;
+        state.historyStartLine = Math.max(0, startLine);
+        state.historyHasMore = hasMore && state.historyStartLine > 0 &&
+                !state.historyToken.isEmpty();
+        state.historyLoading = false;
+        view.setTerminal(state.terminal, 0, 0, true);
+        return StreamResult.APPLIED;
+    }
+
+    synchronized HistoryRequest beginHistoryRequest() {
+        SessionState state = sessions.get(selectedProjectId);
+        if (state == null || state.historyLoading || !state.historyHasMore ||
+                state.historyStartLine <= 0 || state.historyToken.isEmpty()) return null;
+        state.historyLoading = true;
+        return new HistoryRequest(selectedProjectId, state.historyToken,
+                state.historyStartLine);
+    }
+
+    synchronized void historyLoaded(String projectId, String historyToken,
+                                    int startLine, java.util.List<String> lines,
+                                    boolean hasMore, boolean expired) {
+        SessionState state = sessions.get(projectId);
+        if (state == null || !state.historyToken.equals(historyToken)) return;
+        state.historyLoading = false;
+        if (expired || lines == null || lines.isEmpty()) {
+            state.historyHasMore = false;
+            return;
+        }
+        boolean selected = projectId.equals(selectedProjectId);
+        int previousHeight = selected ? view.captureHistoryContentHeight() : 0;
+        int previousScrollY = selected ? view.getScrollY() : 0;
+        int added = state.terminal.prependPlainHistory(lines);
+        int skipped = Math.max(0, lines.size() - added);
+        state.historyStartLine = Math.max(0, startLine + skipped);
+        state.historyHasMore = added > 0 && hasMore && state.historyStartLine > 0;
+        if (selected && added > 0) {
+            view.terminalHistoryPrepended(previousHeight, previousScrollY);
+        }
+    }
+
+    synchronized void historyFailed(String projectId, String historyToken) {
+        SessionState state = sessions.get(projectId);
+        if (state != null && state.historyToken.equals(historyToken)) {
+            state.historyLoading = false;
+        }
     }
 
     synchronized StreamResult data(String terminalSessionId, long sequence, String data) {

@@ -689,6 +689,11 @@ void ConfigureRemoteAgent(){
            std::uint64_t after){
             return g_terminal_streams.Replay(project,session,after);
         });
+    g_remote_agent.SetTerminalHistoryCallback(
+        [](const std::wstring& project,const std::wstring& token,
+           std::size_t before,std::size_t limit){
+            return g_terminal_streams.History(project,token,before,limit);
+        });
     g_remote_agent.SetConversationsCallback([]{return ConversationsJson();});
     g_remote_agent.SetEventsCallback([](const std::wstring& project,std::int64_t after){return EventsJson(project,after);});
     g_remote_agent.SetInputCallback([](const std::wstring& project,const std::wstring& phone,
@@ -874,7 +879,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(aicli::ui::HasActiveModal(h))ResizeModalHosts(h);
         Layout();return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshots.MarkDirtyMessageHandled();if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
-    case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}break;
+    case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}break;
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;info->ptMinTrackSize.x=900;info->ptMinTrackSize.y=600;return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;

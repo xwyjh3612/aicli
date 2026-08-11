@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "agent/conversation_bridge.h"
+#include "agent/terminal_stream_publisher.h"
 #include "core/text_utils.h"
 #include "terminal/xaml_island_adapter.h"
 
@@ -47,15 +48,36 @@ bool TerminalSnapshotPublisher::TakeDirty() noexcept {
 
 void TerminalSnapshotPublisher::Publish(
     aicli::terminal::XamlIslandAdapter& terminals,
-    ConversationBridge& conversations) {
+    ConversationBridge& conversations,
+    TerminalStreamPublisher& streams) {
     std::vector<std::wstring> project_ids;
     {
         std::scoped_lock lock(mutex_);
         project_ids.swap(pending_projects_);
     }
     for (const auto& project_id : project_ids) {
-        auto snapshot = aicli::text::NormalizeTerminalSnapshot(
-            terminals.ReadEntireBuffer(project_id));
+        std::wstring raw;
+        std::uint64_t snapshot_sequence{};
+        // Avoid assigning output that raced after ReadEntireBuffer() to the
+        // snapshot. A stable pass is normally obtained immediately; retrying
+        // also keeps the bootstrap boundary exact during a busy TUI repaint.
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            const auto before = streams.CurrentSequence(project_id);
+            raw = terminals.ReadEntireBuffer(project_id);
+            const auto after = streams.CurrentSequence(project_id);
+            snapshot_sequence = before;
+            if (before == after) {
+                snapshot_sequence = after;
+                break;
+            }
+        }
+        auto history_snapshot =
+            aicli::text::NormalizeTerminalHistorySnapshot(raw);
+        if (!history_snapshot.empty()) {
+            streams.PublishSnapshot(project_id, history_snapshot,
+                                    snapshot_sequence);
+        }
+        auto snapshot = aicli::text::NormalizeTerminalSnapshot(std::move(raw));
         if (snapshot.empty()) continue;
         const auto previous = last_snapshots_.find(project_id);
         if (previous != last_snapshots_.end() &&

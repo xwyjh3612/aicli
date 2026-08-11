@@ -304,8 +304,19 @@ inline LRESULT CALLBACK ModalOwnerSubclassProc(
     UINT_PTR subclass_id, DWORD_PTR reference) {
     auto* host = reinterpret_cast<ModalWorkspaceScope*>(reference);
     if (host) {
-        if (message == WM_WINDOWPOSCHANGED || message == WM_SIZE ||
-            message == WM_DPICHANGED) {
+        if (message == WM_WINDOWPOSCHANGED) {
+            // Activation and owner/owned-window z-order changes also send
+            // WM_WINDOWPOSCHANGED. Raising the modal layers for those events
+            // puts them above a newly opened native file dialog, even though
+            // that dialog was correctly shown with the modal surface as its
+            // owner. Only reposition when the main window actually moved or
+            // changed size; WM_SIZE/WM_DPICHANGED remain explicit below.
+            const auto* position = reinterpret_cast<const WINDOWPOS*>(lparam);
+            const UINT unchanged = SWP_NOMOVE | SWP_NOSIZE;
+            if (!position || (position->flags & unchanged) != unchanged) {
+                host->Reposition();
+            }
+        } else if (message == WM_SIZE || message == WM_DPICHANGED) {
             host->Reposition();
         } else if (message == WM_NCDESTROY) {
             host->owner_ = nullptr;

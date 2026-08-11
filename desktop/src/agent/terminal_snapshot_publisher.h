@@ -10,6 +10,7 @@
 
 namespace aicli::agent {
 class ConversationBridge;
+class TerminalStreamPublisher;
 }
 
 namespace aicli::terminal {
@@ -29,7 +30,8 @@ public:
     void MarkDirtyMessageHandled() noexcept;
     bool TakeDirty() noexcept;
     void Publish(aicli::terminal::XamlIslandAdapter& terminals,
-                 ConversationBridge& conversations);
+                 ConversationBridge& conversations,
+                 TerminalStreamPublisher& streams);
 
 private:
     std::atomic<HWND> owner_{};

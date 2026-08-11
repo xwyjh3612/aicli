@@ -6,6 +6,7 @@
 
 #include <windows.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -67,6 +68,11 @@ public:
         std::function<TerminalReplayBatch(const std::wstring& project_id,
                                           const std::wstring& terminal_session_id,
                                           std::uint64_t after_sequence)>;
+    using TerminalHistoryCallback =
+        std::function<TerminalHistoryPage(const std::wstring& project_id,
+                                          const std::wstring& history_token,
+                                          std::size_t before_line,
+                                          std::size_t limit)>;
     using StatusCallback = std::function<void(bool online, const std::wstring& message)>;
 
     RemoteAgent() = default;
@@ -85,6 +91,7 @@ public:
     void SetConversationsCallback(ConversationsCallback callback);
     void SetEventsCallback(EventsCallback callback);
     void SetTerminalReplayCallback(TerminalReplayCallback callback);
+    void SetTerminalHistoryCallback(TerminalHistoryCallback callback);
     void SetStatusCallback(StatusCallback callback);
 
     PairingInfo CreatePairing(std::int64_t lifetime_seconds = 300);
@@ -171,6 +178,7 @@ private:
     ConversationsCallback conversations_callback_;
     EventsCallback events_callback_;
     TerminalReplayCallback terminal_replay_callback_;
+    TerminalHistoryCallback terminal_history_callback_;
     StatusCallback status_callback_;
 };
 

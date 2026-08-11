@@ -294,10 +294,16 @@ Android App 使用 Java/XML，当前最低 Android 版本为 API 26。
 
 ```text
 terminal.reset  // terminalSessionId、baseSequence、rows、columns
+terminal.bootstrap // 最终渲染画面的末尾 200 行、历史 token 和对应 sequence
 terminal.data   // terminalSessionId、递增 sequence、原始 VT data
 terminal.resize // terminalSessionId、递增 sequence、rows、columns
 ```
 
+- 协议版本为 `terminalProtocol: 2`。手机首次打开一个运行中的会话时，不再重放最多 12MB 的原始 ConPTY 历史；电脑读取 TermControl 最终渲染画面，只发送最后 200 个逻辑行作为首屏；
+- `terminal.bootstrap` 对应一个确定的 VT sequence，首屏之后只补发该 sequence 之后的新 `terminal.data`/`terminal.resize`，Working 动画和 TUI 中间重绘不会作为历史再次刷屏；
+- 手机上滑到顶部时，通过签名 HTTPS 接口按历史 token 每次读取更早的 200 行；历史 token 固定首次连接时看到的画面，因此分页期间的新输出不会造成行偏移或重复；
+- 手机终端最多保留 1000 个逻辑行。分页插入旧内容后保持当前视口位置，实时输出仍使用完整 ANSI/VT 颜色；首次 200 行是 TermControl 展平后的最终文字画面，新产生的实时内容继续保留终端颜色和 TUI 行为；
+- HTTP 请求/响应和单条 WebSocket 文本消息均设置 1MB 安全上限；桌面端会主动拆分较大的 ConPTY 输出块，避免单帧越界；
 - Android 对每个项目保存 `terminalSessionId` 和最后已应用 `sequence`；只接受同一会话且严格连续的下一条事件；
 - 发现序号间隙时，手机重新建立 WSS，并把当前 session 和 sequence 发给电脑，请求只补发缺少的尾部数据；重复或旧序号直接忽略，因此补发不会造成内容重复；
 - 手机发送聊天成功后，在 220ms 和 900ms 各执行一次带当前 sequence 的轻量 WSS 重连，覆盖“最后一帧丢失后没有下一帧触发 gap 检测”的情况；该机制适用于 Claude、Codex 和自定义 CLI；
@@ -561,6 +567,7 @@ F:\android\sdk\platform-tools\adb.exe -s 607faa8d reverse tcp:4280 tcp:4280
 - 设置页四个左侧导航、右侧独立滚动、分组/项目类型二层模态框和主题即时切换已完成启动检查；
 - Android 主页面已改为动态分组和动态项目类型，Material 3 新页面 Debug APK 构建并覆盖安装成功；
 - Android 已按 `terminalSessionId + sequence` 消费实时 VT 流，手机发送后主动补发尾部事件；Claude DECSET 2026 同步绘制增加 180ms 最大刷新等待，避免发送后看不到最新内容；
+- Android 会话首屏已改为 TermControl 最终画面的末尾 200 行，向上每页加载 200 行、最多保留 1000 行；WSS 仅补发首屏 sequence 之后的 VT 增量，桌面 Qt/非 Qt 共用同一协议实现；
 - requestId、sequence 重复请求和撤销设备请求被拒绝；
 - TLS PEM ACL 只允许文件所有者和 `SYSTEM` 完全访问。
 
