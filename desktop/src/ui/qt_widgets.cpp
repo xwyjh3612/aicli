@@ -6,12 +6,14 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QItemSelectionModel>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
 #include <QStyle>
 #include <QPixmap>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <QVariant>
 #include <QVBoxLayout>
@@ -383,6 +385,8 @@ void ProjectListWidget::SetDragEnabledForQuery(bool enabled) {
     dragAllowed_ = enabled;
     setDragEnabled(enabled);
     if (!enabled) {
+        dragArmed_ = false;
+        dragProjectId_.clear();
         unsetCursor();
         viewport()->unsetCursor();
     }
@@ -428,8 +432,31 @@ void ProjectListWidget::updateGripCursor(const QPoint& position) {
 }
 
 void ProjectListWidget::mousePressEvent(QMouseEvent* event) {
-    dragArmed_ = event->button() == Qt::LeftButton && event->position().x() <= 34;
-    updateGripCursor(event->position().toPoint());
+    const QPoint position = event->position().toPoint();
+    auto* pressedItem = itemAt(position);
+    const QRect pressedRow = pressedItem ? visualItemRect(pressedItem) : QRect{};
+    const bool overGrip = pressedItem &&
+        QRect(pressedRow.left(), pressedRow.top(), 34, pressedRow.height()).contains(position);
+    dragArmed_ = dragAllowed_ && event->button() == Qt::LeftButton && overGrip;
+
+    // QAbstractItemView only arms its native drag state when the pressed row
+    // was already selected.  Select the row before forwarding the press so a
+    // first press on the grip can drag immediately instead of requiring a
+    // separate click to select it first.  Suppress currentRowChanged for this
+    // preparatory selection: the controller otherwise rebuilds the list on a
+    // queued state notification and destroys Qt's pressed drag index before
+    // the first mouse-move event arrives.
+    if (dragArmed_) {
+        dragProjectId_ = pressedItem->data(ProjectIdRole).toString();
+        const QSignalBlocker blocker(this);
+        setCurrentItem(pressedItem, QItemSelectionModel::ClearAndSelect);
+        updateGripCursor(position);
+        QListWidget::mousePressEvent(event);
+        return;
+    } else {
+        dragProjectId_.clear();
+    }
+    updateGripCursor(position);
     QListWidget::mousePressEvent(event);
 }
 
@@ -439,8 +466,14 @@ void ProjectListWidget::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void ProjectListWidget::mouseReleaseEvent(QMouseEvent* event) {
+    const bool commitSelection = dragArmed_ && event->button() == Qt::LeftButton;
+    const QString projectId = dragProjectId_;
     QListWidget::mouseReleaseEvent(event);
-    if (event->button() == Qt::LeftButton) dragArmed_ = false;
+    if (event->button() == Qt::LeftButton) {
+        dragArmed_ = false;
+        dragProjectId_.clear();
+    }
+    if (commitSelection && !projectId.isEmpty()) emit selectionCommitted(projectId);
     updateGripCursor(event->position().toPoint());
 }
 
@@ -455,12 +488,26 @@ void ProjectListWidget::leaveEvent(QEvent* event) {
 void ProjectListWidget::startDrag(Qt::DropActions supportedActions) {
     if (!dragAllowed_ || !dragArmed_) return;
     QListWidget::startDrag(supportedActions);
+
+    // A cancelled drag has no dropEvent, but the original press should still
+    // select that project just like a normal click on the grip.
+    if (dragArmed_) {
+        const QString projectId = dragProjectId_;
+        dragArmed_ = false;
+        dragProjectId_.clear();
+        if (!projectId.isEmpty()) emit selectionCommitted(projectId);
+    }
 }
 
 void ProjectListWidget::dropEvent(QDropEvent* event) {
     QListWidget::dropEvent(event);
+    const QString projectId = dragProjectId_;
     dragArmed_ = false;
-    if (event->isAccepted()) emit orderChanged();
+    dragProjectId_.clear();
+    if (event->isAccepted()) {
+        if (!projectId.isEmpty()) emit selectionCommitted(projectId);
+        emit orderChanged();
+    }
 }
 
 TitleBarWidget::TitleBarWidget(QWidget* parent) : QWidget(parent) {

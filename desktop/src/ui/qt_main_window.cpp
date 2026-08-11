@@ -257,6 +257,12 @@ void MainWindow::buildUi() {
             this, &MainWindow::showProjectContextMenu);
     connect(project_list_, &ProjectListWidget::orderChanged,
             this, &MainWindow::persistProjectOrder);
+    connect(project_list_, &ProjectListWidget::selectionCommitted,
+            this, [this](const QString& projectId) {
+                if (refreshing_ || projectId.isEmpty()) return;
+                controller_.SetSelectedProject(ToWideString(projectId));
+                refreshProjectDetails();
+            });
     connect(terminal_host_, &TerminalHostWidget::hostResized, this,
             [this](int width, int height) {
                 if (terminal_attached_) controller_.ResizeTerminal(width, height);

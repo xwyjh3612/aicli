@@ -76,7 +76,7 @@ public:
                    const QModelIndex& index) const override;
 };
 
-class ProjectListWidget final : public QListWidget {
+class ProjectListWidget : public QListWidget {
     Q_OBJECT
 public:
     explicit ProjectListWidget(QWidget* parent = nullptr);
@@ -86,6 +86,7 @@ public:
 
 signals:
     void orderChanged();
+    void selectionCommitted(const QString& projectId);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -100,6 +101,7 @@ private:
     void advanceWorkingAnimation();
     bool dragArmed_{};
     bool dragAllowed_{true};
+    QString dragProjectId_;
     QTimer* spinner_timer_{};
     qreal spinner_angle_{-90.0};
 };

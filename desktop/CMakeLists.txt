@@ -25,7 +25,7 @@ if (AICLI_USE_QT_UI)
     if (EXISTS "F:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6")
         list(PREPEND CMAKE_PREFIX_PATH "F:/Qt/6.8.3/msvc2022_64")
     endif()
-    find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets Test)
 endif()
 
 configure_file(
@@ -94,6 +94,13 @@ add_executable(aicli_terminal_stream_tests
     src/core/text_utils.cpp
 )
 
+if (AICLI_USE_QT_UI)
+    add_executable(aicli_qt_project_list_tests
+        tests/qt_project_list_tests.cpp
+        src/ui/qt_widgets.cpp
+    )
+endif()
+
 target_compile_definitions(aicli PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN USE_WEBSOCKET NO_SSL_DL OPENSSL_API_3_0
 )
@@ -108,6 +115,12 @@ target_compile_definitions(aicli_data_store_tests PRIVATE
 target_compile_definitions(aicli_terminal_stream_tests PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
 )
+
+if (AICLI_USE_QT_UI)
+    target_compile_definitions(aicli_qt_project_list_tests PRIVATE
+        UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    )
+endif()
 
 set_source_files_properties("F:/deps/aicli/civetweb-1.16/src/civetweb.c" PROPERTIES LANGUAGE C)
 
@@ -137,6 +150,12 @@ target_include_directories(aicli_terminal_stream_tests PRIVATE
     "F:/deps/aicli"
 )
 
+if (AICLI_USE_QT_UI)
+    target_include_directories(aicli_qt_project_list_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+endif()
+
 target_link_libraries(aicli PRIVATE
     comctl32
     user32
@@ -162,6 +181,10 @@ target_link_libraries(aicli PRIVATE
 
 if (AICLI_USE_QT_UI)
     target_link_libraries(aicli PRIVATE Qt6::Widgets)
+    target_link_libraries(aicli_qt_project_list_tests PRIVATE
+        Qt6::Widgets
+        Qt6::Test
+    )
 endif()
 
 if (AICLI_USE_QT_UI)
@@ -210,4 +233,7 @@ if (MSVC)
     target_compile_options(aicli PRIVATE /W4 /EHsc /utf-8 /FS)
     target_compile_options(aicli_data_store_tests PRIVATE /W4 /EHsc /utf-8 /FS)
     target_compile_options(aicli_terminal_stream_tests PRIVATE /W4 /EHsc /utf-8 /FS)
+    if (AICLI_USE_QT_UI)
+        target_compile_options(aicli_qt_project_list_tests PRIVATE /W4 /EHsc /utf-8 /FS)
+    endif()
 endif()
