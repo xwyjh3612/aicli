@@ -5,7 +5,15 @@
 #define MyAppName "AI CLI"
 #define MyAppPublisher "AI CLI"
 #define MyAppExeName "aicli.exe"
-#define MyPackageIdentity "AiCli.Desktop.Release"
+#ifndef MyPackageIdentity
+  #define MyPackageIdentity "AiCli.Desktop.Release"
+#endif
+#ifndef MySourceDir
+  #define MySourceDir "..\bin\Release"
+#endif
+#ifndef MyInstallerBaseName
+  #define MyInstallerBaseName "AI-CLI-Setup-" + MyAppVersion + "-x64"
+#endif
 
 [Setup]
 AppId={{15A2F0B7-30F5-4CA4-92D7-C0B3DA678BA9}
@@ -19,7 +27,7 @@ DefaultDirName={autopf}\AI CLI
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=output
-OutputBaseFilename=AI-CLI-Setup-{#MyAppVersion}-x64
+OutputBaseFilename={#MyInstallerBaseName}
 SetupIconFile=..\assets\aicli.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ArchitecturesAllowed=x64compatible
@@ -43,7 +51,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加快捷方式："; Flags: unchecked
 
 [Files]
-Source: "..\bin\Release\*"; DestDir: "{app}"; Excludes: "aicli.pdb,aicli_data_store_tests.exe,aicli_data_store_tests.pdb,aicli-test-window.png,component-load-error.txt,microsoft.system.package.metadata\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MySourceDir}\*"; DestDir: "{app}"; Excludes: "aicli.pdb,aicli_data_store_tests.exe,aicli_data_store_tests.pdb,aicli-test-window.png,component-load-error.txt,microsoft.system.package.metadata\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "install-package.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "uninstall-package.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 

@@ -58,6 +58,9 @@ QString BuildApplicationStyle(const ThemePalette& theme) {
     const QColor selection = ToQColor(theme.selection);
     const QColor hover = ToQColor(theme.hover);
     const QColor pressed = ToQColor(theme.pressed);
+    const QColor titlebar = theme.light()
+        ? ToQColor(theme.titlebar)
+        : QColor(23, 27, 35);
 
     // Use named color tokens. QString::arg() replaces the lowest numbered
     // placeholder rather than binding arguments to their literal numbers;
@@ -67,6 +70,7 @@ QString BuildApplicationStyle(const ThemePalette& theme) {
     QString style = QStringLiteral(R"(
 QWidget#qtRoot, QMainWindow, QWidget#mainSurface { background: @window@; color: @text@; }
 QWidget#titleBar { background: @titlebar@; }
+QFrame#titleBarSeparator, QFrame#settingsHeaderSeparator { background: @border@; border: none; }
 QWidget#sidebar, QWidget#footer { background: @panel@; }
 QLabel#appLogo { background: transparent; border: none; }
 QLabel#appTitle { color: @titlebarText@; }
@@ -104,8 +108,18 @@ QDialog { background: @window@; color: @text@; border: 1px solid @border@; borde
   QDialog#settingsDialog, QDialog#bindingDialog { background: transparent; border: none; border-radius: 0; }
   QDialog#projectDialog, QDialog#nameCommandDialog { background: @window@; }
   QWidget#settingsSurface, QWidget#bindingSurface { background: @window@; color: @text@; border: 1px solid @border@; border-radius: 14px; }
-  QWidget#settingsHeader, QWidget#settingsBody, QStackedWidget#settingsPages,
-  QWidget#settingsPage {
+  QWidget#settingsHeader {
+      background: @titlebar@; color: @titlebarText@; border: none;
+      border-top-left-radius: 13px; border-top-right-radius: 13px;
+  }
+  QLabel#settingsTitle { background: transparent; color: @titlebarText@; border: none; }
+  QPushButton#dialogCloseButton {
+      min-height: 0; background: transparent; color: @titlebarText@;
+      border: none; border-radius: 6px; padding: 0;
+  }
+  QPushButton#dialogCloseButton:hover { background: @hover@; }
+  QPushButton#dialogCloseButton:pressed { background: @pressed@; }
+  QWidget#settingsBody, QStackedWidget#settingsPages, QWidget#settingsPage {
       background: transparent; color: @text@; border: none; border-radius: 0;
   }
   QWidget#dialogSurface { background: @window@; color: @text@; border: none; border-radius: 0; }
@@ -154,7 +168,7 @@ QToolTip { background: @surface@; color: @text@; border: 1px solid @border@; pad
     replaceColor("@selection@", selection);
     replaceColor("@hover@", hover);
     replaceColor("@pressed@", pressed);
-    replaceColor("@titlebar@", ToQColor(theme.titlebar));
+    replaceColor("@titlebar@", titlebar);
     replaceColor("@titlebarText@", ToQColor(theme.titlebar_text));
     replaceColor("@listSurface@", ToQColor(theme.list_surface));
     replaceColor("@listText@", ToQColor(theme.list_text));

@@ -117,6 +117,12 @@ void MainWindow::buildUi() {
 
     title_bar_ = new TitleBarWidget(root_);
     rootLayout->addWidget(title_bar_);
+    auto* titleBarSeparator = new QFrame(root_);
+    titleBarSeparator->setObjectName(QStringLiteral("titleBarSeparator"));
+    titleBarSeparator->setFrameShape(QFrame::NoFrame);
+    titleBarSeparator->setFixedHeight(1);
+    titleBarSeparator->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    rootLayout->addWidget(titleBarSeparator);
 
     auto* content = new QWidget(root_);
     content->setObjectName(QStringLiteral("mainSurface"));

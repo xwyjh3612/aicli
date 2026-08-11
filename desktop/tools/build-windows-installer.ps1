@@ -1,23 +1,41 @@
 param(
     [string]$BuildDirectory = '',
     [string]$InnoCompiler = '',
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$Qt
 )
 
 $ErrorActionPreference = 'Stop'
 
 $desktopRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $desktopRoot '..'))
-$releaseDirectory = Join-Path $desktopRoot 'bin\Release'
+$useQtUi = $Qt.IsPresent
+$releaseDirectory = Join-Path $desktopRoot $(if ($useQtUi) { 'bin\Qt\Release' } else { 'bin\Release' })
+$runtimeOutputRoot = Join-Path $desktopRoot $(if ($useQtUi) { 'bin\Qt' } else { 'bin' })
+$packageIdentity = if ($useQtUi) { 'AiCli.Desktop.QtRelease' } else { 'AiCli.Desktop.Release' }
+$applicationUserModelId = if ($useQtUi) {
+    'AiCli.Desktop.QtRelease_jw3zr00rmb0ym!App'
+} else {
+    'AiCli.Desktop.Release_jw3zr00rmb0ym!App'
+}
+$installerPrefix = if ($useQtUi) { 'AI-CLI-Qt-Setup' } else { 'AI-CLI-Setup' }
 $installerScript = Join-Path $desktopRoot 'installer\aicli.iss'
 $installerOutput = Join-Path $desktopRoot 'installer\output'
 $stageRuntime = Join-Path $desktopRoot 'tools\stage-runtime.ps1'
 
 if (!$BuildDirectory) {
     if (Test-Path -LiteralPath 'F:\') {
-        $BuildDirectory = 'F:\codex_tool-target\desktop\build-nonqt-release'
+        $BuildDirectory = if ($useQtUi) {
+            'F:\codex_tool-target\desktop\build-qt-release'
+        } else {
+            'F:\codex_tool-target\desktop\build-nonqt-release'
+        }
     } else {
-        $BuildDirectory = Join-Path $env:LOCALAPPDATA 'AI CLI\build-nonqt-release'
+        $BuildDirectory = Join-Path $env:LOCALAPPDATA $(if ($useQtUi) {
+            'AI CLI\build-qt-release'
+        } else {
+            'AI CLI\build-nonqt-release'
+        })
     }
 }
 $BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
@@ -44,11 +62,12 @@ if (!(Test-Path -LiteralPath $InnoCompiler -PathType Leaf)) {
 }
 
 if (!$SkipBuild) {
+    $qtOption = if ($useQtUi) { 'ON' } else { 'OFF' }
     & $cmake -S $desktopRoot -B $BuildDirectory -G 'Visual Studio 17 2022' -A x64 `
-        -DAICLI_USE_QT_UI=OFF `
-        "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$($desktopRoot.Replace('\', '/'))/bin" `
-        -DAICLI_PACKAGE_IDENTITY_NAME=AiCli.Desktop.Release `
-        '-DAICLI_APPLICATION_USER_MODEL_ID=AiCli.Desktop.Release_jw3zr00rmb0ym!App'
+        "-DAICLI_USE_QT_UI=$qtOption" `
+        "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$($runtimeOutputRoot.Replace('\', '/'))" `
+        "-DAICLI_PACKAGE_IDENTITY_NAME=$packageIdentity" `
+        "-DAICLI_APPLICATION_USER_MODEL_ID=$applicationUserModelId"
     if ($LASTEXITCODE) { throw "CMake configuration failed: $LASTEXITCODE" }
 
     & $cmake --build $BuildDirectory --config Release --target aicli --parallel 6
@@ -63,7 +82,7 @@ $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\
     -Output $releaseDirectory `
     -Configuration Release `
     -Platform x64 `
-    -PackageIdentityName 'AiCli.Desktop.Release' `
+    -PackageIdentityName $packageIdentity `
     -ApplicationLogo (Join-Path $desktopRoot 'assets\aicli-logo.png')
 if ($LASTEXITCODE) { throw "Release runtime staging failed: $LASTEXITCODE" }
 
@@ -80,7 +99,7 @@ foreach ($required in @($executable, $manifestPath, $mainPri, $controlPri)) {
 [xml]$manifest = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8)
 $identityName = [string]$manifest.Package.Identity.Name
 $version = [string]$manifest.Package.Identity.Version
-if ($identityName -ne 'AiCli.Desktop.Release') {
+if ($identityName -ne $packageIdentity) {
     throw "Release manifest has the wrong identity: $identityName"
 }
 if (!$version) { throw 'Release manifest has no version.' }
@@ -92,10 +111,16 @@ if ((Get-Item -LiteralPath $controlPri).Length -lt 10KB) {
 }
 
 New-Item -ItemType Directory -Force -Path $installerOutput | Out-Null
-& $InnoCompiler "/DMyAppVersion=$version" $installerScript
+$installerBaseName = "$installerPrefix-$version-x64"
+& $InnoCompiler `
+    "/DMyAppVersion=$version" `
+    "/DMyPackageIdentity=$packageIdentity" `
+    "/DMySourceDir=$releaseDirectory" `
+    "/DMyInstallerBaseName=$installerBaseName" `
+    $installerScript
 if ($LASTEXITCODE) { throw "Inno Setup compilation failed: $LASTEXITCODE" }
 
-$installerPath = Join-Path $installerOutput "AI-CLI-Setup-$version-x64.exe"
+$installerPath = Join-Path $installerOutput "$installerBaseName.exe"
 if (!(Test-Path -LiteralPath $installerPath -PathType Leaf)) {
     throw "Installer was not generated: $installerPath"
 }

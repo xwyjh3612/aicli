@@ -8,15 +8,63 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QVBoxLayout>
+#include <QWindow>
 
 #include "core/text_utils.h"
 #include "ui/qt_widgets.h"
 
 namespace aicli::ui::qt {
 namespace {
+
+class DialogTitleBar final : public QWidget {
+public:
+    explicit DialogTitleBar(QWidget* parent = nullptr) : QWidget(parent) {
+        setObjectName(QStringLiteral("settingsHeader"));
+        setAttribute(Qt::WA_StyledBackground, true);
+        setAutoFillBackground(true);
+        setFixedHeight(56);
+        setMouseTracking(true);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() != Qt::LeftButton) {
+            QWidget::mousePressEvent(event);
+            return;
+        }
+        if (auto* top = window(); top && top->windowHandle() &&
+            top->windowHandle()->startSystemMove()) {
+            dragging_ = false;
+            event->accept();
+            return;
+        }
+        dragging_ = true;
+        drag_offset_ = event->globalPosition().toPoint() - window()->frameGeometry().topLeft();
+        event->accept();
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (dragging_ && (event->buttons() & Qt::LeftButton)) {
+            window()->move(event->globalPosition().toPoint() - drag_offset_);
+            event->accept();
+            return;
+        }
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton) dragging_ = false;
+        QWidget::mouseReleaseEvent(event);
+    }
+
+private:
+    bool dragging_{};
+    QPoint drag_offset_{};
+};
 
 class NameCommandDialog final : public QDialog {
 public:
@@ -148,9 +196,9 @@ SettingsDialog::SettingsDialog(app::DesktopController& controller,
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    // One surface owns the complete dialog silhouette.  Header, navigation,
-    // and page content are deliberately flat children; giving each child its
-    // own radius creates visible seams and double corners at the joins.
+    // One surface owns the complete dialog silhouette. The inset header only
+    // repeats the matching top radii so its distinct chrome fill remains
+    // inside that silhouette; navigation and page content stay flat.
     auto* surface = new QWidget(this);
     surface->setObjectName(QStringLiteral("settingsSurface"));
     surface->setAttribute(Qt::WA_StyledBackground, true);
@@ -160,23 +208,30 @@ SettingsDialog::SettingsDialog(app::DesktopController& controller,
     surfaceLayout->setSpacing(0);
     root->addWidget(surface);
 
-    auto* header = new QWidget(surface);
-    header->setObjectName(QStringLiteral("settingsHeader"));
+    auto* header = new DialogTitleBar(surface);
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(22, 12, 12, 12);
     auto* title = new QLabel(QStringLiteral("设置"), header);
+    title->setObjectName(QStringLiteral("settingsTitle"));
+    title->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     QFont titleFont = title->font();
     titleFont.setPixelSize(18);
     titleFont.setWeight(QFont::DemiBold);
     title->setFont(titleFont);
     auto* close = new QPushButton(QStringLiteral("×"), header);
-    close->setObjectName(QStringLiteral("captionButton"));
+    close->setObjectName(QStringLiteral("dialogCloseButton"));
     close->setFixedSize(38, 32);
     connect(close, &QPushButton::clicked, this, &QDialog::accept);
     headerLayout->addWidget(title);
     headerLayout->addStretch(1);
     headerLayout->addWidget(close);
     surfaceLayout->addWidget(header);
+    auto* headerSeparator = new QFrame(surface);
+    headerSeparator->setObjectName(QStringLiteral("settingsHeaderSeparator"));
+    headerSeparator->setFrameShape(QFrame::NoFrame);
+    headerSeparator->setFixedHeight(1);
+    headerSeparator->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    surfaceLayout->addWidget(headerSeparator);
 
     auto* body = new QWidget(surface);
     body->setObjectName(QStringLiteral("settingsBody"));
