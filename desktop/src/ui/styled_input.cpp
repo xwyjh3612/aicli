@@ -22,6 +22,17 @@ StyledInputState* State(HWND control) {
     return reinterpret_cast<StyledInputState*>(GetPropW(control, kStyledInputProperty));
 }
 
+void ApplyRoundedRegion(HWND control) {
+    const auto* state = State(control);
+    if (!state) return;
+    RECT client{};
+    GetClientRect(control, &client);
+    HRGN region = CreateRoundRectRgn(0, 0, std::max(1L, client.right) + 1,
+                                     std::max(1L, client.bottom) + 1,
+                                     state->radius, state->radius);
+    if (!SetWindowRgn(control, region, TRUE)) DeleteObject(region);
+}
+
 void CenterText(HWND control) {
     RECT client{};
     GetClientRect(control, &client);
@@ -61,6 +72,7 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
     switch (message) {
     case WM_SIZE:
         CenterText(control);
+        ApplyRoundedRegion(control);
         break;
     case WM_SETTEXT:
         {
@@ -70,14 +82,17 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
             return result;
         }
     case WM_SETFOCUS:
-    case WM_KILLFOCUS:
+    case WM_KILLFOCUS: {
+        const auto result = DefSubclassProc(control, message, wparam, lparam);
         CenterText(control);
         // A multiline EDIT only repaints its formatting rectangle when the
         // background is not erased.  Erase this control (not its full modal
         // parent) so the top and bottom bands use the focused field colour.
         RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE);
+        ApplyRoundedRegion(control);
         InvalidateParentFrame(control);
-        break;
+        return result;
+    }
     case WM_KEYDOWN:
     case WM_CHAR:
         if (wparam == VK_RETURN || wparam == L'\n') return 0;
@@ -204,11 +219,13 @@ void LayoutStyledInput(HWND control, const RECT& outer, int inset, int radius) {
                        outer.left + inset + width, outer.top + inset + height};
     const RECT actual{points[0].x, points[0].y, points[1].x, points[1].y};
     const bool geometry_changed = !EqualRect(&actual, &desired);
+    if (geometry_changed) {
+        SetWindowPos(control, nullptr, desired.left, desired.top, width, height,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+                         SWP_NOSENDCHANGING);
+    }
+    ApplyRoundedRegion(control);
     if (!geometry_changed) return;
-    SetWindowPos(control, nullptr, desired.left, desired.top, width, height,
-                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
-                     SWP_NOSENDCHANGING);
-    SetWindowRgn(control, CreateRoundRectRgn(0, 0, width + 1, height + 1, radius, radius), TRUE);
     CenterText(control);
     RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE);
 }

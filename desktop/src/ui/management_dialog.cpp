@@ -105,6 +105,9 @@ struct State {
     HFONT font{};
     HFONT title_font{};
     HFONT settings_title_font{};
+    HFONT settings_nav_font{};
+    HFONT settings_content_font{};
+    HFONT settings_small_font{};
     HFONT small_font{};
     HWND list{};
     HWND name{};
@@ -987,13 +990,13 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
                     ? L"CLI 启动配置"
                     : L"项目归类管理";
         SetBkMode(item->hDC, TRANSPARENT);
-        SelectObject(item->hDC, state->font);
+        SelectObject(item->hDC, state->settings_nav_font ? state->settings_nav_font : state->font);
         SetTextColor(item->hDC, disabled ? muted_color : text_color);
         RECT title_rect{rect.left + 16, rect.top + 7,
                         rect.right - 28, rect.top + 29};
         DrawTextW(item->hDC, text, -1, &title_rect,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        SelectObject(item->hDC, state->small_font);
+        SelectObject(item->hDC, state->settings_small_font ? state->settings_small_font : state->small_font);
         SetTextColor(item->hDC, muted_color);
         RECT subtitle_rect{rect.left + 16, rect.top + 27,
                            rect.right - 28, rect.bottom - 4};
@@ -1001,7 +1004,7 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         SetTextColor(item->hDC, active_navigation
                                   ? state->accent_color : muted_color);
-        SelectObject(item->hDC, state->font);
+        SelectObject(item->hDC, state->settings_nav_font ? state->settings_nav_font : state->font);
         RECT chevron{rect.right - 27, rect.top, rect.right - 8, rect.bottom};
         DrawTextW(item->hDC, L">", -1, &chevron,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -1152,22 +1155,22 @@ void Layout(State& state) {
         const int nav_x = left + 18;
         const int nav_width = sidebar_width - 34;
         button(state.settings_appearance, nav_x, top + 88, nav_width, 54);
-        button(state.settings_connection, nav_x, top + 152, nav_width, 54);
-        button(state.settings_project_types, nav_x, top + 216, nav_width, 54);
-        button(state.settings_groups, nav_x, top + 280, nav_width, 54);
+        button(state.settings_connection, nav_x, top + 144, nav_width, 54);
+        button(state.settings_project_types, nav_x, top + 200, nav_width, 54);
+        button(state.settings_groups, nav_x, top + 256, nav_width, 54);
         button(state.title_close, state.panel.right - 54, top + 4, 32, 32);
 
-        state.content_rect = {left + sidebar_width + 18,
-                              top + kSettingsHeaderHeight + 18,
-                              state.panel.right - 18, state.panel.bottom - 18};
+        // The content surface owns the full right pane.  Its painted content
+        // keeps its own text alignment, without an extra framed 16 px inset.
+        state.content_rect = {left + sidebar_width,
+                              top + kSettingsHeaderHeight,
+                              state.panel.right, state.panel.bottom};
         if (state.content) {
             const int content_width = state.content_rect.right - state.content_rect.left;
             const int content_height = state.content_rect.bottom - state.content_rect.top;
             MoveWindow(state.content, state.content_rect.left, state.content_rect.top,
                        content_width, content_height, TRUE);
-            SetWindowRgn(state.content,
-                         CreateRoundRectRgn(0, 0, content_width + 1, content_height + 1, 12, 12),
-                         TRUE);
+            SetWindowRgn(state.content, nullptr, TRUE);
             LayoutSettingsContent(state);
         }
     } else if (state.mode == ManagementMode::Devices) {
@@ -1253,7 +1256,7 @@ void Paint(State& state, HDC dc) {
     else if (state.mode == ManagementMode::Devices) { title = L"已绑定设备"; subtitle = L"解绑后该手机的令牌和实时连接立即失效"; }
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, state.text_color);
-    SelectObject(dc, state.title_font);
+    SelectObject(dc, state.settings_title_font ? state.settings_title_font : state.title_font);
     const int title_right = state.mode == ManagementMode::Settings
         ? state.panel.right - 86 : state.panel.right - 34;
     RECT title_rect = state.mode == ManagementMode::Settings
@@ -1314,7 +1317,7 @@ void Paint(State& state, HDC dc) {
 int SettingsContentExtent(SettingsPage page) {
     switch (page) {
     case SettingsPage::Appearance: return 390;
-    case SettingsPage::Connection: return 690;
+    case SettingsPage::Connection: return 500;
     case SettingsPage::ProjectTypes: return 590;
     case SettingsPage::Groups: return 590;
     }
@@ -1351,13 +1354,13 @@ void LayoutSettingsContent(State& state) {
     scroll.nPos = state.content_scroll;
     SetScrollInfo(state.content, SB_VERT, &scroll, TRUE);
 
-    const int x = 28;
-    const int right = std::max(x + 160, width - 34);
+    const int x = 20;
+    const int right = std::max(x + 160, width - 20);
     const int available = right - x;
     const int offset = state.content_scroll;
-    auto field = [&](HWND control, int y, int h = 40) {
+    auto field = [&](HWND control, int left, int y, int h = 40) {
         if (!control) return;
-        LayoutStyledInput(control, RECT{x, y - offset, right, y + h - offset}, 2, 8);
+        LayoutStyledInput(control, RECT{left, y - offset, right, y + h - offset}, 2, 8);
     };
     auto button = [&](HWND control, int bx, int y, int w, int h = 38) {
         if (!control) return;
@@ -1375,13 +1378,15 @@ void LayoutSettingsContent(State& state) {
         button(state.theme, x + inset, 198, button_width, 36);
         button(state.theme_light, x + inset + button_width + gap, 198, button_width, 36);
     } else if (state.settings_page == SettingsPage::Connection) {
-        field(state.computer_name, 130);
-        field(state.listen, 216);
-        field(state.port, 302);
-        field(state.local, 388);
-        field(state.remote, 474);
-        button(state.firewall, x, 570, 158);
-        button(state.save, right - 174, 570, 174);
+        constexpr int label_width = 120;
+        const int field_x = x + label_width;
+        field(state.computer_name, field_x, 104);
+        field(state.listen, field_x, 158);
+        field(state.port, field_x, 212);
+        field(state.local, field_x, 266);
+        field(state.remote, field_x, 320);
+        button(state.firewall, x, 390, 158);
+        button(state.save, right - 174, 390, 174);
     } else if (state.settings_page == SettingsPage::ProjectTypes) {
         if (state.list) {
             MoveWindow(state.list, x, 126 - offset, available, 330, TRUE);
@@ -1415,8 +1420,8 @@ void PaintSettingsContent(State& state, HDC dc) {
     SetViewportOrgEx(dc, 0, -state.content_scroll, &previous_origin);
     SetBkMode(dc, TRANSPARENT);
     const int width = client.right;
-    const int x = 28;
-    const int right = std::max(x + 160, width - 34);
+    const int x = 20;
+    const int right = std::max(x + 160, width - 20);
 
     const wchar_t* title = L"界面外观";
     const wchar_t* subtitle = L"主题切换会立即作用于主窗口、设置页和原生终端。";
@@ -1431,18 +1436,18 @@ void PaintSettingsContent(State& state, HDC dc) {
         subtitle = L"用一个名称输入框新建或修改分组；默认分组始终保留。";
     }
 
-    SelectObject(dc, state.title_font);
+    SelectObject(dc, state.settings_content_font ? state.settings_content_font : state.title_font);
     SetTextColor(dc, state.text_color);
     RECT title_rect{x, 20, right, 52};
     DrawTextW(dc, title, -1, &title_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    SelectObject(dc, state.small_font);
+    SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
     SetTextColor(dc, state.muted_color);
     RECT subtitle_rect{x, 54, right, 84};
     DrawTextW(dc, subtitle, -1, &subtitle_rect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     auto label = [&](const wchar_t* text, int y) {
-        SelectObject(dc, state.small_font);
+        SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
         SetTextColor(dc, state.palette.muted);
         RECT rect{x, y, right, y + 24};
         DrawTextW(dc, text, -1, &rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -1461,11 +1466,11 @@ void PaintSettingsContent(State& state, HDC dc) {
 
     if (state.settings_page == SettingsPage::Appearance) {
         card({x, 106, right, 294});
-        SelectObject(dc, state.font);
+        SelectObject(dc, state.settings_content_font ? state.settings_content_font : state.font);
         SetTextColor(dc, state.text_color);
         RECT card_title{x + 24, 124, right - 24, 151};
         DrawTextW(dc, L"应用主题", -1, &card_title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        SelectObject(dc, state.small_font);
+        SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
         SetTextColor(dc, state.muted_color);
         RECT detail{x + 24, 151, right - 24, 184};
         DrawTextW(dc, L"点击后立即保存，无需再按“保存”。默认使用夜间模式。", -1, &detail,
@@ -1475,26 +1480,34 @@ void PaintSettingsContent(State& state, HDC dc) {
         DrawTextW(dc, L"原生终端会保留 ANSI 颜色层次，并同步切换背景与默认前景色。", -1,
                   &hint, DT_LEFT | DT_TOP | DT_WORDBREAK);
     } else if (state.settings_page == SettingsPage::Connection) {
-        label(L"本机名称（显示在手机端）", 100);
-        label(L"监听地址（0.0.0.0 表示所有网卡）", 186);
-        label(L"HTTPS/WSS 端口", 272);
-        label(L"本机/内网访问地址（二维码优先使用）", 358);
-        label(L"公网或 Relay 地址（可留空）", 444);
-        SelectObject(dc, state.small_font);
+        auto row_label = [&](const wchar_t* text, int y) {
+            SelectObject(dc, state.settings_content_font ?
+                                 state.settings_content_font : state.font);
+            SetTextColor(dc, state.text_color);
+            RECT rect{x, y, x + 120, y + 40};
+            DrawTextW(dc, text, -1, &rect,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        };
+        row_label(L"本机名称", 104);
+        row_label(L"监听地址", 158);
+        row_label(L"HTTPS/WSS 端口", 212);
+        row_label(L"内网访问地址", 266);
+        row_label(L"公网/Relay 地址", 320);
+        SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
         SetTextColor(dc, state.muted_color);
-        RECT hint{x, 624, right, 660};
+        RECT hint{x, 448, right, 484};
         DrawTextW(dc, L"本机和公网地址必须使用 https://。端口变化后请重新允许手机访问。", -1,
                   &hint, DT_LEFT | DT_TOP | DT_WORDBREAK);
     } else if (state.settings_page == SettingsPage::ProjectTypes) {
         label(L"项目类型列表", 96);
-        SelectObject(dc, state.small_font);
+        SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
         SetTextColor(dc, state.muted_color);
         RECT hint{x, 548, right, 578};
         DrawTextW(dc, L"新增和修改会打开独立模态框；Codex 和 Claude 虽为预置类型，也可手工调整，但不能删除。", -1,
                   &hint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     } else {
         label(L"分组列表", 96);
-        SelectObject(dc, state.small_font);
+        SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
         SetTextColor(dc, state.muted_color);
         RECT hint{x, 548, right, 578};
         DrawTextW(dc, L"添加和修改名称会打开独立输入模态层；非空分组不能删除。", -1,
@@ -1757,17 +1770,24 @@ void CreateControls(State& state) {
         state.settings_connection = MakeButton(state, L"本机与网络", kSettingsConnection);
         state.settings_project_types = MakeButton(state, L"项目类型", kSettingsProjectTypes);
         state.settings_groups = MakeButton(state, L"分组管理", kSettingsGroups);
-        state.computer_name = MakeField(state, kComputerName, L"例如 开发主机", state.content);
-        state.listen = MakeField(state, kListen, L"例如 0.0.0.0", state.content);
+        state.computer_name = MakeField(state, kComputerName, L"显示在手机端，例如：开发主机", state.content);
+        state.listen = MakeField(state, kListen, L"0.0.0.0 表示所有网卡", state.content);
         state.port = MakeField(state, kPort, L"例如 4280", state.content);
-        state.local = MakeField(state, kLocal, L"例如 https://192.168.1.10:4280", state.content);
-        state.remote = MakeField(state, kRemote, L"例如 https://relay.example.com/aicli", state.content);
+        state.local = MakeField(state, kLocal, L"二维码优先使用，例如：https://192.168.1.10:4280", state.content);
+        state.remote = MakeField(state, kRemote, L"可留空，例如：https://relay.example.com/aicli", state.content);
         const auto theme = state.store->GetSetting(L"theme", L"dark");
         state.light_theme = theme == L"light";
         state.theme = MakeButton(state, L"夜间模式", kTheme, state.content);
         state.theme_light = MakeButton(state, L"白天模式", kThemeLight, state.content);
         state.save = MakeButton(state, L"保存并重启 Agent", kSave, state.content);
         state.firewall = MakeButton(state, L"允许手机访问", kFirewall, state.content);
+        for (HWND control : {state.computer_name, state.listen, state.port, state.local,
+                             state.remote, state.theme, state.theme_light, state.save,
+                             state.firewall}) {
+            if (control && state.settings_content_font)
+                SendMessageW(control, WM_SETFONT,
+                             reinterpret_cast<WPARAM>(state.settings_content_font), TRUE);
+        }
         state.list = CreateWindowExW(0, L"LISTBOX", nullptr,
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
                                          LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
@@ -1775,7 +1795,9 @@ void CreateControls(State& state) {
                                      0, 0, 1, 1, state.content,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kList)),
                                      GetModuleHandleW(nullptr), nullptr);
-        SendMessageW(state.list, WM_SETFONT, reinterpret_cast<WPARAM>(state.font), TRUE);
+        SendMessageW(state.list, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(state.settings_content_font ?
+                                                   state.settings_content_font : state.font), TRUE);
         state.add = MakeButton(state, L"新增类型", kAdd, state.content);
         state.remove = MakeButton(state, L"删除", kDelete, state.content);
         state.title_close = MakeButton(state, L"\x00D7", kClose);
@@ -2311,6 +2333,27 @@ ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
     state.small_font = CreateFontW(-13, 0, 0, 0, 400, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    // Settings uses a compact, explicit type scale independent of the other
+    // management dialogs: 16 px navigation, 14 px content headings/controls,
+    // and 12 px supporting text.
+    if (mode == ManagementMode::Settings) {
+        state.settings_title_font = CreateFontW(-16, 0, 0, 0, 600, FALSE, FALSE, FALSE,
+                                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                                DEFAULT_PITCH, L"Segoe UI");
+        state.settings_nav_font = CreateFontW(-16, 0, 0, 0, 500, FALSE, FALSE, FALSE,
+                                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                              DEFAULT_PITCH, L"Segoe UI");
+        state.settings_content_font = CreateFontW(-14, 0, 0, 0, 500, FALSE, FALSE, FALSE,
+                                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                                  CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                                  DEFAULT_PITCH, L"Segoe UI");
+        state.settings_small_font = CreateFontW(-12, 0, 0, 0, 400, FALSE, FALSE, FALSE,
+                                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                                DEFAULT_PITCH, L"Segoe UI");
+    }
     const int host_title_height = ModalTopForOwner(owner);
     ModalWorkspaceScope workspace(owner, host_title_height, &state.palette);
     state.window = CreateWindowExW(WS_EX_CONTROLPARENT | WS_EX_TOOLWINDOW, kClassName, L"",
@@ -2329,6 +2372,10 @@ ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
     }
     if (state.font) DeleteObject(state.font);
     if (state.title_font) DeleteObject(state.title_font);
+    if (state.settings_title_font) DeleteObject(state.settings_title_font);
+    if (state.settings_nav_font) DeleteObject(state.settings_nav_font);
+    if (state.settings_content_font) DeleteObject(state.settings_content_font);
+    if (state.settings_small_font) DeleteObject(state.settings_small_font);
     if (state.small_font) DeleteObject(state.small_font);
     if (state.field_brush) DeleteObject(state.field_brush);
     if (state.field_focus_brush) DeleteObject(state.field_focus_brush);
