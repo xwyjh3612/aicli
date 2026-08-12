@@ -1174,9 +1174,9 @@ void Layout(State& state) {
 
         // The content surface owns the full right pane.  Its painted content
         // keeps its own text alignment, without an extra framed 16 px inset.
-        state.content_rect = {left + sidebar_width,
+        state.content_rect = {left + sidebar_width + 1,
                               top + kSettingsHeaderHeight + 1,
-                              state.panel.right, state.panel.bottom - 1};
+                              state.panel.right - 1, state.panel.bottom - 1};
         if (state.content) {
             const int content_width = state.content_rect.right - state.content_rect.left;
             const int content_height = state.content_rect.bottom - state.content_rect.top;
