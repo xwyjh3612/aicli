@@ -132,8 +132,8 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
     COLORREF fill=under,stroke=RGB(52,59,70);
     if(projectButton){
         const bool primary=item->CtlID==ID_D_OK;
-        if(primary){fill=disabled?g_theme.surface:(down?g_theme.accent_strong:(hover?g_theme.accent:g_theme.accent_strong));stroke=hover?g_theme.accent:g_theme.accent_strong;}
-        else{fill=disabled?g_theme.surface:(down?g_theme.pressed:(hover?g_theme.hover:g_theme.field));stroke=hover?g_theme.accent:g_theme.border;}
+        if(primary){fill=disabled?g_theme.surface:(down?g_theme.accent_strong:(hover?g_theme.accent:g_theme.accent_strong));stroke=fill;}
+        else{fill=disabled?g_theme.surface:(down?g_theme.pressed:(hover?g_theme.hover:g_theme.field));stroke=fill;}
     }else{
         if(item->CtlID==ID_D_CANCEL||item->CtlID==ID_EDIT_PROJECT)fill=elevated;
         if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)fill=accent2;

@@ -20,11 +20,11 @@ void LayoutProjectDialog(HWND h){
     const int left=(client.right-width)/2, top=(client.bottom-height)/2;
     g_project_panel={left,top,left+width,top+height};
     constexpr int padding=34;
-    g_d_name_rect={left+padding,top+107,left+width-padding,top+143};
-    g_d_type_rect={left+padding,top+181,left+width/2-12,top+217};
-    g_d_group_rect={left+width/2+12,top+181,left+width-padding,top+217};
-    g_d_folder_rect={left+padding,top+255,left+width-padding-122,top+291};
-    g_d_command_rect={left+padding,top+329,left+width-padding,top+365};
+    g_d_name_rect={left+padding,top+107,left+width-padding,top+142};
+    g_d_type_rect={left+padding,top+181,left+width/2-12,top+216};
+    g_d_group_rect={left+width/2+12,top+181,left+width-padding,top+216};
+    g_d_folder_rect={left+padding,top+255,left+width-padding-122,top+290};
+    g_d_command_rect={left+padding,top+329,left+width-padding,top+364};
     auto placeEdit=[&](HWND control,RECT outer){if(!control)return;aicli::ui::LayoutStyledInput(control,outer,2,5);};
     auto placeDropDown=[&](HWND control,RECT outer){if(!control)return;const int w=outer.right-outer.left-4,h=outer.bottom-outer.top-8;MoveWindow(control,outer.left+2,outer.top+4,w,h,TRUE);ApplyRoundedRegion(control,w,h,5);};
     auto placeButton=[&](HWND control,RECT outer){if(!control)return;MoveWindow(control,outer.left,outer.top,outer.right-outer.left,outer.bottom-outer.top,TRUE);ApplyRoundedRegion(control,outer.right-outer.left,outer.bottom-outer.top,7);};
@@ -65,7 +65,7 @@ void PaintProjectDialogSurface(HDC dc,RECT client){
     SetTextColor(dc,fg);
     RECT title{g_project_panel.left+34,g_project_panel.top+24,g_project_panel.right-34,g_project_panel.top+50};
     DrawTextW(dc,g_project_dialog_edit?L"编辑项目":L"新建项目",-1,&title,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
-    SelectObject(dc,g_font_small);SetTextColor(dc,muted);
+    SelectObject(dc,g_font_modal_subtitle?g_font_modal_subtitle:g_font_small);SetTextColor(dc,muted);
     RECT subtitle{g_project_panel.left+34,g_project_panel.top+53,g_project_panel.right-34,g_project_panel.top+75};
     DrawTextW(dc,L"配置项目信息与 AI CLI 启动环境",-1,&subtitle,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
     SetTextColor(dc,muted);
@@ -81,15 +81,9 @@ void PaintProjectDialogSurface(HDC dc,RECT client){
         RECT locked{g_d_type_rect.right-96,g_project_panel.top+155,g_d_type_rect.right,g_project_panel.top+177};
         DrawTextW(dc,L"不可修改",-1,&locked,DT_RIGHT|DT_SINGLELINE|DT_VCENTER);
     }
-    HPEN divider=CreatePen(PS_SOLID,1,border);auto old=SelectObject(dc,divider);
-    MoveToEx(dc,g_project_panel.left+34,g_project_panel.top+394,nullptr);
-    LineTo(dc,g_project_panel.right-34,g_project_panel.top+394);
-    SelectObject(dc,old);DeleteObject(divider);
     auto outline=[&](RECT rect,HWND control){
         const bool active=GetFocus()==control;
         DrawRoundedOutline(dc,rect,active?accent:border,6);
-        RECT underline{rect.left+2,rect.bottom-(active?3:2),rect.right-2,rect.bottom-1};
-        HBRUSH line=CreateSolidBrush(active?accent:muted);FillRect(dc,&underline,line);DeleteObject(line);
     };
     outline(g_d_name_rect,g_d_name);outline(g_d_type_rect,g_d_type);
     outline(g_d_group_rect,g_d_group);outline(g_d_folder_rect,g_d_folder);outline(g_d_command_rect,g_d_command);

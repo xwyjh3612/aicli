@@ -403,7 +403,7 @@ void LayoutGroupNameDialog(GroupNameState& state) {
     const int left = (client_width - width) / 2;
     const int top = std::max(24, (client_height - height) / 2);
     state.panel = {left, top, left + width, top + height};
-    LayoutStyledInput(state.input, {left + 30, top + 126, left + width - 30, top + 168}, 2, 9);
+    LayoutStyledInput(state.input, {left + 30, top + 126, left + width - 30, top + 161}, 2, 9);
     MoveWindow(state.cancel, left + width - 250, top + 208, 100, 38, TRUE);
     MoveWindow(state.save, left + width - 138, top + 208, 108, 38, TRUE);
     SetWindowRgn(state.cancel, CreateRoundRectRgn(0, 0, 101, 39, 9, 9), TRUE);
@@ -433,12 +433,12 @@ void PaintGroupNameDialog(GroupNameState& state, HDC dc) {
     SelectObject(dc, state.title_font);
     SetTextColor(dc, state.text);
     RECT title{state.panel.left + 30, state.panel.top + 24,
-               state.panel.right - 30, state.panel.top + 54};
+               state.panel.right - 30, state.panel.top + 50};
     DrawTextW(dc, state.title.c_str(), -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     SelectObject(dc, state.small_font);
     SetTextColor(dc, state.muted);
-    RECT subtitle{state.panel.left + 30, state.panel.top + 58,
-                  state.panel.right - 30, state.panel.top + 88};
+    RECT subtitle{state.panel.left + 30, state.panel.top + 54,
+                  state.panel.right - 30, state.panel.top + 80};
     DrawTextW(dc, state.subtitle.c_str(), -1, &subtitle,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     RECT label{state.panel.left + 30, state.panel.top + 98,
@@ -449,7 +449,7 @@ void PaintGroupNameDialog(GroupNameState& state, HDC dc) {
     HGDIOBJ previous_pen = SelectObject(dc, input_pen);
     HGDIOBJ previous_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
     RoundRect(dc, state.panel.left + 30, state.panel.top + 126,
-              state.panel.right - 30, state.panel.top + 168, 10, 10);
+              state.panel.right - 30, state.panel.top + 161, 10, 10);
     SelectObject(dc, previous_brush);
     SelectObject(dc, previous_pen);
     DeleteObject(input_pen);
@@ -461,10 +461,10 @@ void DrawGroupNameButton(GroupNameState& state, const DRAWITEMSTRUCT& item) {
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
     const bool hovered = state.hovered == item.hwndItem;
     COLORREF fill = primary ? state.accent : state.field;
-    COLORREF edge = primary ? state.accent : state.panel_edge;
+    COLORREF edge = fill;
     if (hovered || pressed) {
         fill = primary ? state.palette.accent_strong : state.field_focus;
-        edge = primary ? RGB(91, 157, 236) : state.muted;
+        edge = fill;
     }
     HBRUSH brush = CreateSolidBrush(fill);
     HPEN pen = CreatePen(PS_SOLID, 1, edge);
@@ -651,9 +651,9 @@ void LayoutProjectTypeEditorDialog(ProjectTypeEditorState& state) {
     const int top = std::max(24, (client_height - height) / 2);
     state.panel = {left, top, left + width, top + height};
     LayoutStyledInput(state.name_input,
-                      {left + 30, top + 132, left + width - 30, top + 174}, 2, 9);
+                      {left + 30, top + 132, left + width - 30, top + 167}, 2, 9);
     LayoutStyledInput(state.command_input,
-                      {left + 30, top + 222, left + width - 30, top + 264}, 2, 9);
+                      {left + 30, top + 222, left + width - 30, top + 257}, 2, 9);
     MoveWindow(state.cancel, left + width - 250, top + 326, 100, 38, TRUE);
     MoveWindow(state.save, left + width - 138, top + 326, 108, 38, TRUE);
     SetWindowRgn(state.cancel, CreateRoundRectRgn(0, 0, 101, 39, 9, 9), TRUE);
@@ -682,13 +682,13 @@ void PaintProjectTypeEditorDialog(ProjectTypeEditorState& state, HDC dc) {
     SelectObject(dc, state.title_font);
     SetTextColor(dc, state.text);
     RECT title{state.panel.left + 30, state.panel.top + 24,
-               state.panel.right - 30, state.panel.top + 54};
+               state.panel.right - 30, state.panel.top + 50};
     DrawTextW(dc, state.title.c_str(), -1, &title,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     SelectObject(dc, state.small_font);
     SetTextColor(dc, state.muted);
-    RECT subtitle{state.panel.left + 30, state.panel.top + 58,
-                  state.panel.right - 30, state.panel.top + 88};
+    RECT subtitle{state.panel.left + 30, state.panel.top + 54,
+                  state.panel.right - 30, state.panel.top + 80};
     DrawTextW(dc, state.subtitle.c_str(), -1, &subtitle,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
@@ -712,12 +712,13 @@ void PaintProjectTypeEditorDialog(ProjectTypeEditorState& state, HDC dc) {
     };
     outline(state.name_input,
             {state.panel.left + 30, state.panel.top + 132,
-             state.panel.right - 30, state.panel.top + 174});
+             state.panel.right - 30, state.panel.top + 167});
     outline(state.command_input,
             {state.panel.left + 30, state.panel.top + 222,
-             state.panel.right - 30, state.panel.top + 264});
+             state.panel.right - 30, state.panel.top + 257});
 
     SetTextColor(dc, state.muted);
+    SelectObject(dc, state.small_font);
     RECT hint{state.panel.left + 30, state.panel.top + 278,
               state.panel.right - 30, state.panel.top + 308};
     DrawTextW(dc, L"启动命令会作为新建项目的默认值，项目仍可单独覆盖。", -1,
@@ -731,10 +732,10 @@ void DrawProjectTypeEditorButton(ProjectTypeEditorState& state,
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
     const bool hovered = state.hovered == item.hwndItem;
     COLORREF fill = primary ? state.accent : state.field;
-    COLORREF edge = primary ? state.accent : state.panel_edge;
+    COLORREF edge = fill;
     if (hovered || pressed) {
         fill = primary ? state.palette.accent_strong : state.field_focus;
-        edge = primary ? RGB(91, 157, 236) : state.muted;
+        edge = fill;
     }
     HBRUSH brush = CreateSolidBrush(fill);
     HPEN pen = CreatePen(PS_SOLID, 1, edge);
@@ -2255,10 +2256,10 @@ bool ShowProjectTypeEditorDialog(HWND owner,
     state.font = CreateFontW(-15, 0, 0, 0, 400, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    state.title_font = CreateFontW(-21, 0, 0, 0, 600, FALSE, FALSE, FALSE,
+    state.title_font = CreateFontW(-16, 0, 0, 0, 600, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    state.small_font = CreateFontW(-13, 0, 0, 0, 400, FALSE, FALSE, FALSE,
+    state.small_font = CreateFontW(-12, 0, 0, 0, 400, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     ModalWorkspaceScope workspace(owner, -1, &state.palette);
@@ -2418,10 +2419,10 @@ bool ShowGroupNameDialog(HWND owner, const std::wstring& title,
     state.font = CreateFontW(-15, 0, 0, 0, 400, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    state.title_font = CreateFontW(-21, 0, 0, 0, 600, FALSE, FALSE, FALSE,
+    state.title_font = CreateFontW(-16, 0, 0, 0, 600, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    state.small_font = CreateFontW(-13, 0, 0, 0, 400, FALSE, FALSE, FALSE,
+    state.small_font = CreateFontW(-12, 0, 0, 0, 400, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     ModalWorkspaceScope workspace(owner, -1, &state.palette);
