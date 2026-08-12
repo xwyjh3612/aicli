@@ -788,8 +788,15 @@ public:
         }
     }
     bool HandleClipboardKeyDown(WPARAM key, LPARAM key_details) noexcept {
+        const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (key == VK_INSERT && shift && !alt) {
+            const bool auto_repeat = (key_details & (1LL << 30)) != 0;
+            if (!auto_repeat) (void)PasteFromClipboard();
+            return true;
+        }
         if ((GetKeyState(VK_CONTROL) & 0x8000) == 0 ||
-            (GetKeyState(VK_MENU) & 0x8000) != 0) {
+            alt) {
             return false;
         }
         if (key == 'V') {

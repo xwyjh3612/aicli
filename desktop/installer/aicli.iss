@@ -2,7 +2,7 @@
   #define MyAppVersion "1.0.0.3"
 #endif
 
-#define MyAppName "AI CLI"
+#define MyAppName "AiCli"
 #define MyAppPublisher "AI CLI"
 #define MyAppExeName "aicli.exe"
 #ifndef MyPackageIdentity
@@ -23,8 +23,9 @@ AppPublisher={#MyAppPublisher}
 VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Windows Installer
-DefaultDirName={autopf}\AI CLI
+DefaultDirName={autopf}\AiCli
 DefaultGroupName={#MyAppName}
+DisableDirPage=no
 DisableProgramGroupPage=yes
 OutputDir=output
 OutputBaseFilename={#MyInstallerBaseName}
