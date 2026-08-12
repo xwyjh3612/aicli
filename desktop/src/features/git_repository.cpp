@@ -4,6 +4,8 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
+#include <windows.h>
 
 #include "core/text_utils.h"
 
@@ -155,6 +157,102 @@ bool HasCommit(const std::filesystem::path& git_directory) {
     return false;
 }
 
+struct CommandOutput {
+    bool started{};
+    DWORD exit_code{static_cast<DWORD>(-1)};
+    std::string text;
+};
+
+CommandOutput RunGit(const std::filesystem::path& folder,
+                     std::wstring_view arguments) {
+    CommandOutput result;
+    SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+    HANDLE read_pipe{}, write_pipe{};
+    if (!CreatePipe(&read_pipe, &write_pipe, &security, 0)) return result;
+    SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+    HANDLE null_input = CreateFileW(
+        L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &security,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    std::wstring command{wchar_t(0x67), wchar_t(0x69), wchar_t(0x74),
+                         wchar_t(0x2E), wchar_t(0x65), wchar_t(0x78),
+                         wchar_t(0x65), wchar_t(0x20), wchar_t(0x2D),
+                         wchar_t(0x43), wchar_t(0x20), wchar_t(0x22)};
+    command.append(folder.wstring());
+    command.push_back(wchar_t(0x22));
+    command.push_back(wchar_t(0x20));
+    command.append(arguments);
+    STARTUPINFOW startup{sizeof(startup)};
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = null_input != INVALID_HANDLE_VALUE ? null_input : nullptr;
+    startup.hStdOutput = write_pipe;
+    startup.hStdError = write_pipe;
+    PROCESS_INFORMATION process{};
+    result.started = CreateProcessW(
+        nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+        nullptr, nullptr, &startup, &process) != FALSE;
+    CloseHandle(write_pipe);
+    if (null_input != INVALID_HANDLE_VALUE) CloseHandle(null_input);
+    if (!result.started) { CloseHandle(read_pipe); return result; }
+    char buffer[4096]; DWORD read{};
+    while (ReadFile(read_pipe, buffer, sizeof(buffer), &read, nullptr) && read)
+        result.text.append(buffer, read);
+    CloseHandle(read_pipe);
+    WaitForSingleObject(process.hProcess, INFINITE);
+    GetExitCodeProcess(process.hProcess, &result.exit_code);
+    CloseHandle(process.hThread); CloseHandle(process.hProcess);
+    return result;
+}
+
+int ParseInteger(std::string_view value) {
+    int result{};
+    for (const char character : value) {
+        if (character < '0' || character > '9') break;
+        result = result * 10 + character - '0';
+    }
+    return result;
+}
+
+void ParsePorcelainV2(std::string_view output, RepositoryStatus& status) {
+    std::istringstream lines{std::string(output)};
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == char(13)) line.pop_back();
+        if (line.rfind("# branch.head ", 0) == 0) {
+            const std::string value = line.substr(14);
+            status.detached_head = value == "(detached)";
+            status.branch = aicli::text::WideText(value);
+        } else if (line.rfind("# branch.upstream ", 0) == 0) {
+            status.has_upstream = true;
+            status.upstream = aicli::text::WideText(line.substr(18));
+        } else if (line.rfind("# branch.ab ", 0) == 0) {
+            const auto ahead = line.find('+', 12);
+            const auto behind = line.find('-', 12);
+            if (ahead != std::string::npos)
+                status.ahead_count = ParseInteger(
+                    std::string_view(line).substr(ahead + 1));
+            if (behind != std::string::npos)
+                status.behind_count = ParseInteger(
+                    std::string_view(line).substr(behind + 1));
+        } else if (!line.empty() && line[0] == '?') {
+            ++status.untracked_count;
+        } else if (!line.empty() && line[0] == 'u') {
+            ++status.conflicted_count;
+        } else if (line.size() > 3 && (line[0] == '1' || line[0] == '2')) {
+            if (line[2] != '.') ++status.staged_count;
+            if (line[3] != '.') ++status.modified_count;
+            if (line[2] != '.' || line[3] != '.') ++status.tracked_change_count;
+        }
+    }
+}
+
+bool HasOperationMarker(const std::filesystem::path& git_directory,
+                        const std::filesystem::path& common,
+                        std::wstring_view marker) {
+    std::error_code error;
+    return std::filesystem::exists(git_directory / marker, error) ||
+           std::filesystem::exists(common / marker, error);
+}
+
 } // namespace
 
 RepositoryStatus InspectRepository(std::wstring_view project_folder) {
@@ -163,7 +261,10 @@ RepositoryStatus InspectRepository(std::wstring_view project_folder) {
 
     std::error_code error;
     const std::filesystem::path folder(project_folder);
-    if (!std::filesystem::is_directory(folder, error)) return status;
+    if (!std::filesystem::is_directory(folder, error)) {
+        status.state = RepositoryState::InvalidDirectory;
+        return status;
+    }
 
     const auto git_directory = ResolveGitDirectory(folder);
     if (git_directory.empty()) {
@@ -179,6 +280,25 @@ RepositoryStatus InspectRepository(std::wstring_view project_folder) {
                        ? common.parent_path()
                        : git_directory.parent_path())
                       .wstring();
+    const auto porcelain = RunGit(
+        folder, L"status --porcelain=v2 --branch --untracked-files=normal");
+    if (!porcelain.started) {
+        status.state = RepositoryState::GitUnavailable;
+        return status;
+    }
+    if (porcelain.exit_code != 0) {
+        status.state = RepositoryState::GitUnavailable;
+        return status;
+    }
+    ParsePorcelainV2(porcelain.text, status);
+    const auto remotes = RunGit(folder, L"remote");
+    status.has_remote = remotes.started && remotes.exit_code == 0 &&
+                        !remotes.text.empty();
+    status.merging = HasOperationMarker(git_directory, common, L"MERGE_HEAD");
+    status.rebasing = HasOperationMarker(git_directory, common, L"rebase-merge") ||
+                       HasOperationMarker(git_directory, common, L"rebase-apply");
+    status.cherry_picking =
+        HasOperationMarker(git_directory, common, L"CHERRY_PICK_HEAD");
     status.last_pull = FormatFileTime(common / L"FETCH_HEAD");
     if (status.last_pull.empty()) {
         status.last_pull = LatestLogTime(common / L"logs" / L"refs" / L"remotes");

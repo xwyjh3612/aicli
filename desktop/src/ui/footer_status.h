@@ -31,6 +31,12 @@ public:
     const RECT& git_bounds() const noexcept { return git_bounds_; }
 
     bool RefreshRepository(std::wstring_view project_folder);
+    void BeginRepositoryRefresh(std::wstring_view project_folder);
+    void CompleteRepositoryRefresh(
+        std::wstring_view project_folder,
+        aicli::git::RepositoryStatus repository);
+    bool AdvanceRepositorySpinner();
+    bool repository_loading() const noexcept { return repository_loading_; }
     bool UpdateTelemetry(bool agent_online,
                          std::size_t memory_megabytes,
                          bool remote_configured);
@@ -39,6 +45,7 @@ public:
               const RECT& client,
               int footer_height,
               HFONT font,
+              HFONT git_font,
               const ThemePalette& theme) const;
 
 private:
@@ -46,15 +53,21 @@ private:
     std::wstring GitStateText() const;
     COLORREF GitColor(const ThemePalette& theme) const;
     void UpdateTooltip();
-    void InvalidateFooter() const;
+    void InvalidateFooter(bool immediate = false) const;
 
     HWND owner_{};
     HWND tooltip_{};
     RECT git_bounds_{};
     int telemetry_left_{14};
     int footer_height_{30};
+    // RepositoryStatus::root is empty for non-Git folders. Keep the selected
+    // project folder separately so switching between projects is still a
+    // state change even when their displayed Git state happens to match.
+    std::wstring project_folder_;
     std::wstring tooltip_text_;
     aicli::git::RepositoryStatus repository_;
+    bool repository_loading_{};
+    unsigned repository_spinner_frame_{};
     bool telemetry_initialized_{};
     bool agent_online_{};
     std::size_t memory_megabytes_{};

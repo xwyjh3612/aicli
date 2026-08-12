@@ -16,6 +16,7 @@ void PaintMainWindow(HDC target_dc,
                      HICON app_icon,
                      HFONT medium_font,
                      HFONT small_font,
+                     HFONT git_font,
                      const LayoutMetrics& metrics,
                      const ThemePalette& theme,
                      const WindowChrome& chrome,
@@ -77,7 +78,7 @@ void PaintMainWindow(HDC target_dc,
     TextOutW(dc, 48, 10, L"AI CLI", 6);
 
     footer_status.Draw(
-        dc, client, metrics.footer_height, small_font, theme);
+        dc, client, metrics.footer_height, small_font, git_font, theme);
 }
 
 } // namespace aicli::ui

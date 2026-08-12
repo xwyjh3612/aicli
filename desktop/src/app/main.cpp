@@ -20,6 +20,7 @@
 #include <functional>
 #include <mutex>
 #include <string_view>
+#include <thread>
 #include <optional>
 #include <unordered_set>
 #include <winrt/base.h>
@@ -70,6 +71,7 @@ constexpr UINT WM_TERMINAL_DIRTY = WM_APP + 25;
 constexpr UINT WM_OPEN_SETTINGS = WM_APP + 26;
 constexpr UINT WM_REMOTE_KEY = WM_APP + 27;
 constexpr UINT WM_AGENT_WORKING_STATE = WM_APP + 28;
+constexpr UINT WM_GIT_STATUS_READY = WM_APP + 29;
 constexpr int ID_PROJECT_LIST = 1001;
 constexpr int ID_NEW_PROJECT = 1004;
 constexpr int ID_SETTINGS = 1005;
@@ -97,7 +99,9 @@ constexpr wchar_t kAllGroupsName[] = L"全部";
 constexpr UINT_PTR kXamlIslandSubclassId = 0xA1C11;
 constexpr UINT_PTR kTerminalSnapshotTimerId = 2;
 constexpr UINT_PTR kProjectSpinnerTimerId = 3;
+constexpr UINT_PTR kGitSpinnerTimerId = 4;
 constexpr UINT kProjectSpinnerIntervalMs = 75;
+constexpr UINT kGitSpinnerIntervalMs = 80;
 constexpr UINT kProjectListItemHeight = 40;
 
 
@@ -140,6 +144,12 @@ struct RemoteKeyMessage {
 };
 struct AgentStatusMessage { bool online{}; std::wstring text; };
 struct AgentWorkingStateMessage { std::wstring project_id; bool working{}; };
+struct GitStatusMessage {
+    std::uint64_t request_id{};
+    bool periodic{};
+    std::wstring project_folder;
+    aicli::git::RepositoryStatus repository;
+};
 
 // WinRT component registration and activation factories live in
 // app/runtime_components.*.  The main window only owns the registry instance.
@@ -151,7 +161,7 @@ HWND g_hwnd{}, g_list{}, g_status{}, g_new_project{}, g_settings{}, g_group{}, g
 HWND g_detail_title{}, g_detail_folder{}, g_detail_command{}, g_detail_state{}, g_start_project{}, g_edit_project{};
 HICON g_app_icon_large{},g_app_icon_small{};
 WNDPROC g_button_proc{}; HWND g_hover_button{};
-HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_sidebar_title{}, g_font_project_list{}, g_font_modal_title{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
+HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_git{}, g_font_sidebar_title{}, g_font_project_list{}, g_font_modal_title{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
 aicli::DataStore g_store;
 aicli::agent::RemoteAgent g_remote_agent;
 aicli::agent::ConversationBridge g_conversation_bridge(g_store,g_remote_agent);
@@ -193,6 +203,8 @@ aicli::agent::TerminalStreamPublisher g_terminal_streams;
 bool g_terminal_snapshot_timer_active{};
 bool g_project_spinner_timer_active{};
 float g_project_spinner_angle{-90.0f};
+std::atomic_uint64_t g_git_status_request_id{};
+std::atomic_bool g_git_status_query_active{};
 std::unordered_set<std::wstring> g_working_projects;
 int g_project_drag_source=-1;
 int g_project_drag_insert=-1;
@@ -401,19 +413,40 @@ int SelectedProjectIndex(){
     if(row==LB_ERR||row<0||row>=static_cast<LRESULT>(g_visible_project_indices.size()))return -1;
     return g_visible_project_indices[static_cast<size_t>(row)];
 }
-void RefreshGitStatus(){
+void RefreshGitStatus(bool force_redraw=false){
     const int index=SelectedProjectIndex();
-    g_footer_status.RefreshRepository(
-        index>=0&&index<(int)g_projects.size()?g_projects[index].folder:L"");
+    const std::wstring folder=index>=0&&index<(int)g_projects.size()
+        ?g_projects[index].folder:std::wstring{};
+    if(force_redraw)++g_git_status_request_id;
+    if(!force_redraw&&g_git_status_query_active.exchange(true))return;
+    {
+        const std::uint64_t request_id=g_git_status_request_id.load();
+        if(force_redraw){
+        g_footer_status.BeginRepositoryRefresh(folder);
+        if(g_hwnd)SetTimer(g_hwnd,kGitSpinnerTimerId,kGitSpinnerIntervalMs,nullptr);
+        }
+        const HWND target=g_hwnd;
+        std::thread([target,request_id,folder,force_redraw]{
+            auto message=std::make_unique<GitStatusMessage>();
+            message->request_id=request_id;
+            message->periodic=!force_redraw;
+            message->project_folder=folder;
+            message->repository=aicli::git::InspectRepository(folder);
+            if(!target||!IsWindow(target)||
+               !PostMessageW(target,WM_GIT_STATUS_READY,0,
+                             reinterpret_cast<LPARAM>(message.get())))return;
+            message.release();
+        }).detach();
+    }
 }
-void RefreshProjectDetails(){
+void RefreshProjectDetails(bool force_git_refresh=false){
     const int index=SelectedProjectIndex();
     if(index<0 || index>=(int)g_projects.size()){
         SetText(g_detail_title,L"未选择项目");
         SetText(g_detail_folder,L"文件夹: 未设置");
         SetText(g_detail_command,L"启动命令: 未设置");
         SetText(g_detail_state,L"状态: 未运行");
-        RefreshGitStatus();
+        RefreshGitStatus(force_git_refresh);
         return;
     }
     const auto& project=g_projects[index];
@@ -424,7 +457,7 @@ void RefreshProjectDetails(){
     SetText(g_detail_command,L"启动命令: "+(project.command.empty()?L"未设置":project.command));
     const wchar_t* state=g_island.HasSession(project.id)?L"运行中":(project.status==L"paused"?L"已暂停":L"未运行");
     SetText(g_detail_state,std::wstring(L"状态: ")+state);
-    RefreshGitStatus();
+    RefreshGitStatus(force_git_refresh);
 }
 
 bool InitializePersistentState() {
@@ -678,7 +711,7 @@ void StartSession(bool restart=false){
     }
 }
 int ProjectIndexById(const std::wstring& project_id){for(size_t i=0;i<g_projects.size();++i)if(g_projects[i].id==project_id)return static_cast<int>(i);return -1;}
-bool SelectProjectById(const std::wstring& project_id){const int index=ProjectIndexById(project_id);if(index<0)return false;if(g_group_name!=kAllGroupsName){g_group_name=g_projects[index].group.empty()?L"默认分组":g_projects[index].group;SetText(g_group,g_group_name);g_store.SetSetting(L"last_group",g_group_name);}RefreshProjectList();for(size_t row=0;row<g_visible_project_indices.size();++row)if(g_visible_project_indices[row]==index){SendMessageW(g_list,LB_SETCURSEL,row,0);RefreshProjectDetails();Layout();return true;}return false;}
+bool SelectProjectById(const std::wstring& project_id){const int index=ProjectIndexById(project_id);if(index<0)return false;if(g_group_name!=kAllGroupsName){g_group_name=g_projects[index].group.empty()?L"默认分组":g_projects[index].group;SetText(g_group,g_group_name);g_store.SetSetting(L"last_group",g_group_name);}RefreshProjectList();for(size_t row=0;row<g_visible_project_indices.size();++row)if(g_visible_project_indices[row]==index){SendMessageW(g_list,LB_SETCURSEL,row,0);RefreshProjectDetails(true);Layout();return true;}return false;}
 void RefreshConversationsCache(){g_conversation_bridge.RefreshConversations(g_projects);}
 std::string ConversationsJson(){return g_conversation_bridge.ConversationsJson();}
 std::string EventsJson(const std::wstring& project_id,std::int64_t after){return g_conversation_bridge.EventsJson(project_id,after);}
@@ -893,7 +926,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(aicli::ui::HasActiveModal(h))ResizeModalHosts(h);
         Layout();return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshots.MarkDirtyMessageHandled();if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
-    case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}break;
+    case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;info->ptMinTrackSize.x=900;info->ptMinTrackSize.y=600;return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;
@@ -918,7 +951,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         // caption buttons continue to work through the custom frame path.
         if(aicli::ui::HasActiveModal(h))return 0;
         if(id==ID_SEARCH_PROJECTS&&notification==EN_CHANGE){RefreshProjectList();Layout();return 0;}
-        if(id==ID_PROJECT_LIST&&notification==LBN_SELCHANGE){RefreshProjectDetails();Layout();return 0;}
+        if(id==ID_PROJECT_LIST&&notification==LBN_SELCHANGE){RefreshProjectDetails(true);Layout();return 0;}
         if(id==ID_PROJECT_LIST&&notification==LBN_DBLCLK){StartSession();return 0;}
         if(id==ID_NEW_PROJECT){CreateProject();return 0;}
         if(id==ID_START_PROJECT){StartSession();return 0;}
@@ -1065,19 +1098,39 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_PAIRING_PENDING:{std::unique_ptr<aicli::agent::PendingPairing> pairing(reinterpret_cast<aicli::agent::PendingPairing*>(l));if(!pairing)return 0;g_pending_pairing=*pairing;if(g_binding_dialog){LayoutBindingDialog(g_binding_dialog);InvalidateRect(g_binding_dialog,nullptr,FALSE);}else if(pairing->submitted&&!pairing->authorized&&!pairing->rejected){const std::wstring text=L"手机名称："+pairing->device.name+L"\n型号："+pairing->device.model+L"\n设备 ID："+pairing->device.phone_id+L"\n\n确认后该手机可远程操作管理员终端。";const bool approve=MessageBoxW(h,text.c_str(),L"确认绑定手机",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES;std::wstring error;if(!g_remote_agent.ConfirmPairing(pairing->info.pairing_id,approve,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);}UpdateDeviceHeader();return 0;}
     case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message&&!message->online)SetText(g_status,message->text);UpdateHeaderTelemetry();return 0;}
     case WM_AGENT_WORKING_STATE:{std::unique_ptr<AgentWorkingStateMessage> message(reinterpret_cast<AgentWorkingStateMessage*>(l));if(message)SetProjectWorkingState(message->project_id,message->working);return 0;}
+    case WM_GIT_STATUS_READY:{
+        std::unique_ptr<GitStatusMessage> message(
+            reinterpret_cast<GitStatusMessage*>(l));
+        if(!message)return 0;
+        if(message->periodic)g_git_status_query_active=false;
+        if(message->request_id==g_git_status_request_id.load()){
+            g_footer_status.CompleteRepositoryRefresh(
+                message->project_folder,std::move(message->repository));
+            KillTimer(h,kGitSpinnerTimerId);
+        }
+        return 0;
+    }
     case WM_PAINT:{
         PAINTSTRUCT ps;
         HDC target_dc=BeginPaint(h,&ps);
         RECT r{};
         GetClientRect(h,&r);
         const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);
+        if(!g_font_git)g_font_git=CreateFontW(
+            -12,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,
+            DEFAULT_PITCH,L"Segoe UI");
         aicli::ui::PaintMainWindow(
-            target_dc,r,ps.rcPaint,h,g_search,g_app_icon_large,g_font_medium,g_font_small,
+            target_dc,r,ps.rcPaint,h,g_search,g_app_icon_large,g_font_medium,g_font_small,g_font_git,
             metrics,g_theme,g_window_chrome,g_footer_status);
         EndPaint(h,&ps);
         return 0;
     }
-    case WM_DESTROY:StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}PostQuitMessage(0);return 0; }
+    if(m==WM_NCDESTROY&&g_font_git){
+        DeleteObject(g_font_git);
+        g_font_git=nullptr;
+    }
     return DefWindowProcW(h,m,w,l);
 }
 }
