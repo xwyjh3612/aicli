@@ -235,18 +235,18 @@ CREATE TABLE IF NOT EXISTS settings(
 
 bool DataStore::SeedDefaults(std::wstring* error) {
     if (!Execute("INSERT OR IGNORE INTO project_types(name,default_command,builtin) VALUES"
-                 "('Codex','codex --yolo --no-alt-screen resume --last',1),"
+                 "('Codex','codex --yolo resume --last',1),"
                  "('Claude','claude --dangerously-skip-permissions --continue',1);",
                  error) ||
         !Execute("UPDATE project_types "
-                 "SET default_command='codex --yolo --no-alt-screen resume --last' "
+                 "SET default_command='codex --yolo resume --last' "
                  "WHERE builtin=1 AND name='Codex' "
                  "AND default_command IN ('codex --yolo resume --last',"
                  "'codex --yolo --no-alt-screen resume --last',"
                  "'codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last');",
                  error) ||
         !Execute("UPDATE projects "
-                 "SET command='codex --yolo --no-alt-screen resume --last' "
+                 "SET command='codex --yolo resume --last' "
                  "WHERE type_name='Codex' AND command IN ('codex --yolo resume --last',"
                  "'codex --yolo --no-alt-screen resume --last',"
                  "'codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last');",

@@ -1076,6 +1076,11 @@ private:
             }
             const auto scrollbar = session->native_scrollbar;
             if (scrollbar) {
+                const auto track_color = light_theme_
+                    ? winrt::Windows::UI::Color{0xff, 0xf0, 0xf1, 0xf3}
+                    : winrt::Windows::UI::Color{0xff, 0x04, 0x04, 0x10};
+                scrollbar.Background(
+                    winrt::Windows::UI::Xaml::Media::SolidColorBrush(track_color));
                 // Keep Windows Terminal's own visual-state manager intact:
                 // a thin indicator while idle and the wider thumb/track on
                 // pointer hover, exactly like the standalone terminal.

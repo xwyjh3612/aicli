@@ -359,7 +359,7 @@ std::wstring DesktopController::DefaultCommandForType(const std::wstring& type) 
         if (value.name == type && !value.default_command.empty()) return value.default_command;
     }
     if (type == L"Claude") return L"claude --dangerously-skip-permissions --continue";
-    return L"codex --yolo --no-alt-screen resume --last";
+    return L"codex --yolo resume --last";
 }
 
 bool DesktopController::StartCommandSession(Project& project) {

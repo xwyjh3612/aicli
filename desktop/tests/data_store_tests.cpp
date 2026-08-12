@@ -61,7 +61,7 @@ int wmain(int argc, wchar_t** argv) {
             return value.name == L"Claude";
         });
         ok &= Check(codex && codex->builtin &&
-                        codex->default_command == L"codex --yolo --no-alt-screen resume --last",
+                        codex->default_command == L"codex --yolo resume --last",
                     L"Codex builtin type and command");
         ok &= Check(claude && claude->builtin &&
                         claude->default_command ==
@@ -81,7 +81,7 @@ int wmain(int argc, wchar_t** argv) {
                         L"customized builtin type remains a protected preset");
             error.clear();
             ok &= Check(store.UpdateProjectType(codex_id, L"Codex",
-                                                L"codex --yolo --no-alt-screen resume --last", &error),
+                                                L"codex --yolo resume --last", &error),
                         (L"restore Codex preset after edit test: " + error).c_str());
             error.clear();
             ok &= Check(!store.DeleteProjectType(codex_id, &error),

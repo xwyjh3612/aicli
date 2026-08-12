@@ -11,6 +11,7 @@
 #include <dwmapi.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <uxtheme.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -21,6 +22,7 @@
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "uxtheme.lib")
 
 namespace aicli::ui {
 namespace {
@@ -336,6 +338,14 @@ void ApplyTheme(State& state, bool light) {
                        state.local, state.remote}) {
         if (field) SetStyledInputTheme(field, state.palette);
     }
+    if (state.content) {
+        // Keep the native scrollbar consistent with the settings surface.
+        // DarkMode_Explorer uses the system's near-black scrollbar track and
+        // preserves native wheel, thumb and accessibility behavior.
+        SetWindowTheme(state.content, light ? L"Explorer" : L"DarkMode_Explorer", nullptr);
+        RedrawWindow(state.content, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+    }
 }
 
 constexpr UINT_PTR kGroupNameButtonSubclassId = 0xA1C15;
@@ -466,9 +476,14 @@ void DrawGroupNameButton(GroupNameState& state, const DRAWITEMSTRUCT& item) {
         fill = primary ? state.palette.accent_strong : state.field_focus;
         edge = fill;
     }
+    // Clear the owner-draw item with the modal surface colour first.  Using
+    // the button colour here exposes a square hover background outside the
+    // rounded shape.
+    HBRUSH clear = CreateSolidBrush(state.panel_color);
+    FillRect(item.hDC, &rect, clear);
+    DeleteObject(clear);
     HBRUSH brush = CreateSolidBrush(fill);
     HPEN pen = CreatePen(PS_SOLID, 1, edge);
-    FillRect(item.hDC, &rect, brush);
     HGDIOBJ old_brush = SelectObject(item.hDC, brush);
     HGDIOBJ old_pen = SelectObject(item.hDC, pen);
     RoundRect(item.hDC, rect.left + 1, rect.top + 1, rect.right - 1, rect.bottom - 1, 9, 9);
@@ -737,9 +752,13 @@ void DrawProjectTypeEditorButton(ProjectTypeEditorState& state,
         fill = primary ? state.palette.accent_strong : state.field_focus;
         edge = fill;
     }
+    // Keep the area outside the rounded button transparent to the modal
+    // surface, including while the pointer is hovering the control.
+    HBRUSH clear = CreateSolidBrush(state.panel_color);
+    FillRect(item.hDC, &rect, clear);
+    DeleteObject(clear);
     HBRUSH brush = CreateSolidBrush(fill);
     HPEN pen = CreatePen(PS_SOLID, 1, edge);
-    FillRect(item.hDC, &rect, brush);
     HGDIOBJ old_brush = SelectObject(item.hDC, brush);
     HGDIOBJ old_pen = SelectObject(item.hDC, pen);
     RoundRect(item.hDC, rect.left + 1, rect.top + 1,
@@ -1012,10 +1031,6 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         return;
     }
 
-    const bool settings_content_control = state &&
-        state->mode == ManagementMode::Settings &&
-        GetParent(item->hwndItem) == state->content;
-
     COLORREF fill = light ? RGB(245, 247, 250) : RGB(38, 42, 50);
     COLORREF edge = light ? RGB(210, 217, 226) : RGB(58, 65, 76);
     if (hovered) {
@@ -1042,21 +1057,17 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         fill = light ? RGB(235, 238, 243) : RGB(32, 35, 41);
         edge = light ? RGB(218, 223, 231) : RGB(50, 54, 62);
     }
-    // Settings controls sit directly on the modal surface. Clear the whole
-    // owner-draw rectangle to that surface first, then paint only the rounded
-    // button itself so no square background remains around its corners.
-    if (settings_content_control) {
+    // Every management button sits on a modal surface. Clear the complete
+    // owner-draw rectangle with that surface color before painting the
+    // rounded button; filling it with the button color leaves square corners
+    // behind on hover/press, notably for Unbind and Close.
+    if (state) {
         HBRUSH clear = CreateSolidBrush(state->panel_color);
         FillRect(item->hDC, &rect, clear);
         DeleteObject(clear);
     }
     HBRUSH brush = CreateSolidBrush(fill);
     HPEN pen = CreatePen(PS_SOLID, 1, edge);
-    // Owner-drawn buttons keep their previous pixels outside the inner
-    // RoundRect. Clear the complete clipped button surface first so switching
-    // from the light palette to the dark palette cannot leave a square white
-    // halo around the rounded border.
-    if (!settings_content_control) FillRect(item->hDC, &rect, brush);
     HGDIOBJ old_brush = SelectObject(item->hDC, brush);
     HGDIOBJ old_pen = SelectObject(item->hDC, pen);
     RoundRect(item->hDC, rect.left + 1, rect.top + 1, rect.right - 1, rect.bottom - 1, 9, 9);
@@ -1164,8 +1175,8 @@ void Layout(State& state) {
         // The content surface owns the full right pane.  Its painted content
         // keeps its own text alignment, without an extra framed 16 px inset.
         state.content_rect = {left + sidebar_width,
-                              top + kSettingsHeaderHeight,
-                              state.panel.right, state.panel.bottom};
+                              top + kSettingsHeaderHeight + 1,
+                              state.panel.right, state.panel.bottom - 1};
         if (state.content) {
             const int content_width = state.content_rect.right - state.content_rect.left;
             const int content_height = state.content_rect.bottom - state.content_rect.top;
@@ -1767,6 +1778,8 @@ void CreateControls(State& state) {
             WS_EX_CONTROLPARENT, kSettingsContentClassName, L"",
             WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VSCROLL,
             0, 0, 1, 1, state.window, nullptr, GetModuleHandleW(nullptr), &state);
+        SetWindowTheme(state.content,
+                       state.light_theme ? L"Explorer" : L"DarkMode_Explorer", nullptr);
         state.settings_appearance = MakeButton(state, L"外观", kSettingsAppearance);
         state.settings_connection = MakeButton(state, L"本机与网络", kSettingsConnection);
         state.settings_project_types = MakeButton(state, L"项目类型", kSettingsProjectTypes);

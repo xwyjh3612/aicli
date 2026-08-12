@@ -561,14 +561,26 @@ void Layout(){
                      RDW_INVALIDATE|RDW_NOERASE|RDW_ALLCHILDREN);
     }
 
-    RECT search_rect{6,top+6,left-6,top+41};aicli::ui::LayoutStyledInput(g_search,search_rect,2,9);
-    MoveMainChild(g_sidebar_title,9,top+54,200,24);
-    MoveMainChild(g_new_project,left-42,top+48,36,34);
+    constexpr int sidebarInset=6;
+    constexpr int searchHeight=35;
+    constexpr int titleTopGap=6;
+    constexpr int titleHeight=28;
+    constexpr int titleBottomGap=10;
+    constexpr int addButtonSize=28;
+    const int searchTop=top+6;
+    const int searchBottom=searchTop+searchHeight;
+    RECT search_rect{sidebarInset,searchTop,left-sidebarInset,searchBottom};
+    aicli::ui::LayoutStyledInput(g_search,search_rect,2,9);
+    const int titleTop=searchBottom+titleTopGap;
+    MoveMainChild(g_sidebar_title,9,titleTop,200,titleHeight);
+    MoveMainChild(g_new_project,left-sidebarInset-addButtonSize,titleTop,addButtonSize,addButtonSize);
     SetWindowPos(g_new_project,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
     const int footer_top=r.bottom-bottom;
     g_footer_status.Layout(r,bottom);
     const int git_left=g_footer_status.git_bounds().left;
-    MoveMainChild(g_list,6,top+88,left-12,std::max(80,footer_top-(top+88)-6));
+    const int listTop=titleTop+titleHeight+titleBottomGap;
+    MoveMainChild(g_list,sidebarInset,listTop,left-sidebarInset*2,
+                  std::max(80,footer_top-listTop-sidebarInset));
 
     // WM_NCCALCSIZE makes the complete custom frame part of the client area.
     // Keep the XAML Island off the outermost right-hand compositor rim so the
