@@ -30,6 +30,7 @@ constexpr wchar_t kSettingsContentClassName[] = L"AicliSettingsContent";
 constexpr wchar_t kGroupNameClassName[] = L"AicliGroupNameDialog";
 constexpr wchar_t kProjectTypeEditorClassName[] = L"AicliProjectTypeEditorDialog";
 constexpr UINT kPopulateMessage = WM_APP + 60;
+constexpr int kSettingsHeaderHeight = 40;
 enum : int {
     kList = 2301,
     kName = 2302,
@@ -103,6 +104,7 @@ struct State {
     RECT content_rect{};
     HFONT font{};
     HFONT title_font{};
+    HFONT settings_title_font{};
     HFONT small_font{};
     HWND list{};
     HWND name{};
@@ -257,6 +259,10 @@ bool IsActiveSettingsNavigation(const State& state, int id) {
     if (id == kSettingsProjectTypes) return state.settings_page == SettingsPage::ProjectTypes;
     if (id == kSettingsGroups) return state.settings_page == SettingsPage::Groups;
     return false;
+}
+
+COLORREF SettingsHeaderColor(const State& state) {
+    return state.light_theme ? RGB(250, 251, 253) : RGB(22, 26, 33);
 }
 
 LRESULT CALLBACK SettingsContentProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam);
@@ -907,28 +913,25 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
     const bool light = state && state->light_theme;
 
     const bool title_close = state && state->mode == ManagementMode::Settings &&
-                             state->title_close == item->hwndItem;
+                              state->title_close == item->hwndItem;
     if (title_close && state) {
-        // This is an icon-only control.  Paint the parent panel through the
-        // idle state and a subtle tinted hit target on hover; never let the
-        // stock button background show through in the dark theme.
-        const bool hot = hovered || pressed;
-        const COLORREF fill = hot
-            ? (light ? RGB(239, 242, 247) : RGB(48, 54, 64))
-            : state->panel_color;
-        HBRUSH clear = CreateSolidBrush(fill);
+        // Keep the idle control visually part of the title area, then add a
+        // compact rounded hover layer without restoring the old square halo.
+        HBRUSH clear = CreateSolidBrush(SettingsHeaderColor(*state));
         FillRect(item->hDC, &rect, clear);
         DeleteObject(clear);
-        if (hot) {
-            HPEN edge_pen = CreatePen(PS_SOLID, 1,
-                                      light ? RGB(211, 218, 228) : RGB(69, 77, 90));
-            HGDIOBJ old_pen = SelectObject(item->hDC, edge_pen);
-            HGDIOBJ old_brush = SelectObject(item->hDC, GetStockObject(HOLLOW_BRUSH));
-            RoundRect(item->hDC, rect.left + 1, rect.top + 1,
-                      rect.right - 1, rect.bottom - 1, 8, 8);
-            SelectObject(item->hDC, old_brush);
+        if (hovered || pressed) {
+            const COLORREF close_fill = pressed
+                ? (light ? RGB(241, 218, 222) : RGB(70, 39, 45))
+                : (light ? RGB(246, 232, 235) : RGB(54, 38, 43));
+            HBRUSH hover_brush = CreateSolidBrush(close_fill);
+            HGDIOBJ old_brush = SelectObject(item->hDC, hover_brush);
+            HGDIOBJ old_pen = SelectObject(item->hDC, GetStockObject(NULL_PEN));
+            RoundRect(item->hDC, rect.left + 3, rect.top + 3,
+                      rect.right - 3, rect.bottom - 3, 8, 8);
             SelectObject(item->hDC, old_pen);
-            DeleteObject(edge_pen);
+            SelectObject(item->hDC, old_brush);
+            DeleteObject(hover_brush);
         }
         SetBkMode(item->hDC, TRANSPARENT);
         SelectObject(item->hDC, state->title_font);
@@ -938,10 +941,76 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
                                          ? (light ? RGB(184, 54, 67) : RGB(255, 132, 143))
                                          : state->muted_color));
         RECT close_rect = rect;
+        OffsetRect(&close_rect, 0, -2);
         DrawTextW(item->hDC, L"\x00D7", -1, &close_rect,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         return;
     }
+
+    const bool settings_navigation = state &&
+        IsSettingsNavigationId(item->CtlID);
+    if (settings_navigation) {
+        // The navigation buttons are transparent sidebar items. Clear the
+        // complete owner-draw surface with the sidebar color, then draw only
+        // a rounded interaction layer. This removes the square halo around
+        // every item while retaining a clear hover/selection response.
+        HBRUSH clear = CreateSolidBrush(state->panel_color);
+        FillRect(item->hDC, &rect, clear);
+        DeleteObject(clear);
+
+        {
+            COLORREF nav_fill = active_navigation
+                ? (light ? RGB(226, 237, 251) : RGB(31, 57, 87))
+                : (hovered
+                       ? (light ? RGB(239, 243, 248) : RGB(32, 37, 45))
+                       : (light ? RGB(246, 248, 251) : RGB(25, 29, 37)));
+            if (pressed)
+                nav_fill = light ? RGB(218, 230, 246) : RGB(37, 50, 68);
+            HBRUSH nav_brush = CreateSolidBrush(nav_fill);
+            HGDIOBJ old_brush = SelectObject(item->hDC, nav_brush);
+            HGDIOBJ old_pen = SelectObject(item->hDC, GetStockObject(NULL_PEN));
+            RoundRect(item->hDC, rect.left + 2, rect.top + 2,
+                      rect.right - 2, rect.bottom - 2, 8, 8);
+            SelectObject(item->hDC, old_pen);
+            SelectObject(item->hDC, old_brush);
+            DeleteObject(nav_brush);
+        }
+
+        wchar_t text[256]{};
+        GetWindowTextW(item->hwndItem, text,
+                       static_cast<int>(std::size(text)));
+        const wchar_t* subtitle = item->CtlID == kSettingsAppearance
+            ? L"主题与显示"
+            : item->CtlID == kSettingsConnection
+                ? L"地址与 Agent"
+                : item->CtlID == kSettingsProjectTypes
+                    ? L"CLI 启动配置"
+                    : L"项目归类管理";
+        SetBkMode(item->hDC, TRANSPARENT);
+        SelectObject(item->hDC, state->font);
+        SetTextColor(item->hDC, disabled ? muted_color : text_color);
+        RECT title_rect{rect.left + 16, rect.top + 7,
+                        rect.right - 28, rect.top + 29};
+        DrawTextW(item->hDC, text, -1, &title_rect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        SelectObject(item->hDC, state->small_font);
+        SetTextColor(item->hDC, muted_color);
+        RECT subtitle_rect{rect.left + 16, rect.top + 27,
+                           rect.right - 28, rect.bottom - 4};
+        DrawTextW(item->hDC, subtitle, -1, &subtitle_rect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        SetTextColor(item->hDC, active_navigation
+                                  ? state->accent_color : muted_color);
+        SelectObject(item->hDC, state->font);
+        RECT chevron{rect.right - 27, rect.top, rect.right - 8, rect.bottom};
+        DrawTextW(item->hDC, L">", -1, &chevron,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        return;
+    }
+
+    const bool settings_content_control = state &&
+        state->mode == ManagementMode::Settings &&
+        GetParent(item->hwndItem) == state->content;
 
     COLORREF fill = light ? RGB(245, 247, 250) : RGB(38, 42, 50);
     COLORREF edge = light ? RGB(210, 217, 226) : RGB(58, 65, 76);
@@ -969,13 +1038,21 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         fill = light ? RGB(235, 238, 243) : RGB(32, 35, 41);
         edge = light ? RGB(218, 223, 231) : RGB(50, 54, 62);
     }
+    // Settings controls sit directly on the modal surface. Clear the whole
+    // owner-draw rectangle to that surface first, then paint only the rounded
+    // button itself so no square background remains around its corners.
+    if (settings_content_control) {
+        HBRUSH clear = CreateSolidBrush(state->panel_color);
+        FillRect(item->hDC, &rect, clear);
+        DeleteObject(clear);
+    }
     HBRUSH brush = CreateSolidBrush(fill);
     HPEN pen = CreatePen(PS_SOLID, 1, edge);
     // Owner-drawn buttons keep their previous pixels outside the inner
     // RoundRect. Clear the complete clipped button surface first so switching
     // from the light palette to the dark palette cannot leave a square white
     // halo around the rounded border.
-    FillRect(item->hDC, &rect, brush);
+    if (!settings_content_control) FillRect(item->hDC, &rect, brush);
     HGDIOBJ old_brush = SelectObject(item->hDC, brush);
     HGDIOBJ old_pen = SelectObject(item->hDC, pen);
     RoundRect(item->hDC, rect.left + 1, rect.top + 1, rect.right - 1, rect.bottom - 1, 9, 9);
@@ -1074,13 +1151,14 @@ void Layout(State& state) {
         constexpr int sidebar_width = 214;
         const int nav_x = left + 18;
         const int nav_width = sidebar_width - 34;
-        button(state.settings_appearance, nav_x, top + 116, nav_width, 54);
-        button(state.settings_connection, nav_x, top + 180, nav_width, 54);
-        button(state.settings_project_types, nav_x, top + 244, nav_width, 54);
-        button(state.settings_groups, nav_x, top + 308, nav_width, 54);
-        button(state.title_close, state.panel.right - 62, top + 18, 36, 32);
+        button(state.settings_appearance, nav_x, top + 88, nav_width, 54);
+        button(state.settings_connection, nav_x, top + 152, nav_width, 54);
+        button(state.settings_project_types, nav_x, top + 216, nav_width, 54);
+        button(state.settings_groups, nav_x, top + 280, nav_width, 54);
+        button(state.title_close, state.panel.right - 54, top + 4, 32, 32);
 
-        state.content_rect = {left + sidebar_width + 18, top + 88,
+        state.content_rect = {left + sidebar_width + 18,
+                              top + kSettingsHeaderHeight + 18,
                               state.panel.right - 18, state.panel.bottom - 18};
         if (state.content) {
             const int content_width = state.content_rect.right - state.content_rect.left;
@@ -1124,19 +1202,52 @@ void Paint(State& state, HDC dc) {
     // backdrop here would make the modal opaque and hide the live workspace.
     (void)client;
     HBRUSH panel_brush = CreateSolidBrush(state.panel_color);
-    HPEN panel_pen = CreatePen(PS_SOLID, 1, state.panel_edge);
+    const unsigned edge_alpha = state.light_theme ? 118u : 150u;
+    const auto blend_channel = [edge_alpha](BYTE base, BYTE edge) -> BYTE {
+        return static_cast<BYTE>(
+            (static_cast<unsigned>(base) * (255u - edge_alpha) +
+             static_cast<unsigned>(edge) * edge_alpha) / 255u);
+    };
+    const COLORREF subtle_edge = RGB(
+        blend_channel(GetRValue(state.panel_color), GetRValue(state.panel_edge)),
+        blend_channel(GetGValue(state.panel_color), GetGValue(state.panel_edge)),
+        blend_channel(GetBValue(state.panel_color), GetBValue(state.panel_edge)));
+    HPEN panel_pen = CreatePen(PS_SOLID, 1, subtle_edge);
     HGDIOBJ old_brush = SelectObject(dc, panel_brush);
     HGDIOBJ old_pen = SelectObject(dc, panel_pen);
-    RoundRect(dc, state.panel.left, state.panel.top, state.panel.right, state.panel.bottom, 14, 14);
+    RoundRect(dc, state.panel.left, state.panel.top, state.panel.right, state.panel.bottom, 10, 10);
     SelectObject(dc, old_brush);
     SelectObject(dc, old_pen);
     DeleteObject(panel_brush);
     DeleteObject(panel_pen);
 
+    if (state.mode == ManagementMode::Settings) {
+        const int header_bottom = state.panel.top + kSettingsHeaderHeight;
+        const int saved = SaveDC(dc);
+        HRGN panel_clip = CreateRoundRectRgn(
+            state.panel.left + 1, state.panel.top + 1,
+            state.panel.right, state.panel.bottom, 10, 10);
+        SelectClipRgn(dc, panel_clip);
+        DeleteObject(panel_clip);
+        HBRUSH header_brush = CreateSolidBrush(SettingsHeaderColor(state));
+        RECT header{state.panel.left + 1, state.panel.top + 1,
+                    state.panel.right - 1, header_bottom};
+        FillRect(dc, &header, header_brush);
+        DeleteObject(header_brush);
+        RestoreDC(dc, saved);
+
+        HPEN header_separator = CreatePen(PS_SOLID, 1, subtle_edge);
+        HGDIOBJ old_separator = SelectObject(dc, header_separator);
+        MoveToEx(dc, state.panel.left + 1, header_bottom, nullptr);
+        LineTo(dc, state.panel.right - 1, header_bottom);
+        SelectObject(dc, old_separator);
+        DeleteObject(header_separator);
+    }
+
     const int x = state.panel.left + 34;
     const wchar_t* title = L"管理";
     const wchar_t* subtitle = L"保存后立即写入本机 SQLite";
-    if (state.mode == ManagementMode::Settings) { title = L"设置"; subtitle = L"选择左侧入口配置 AI CLI"; }
+    if (state.mode == ManagementMode::Settings) { title = L"设置"; subtitle = L""; }
     else if (state.mode == ManagementMode::Groups) { title = L"分组管理"; subtitle = L"选择当前分组，或添加、重命名和删除空分组"; }
     else if (state.mode == ManagementMode::ProjectTypes) { title = L"项目类型"; subtitle = L"Codex / Claude 为预置类型，所有类型都可编辑"; }
     else if (state.mode == ManagementMode::Devices) { title = L"已绑定设备"; subtitle = L"解绑后该手机的令牌和实时连接立即失效"; }
@@ -1145,27 +1256,36 @@ void Paint(State& state, HDC dc) {
     SelectObject(dc, state.title_font);
     const int title_right = state.mode == ManagementMode::Settings
         ? state.panel.right - 86 : state.panel.right - 34;
-    RECT title_rect{x, state.panel.top + 24, title_right, state.panel.top + 54};
+    RECT title_rect = state.mode == ManagementMode::Settings
+        ? RECT{state.panel.left + 24, state.panel.top,
+               title_right, state.panel.top + kSettingsHeaderHeight}
+        : RECT{x, state.panel.top + 24, title_right, state.panel.top + 54};
     DrawTextW(dc, title, -1, &title_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     SetTextColor(dc, state.muted_color);
     SelectObject(dc, state.small_font);
-    RECT sub_rect{x, state.panel.top + 57, title_right, state.panel.top + 82};
-    DrawTextW(dc, subtitle, -1, &sub_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if (state.mode != ManagementMode::Settings) {
+        RECT sub_rect{x, state.panel.top + 57, title_right, state.panel.top + 82};
+        DrawTextW(dc, subtitle, -1, &sub_rect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
 
     if (state.mode == ManagementMode::Settings) {
         const int divider_x = state.panel.left + 214;
         HPEN divider = CreatePen(PS_SOLID, 1, state.panel_edge);
         HGDIOBJ old_divider = SelectObject(dc, divider);
-        MoveToEx(dc, divider_x, state.panel.top + 18, nullptr);
+        MoveToEx(dc, divider_x,
+                 state.panel.top + kSettingsHeaderHeight + 1, nullptr);
         LineTo(dc, divider_x, state.panel.bottom - 18);
         SelectObject(dc, old_divider);
         DeleteObject(divider);
         SetTextColor(dc, state.muted_color);
         SelectObject(dc, state.small_font);
-        RECT shortcut_rect{state.panel.left + 18, state.panel.top + 88,
-                           divider_x - 18, state.panel.top + 111};
-        DrawTextW(dc, L"快捷设置", -1, &shortcut_rect,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        RECT shortcut_rect{state.panel.left + 18,
+                           state.panel.top + kSettingsHeaderHeight + 10,
+                           divider_x - 18,
+                           state.panel.top + kSettingsHeaderHeight + 34};
+        DrawTextW(dc, L"选择左侧入口配置 AI CLI", -1, &shortcut_rect,
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         return;
     }
 

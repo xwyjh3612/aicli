@@ -1116,10 +1116,15 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         RECT r{};
         GetClientRect(h,&r);
         const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);
-        if(!g_font_git)g_font_git=CreateFontW(
-            -12,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,
-            DEFAULT_PITCH,L"Segoe UI");
+        if(!g_font_git){
+            g_font_git=CreateFontW(
+                -12,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,
+                DEFAULT_PITCH,L"Segoe UI");
+            if(g_status&&g_font_git)
+                SendMessageW(g_status,WM_SETFONT,
+                             reinterpret_cast<WPARAM>(g_font_git),TRUE);
+        }
         aicli::ui::PaintMainWindow(
             target_dc,r,ps.rcPaint,h,g_search,g_app_icon_large,g_font_medium,g_font_small,g_font_git,
             metrics,g_theme,g_window_chrome,g_footer_status);

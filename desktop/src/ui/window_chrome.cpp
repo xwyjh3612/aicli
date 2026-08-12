@@ -178,24 +178,24 @@ void WindowChrome::DrawButtons(HDC dc,
         const float cx = (rect.left + rect.right) / 2.0F;
         const float cy = (rect.top + rect.bottom) / 2.0F;
         if (id == ids_.minimize) {
-            graphics.DrawLine(&pen, cx - 7.0F, cy + 1.0F,
-                              cx + 7.0F, cy + 1.0F);
+            graphics.DrawLine(&pen, cx - 5.0F, cy + 1.0F,
+                              cx + 5.0F, cy + 1.0F);
         } else if (id == ids_.close) {
-            graphics.DrawLine(&pen, cx - 6.0F, cy - 6.0F,
-                              cx + 6.0F, cy + 6.0F);
-            graphics.DrawLine(&pen, cx + 6.0F, cy - 6.0F,
-                              cx - 6.0F, cy + 6.0F);
+            graphics.DrawLine(&pen, cx - 4.0F, cy - 4.0F,
+                              cx + 4.0F, cy + 4.0F);
+            graphics.DrawLine(&pen, cx + 4.0F, cy - 4.0F,
+                              cx - 4.0F, cy + 4.0F);
         } else if (IsZoomed(window)) {
-            graphics.DrawRectangle(&pen, cx - 4.0F, cy - 6.0F,
-                                   11.0F, 11.0F);
+            graphics.DrawRectangle(&pen, cx - 3.0F, cy - 4.0F,
+                                   8.0F, 8.0F);
             Gdiplus::SolidBrush cover(SmoothColor(fill));
-            graphics.FillRectangle(&cover, cx - 7.0F, cy - 3.0F,
-                                   11.0F, 11.0F);
-            graphics.DrawRectangle(&pen, cx - 7.0F, cy - 3.0F,
-                                   11.0F, 11.0F);
+            graphics.FillRectangle(&cover, cx - 5.0F, cy - 2.0F,
+                                   8.0F, 8.0F);
+            graphics.DrawRectangle(&pen, cx - 5.0F, cy - 2.0F,
+                                   8.0F, 8.0F);
         } else {
-            graphics.DrawRectangle(&pen, cx - 7.0F, cy - 6.0F,
-                                   14.0F, 13.0F);
+            graphics.DrawRectangle(&pen, cx - 5.0F, cy - 4.5F,
+                                   10.0F, 9.0F);
         }
     }
 }

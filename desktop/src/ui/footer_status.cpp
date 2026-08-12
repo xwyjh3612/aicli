@@ -333,7 +333,9 @@ void FooterStatusController::Draw(HDC dc,
         }
     }
 
-    if (font) SelectObject(dc, font);
+    // Use one 12 px footer font for Git, Agent, memory and network status.
+    if (git_font) SelectObject(dc, git_font);
+    else if (font) SelectObject(dc, font);
 
     const int telemetry_top = client.bottom - footer_height;
     const std::wstring agent_label = agent_online_
