@@ -82,6 +82,7 @@ constexpr int ID_START_PROJECT = 1013;
 constexpr int ID_EDIT_PROJECT = 1014;
 constexpr int ID_SEARCH_PROJECTS = 1015;
 constexpr int ID_DEVICES = 1016;
+constexpr int ID_OPEN_PROJECT_FOLDER = 1017;
 constexpr int ID_CTX_PAUSE = 3001;
 constexpr int ID_CTX_CONTINUE = 3002;
 constexpr int ID_CTX_RESTART = 3004;
@@ -158,10 +159,14 @@ struct GitStatusMessage {
 // terminal/xaml_island_adapter.*.
 
 HWND g_hwnd{}, g_list{}, g_status{}, g_new_project{}, g_settings{}, g_group{}, g_group_add{}, g_bind{}, g_devices{}, g_sidebar_title{}, g_search{};
-HWND g_detail_title{}, g_detail_folder{}, g_detail_command{}, g_detail_state{}, g_start_project{}, g_edit_project{};
+HWND g_detail_title{}, g_detail_subtitle{}, g_detail_folder_label{}, g_detail_folder{},
+     g_detail_command_label{}, g_detail_command{}, g_detail_note_label{}, g_detail_note{},
+     g_detail_state{}, g_start_project{}, g_edit_project{}, g_open_project_folder{},
+     g_detail_tooltip{};
 HICON g_app_icon_large{},g_app_icon_small{};
 WNDPROC g_button_proc{}; HWND g_hover_button{};
 HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_git{}, g_font_sidebar_title{}, g_font_project_list{}, g_font_modal_title{}, g_font_modal_subtitle{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
+HFONT g_font_project_heading{},g_font_monospace{};
 aicli::DataStore g_store;
 aicli::agent::RemoteAgent g_remote_agent;
 aicli::agent::ConversationBridge g_conversation_bridge(g_store,g_remote_agent);
@@ -186,15 +191,16 @@ COLORREF& fg = g_theme.text;
 COLORREF& muted = g_theme.muted;
 COLORREF& accent = g_theme.accent;
 COLORREF& accent2 = g_theme.accent_strong;
-HBRUSH g_edit_brush{},g_focus_brush{},g_list_brush{},g_bg_brush{};bool g_light_theme{};bool g_theme_workspace_dirty{};
+HBRUSH g_edit_brush{},g_focus_brush{},g_list_brush{},g_bg_brush{},g_detail_surface_brush{};bool g_light_theme{};bool g_theme_workspace_dirty{};
 bool g_settings_open_posted{};
-HWND g_project_dialog{}, g_d_name{}, g_d_type{}, g_d_group{}, g_d_folder{}, g_d_folder_browse{}, g_d_command{}; bool g_project_dialog_ok{}; bool g_project_dialog_edit{}; Project g_project_draft{};
+HWND g_project_dialog{}, g_d_name{}, g_d_note{}, g_d_type{}, g_d_group{}, g_d_folder{}, g_d_folder_browse{}, g_d_command{}; bool g_project_dialog_ok{}; bool g_project_dialog_edit{}; Project g_project_draft{};
 HWND g_binding_dialog{},g_binding_refresh{},g_binding_close{},g_binding_approve{},g_binding_reject{};
 aicli::agent::PairingInfo g_binding_info{};
 std::optional<qrcodegen::QrCode> g_binding_qr;
 RECT g_binding_panel{};
 RECT g_project_panel{};
-RECT g_d_name_rect{}, g_d_type_rect{}, g_d_group_rect{}, g_d_folder_rect{}, g_d_command_rect{};
+RECT g_d_name_rect{}, g_d_note_rect{}, g_d_type_rect{}, g_d_group_rect{}, g_d_folder_rect{}, g_d_command_rect{};
+RECT g_prestart_panel{},g_prestart_folder_surface{},g_prestart_command_surface{},g_prestart_note_surface{};
 aicli::ui::WindowChrome g_window_chrome({ID_MINIMIZE,ID_MAXIMIZE,ID_CLOSE});
 aicli::ui::FooterStatusController g_footer_status;
 aicli::ui::TaskbarWorkingIndicator g_taskbar_working_indicator;
@@ -216,7 +222,7 @@ UINT g_taskbar_button_created_message{};
 HWND g_project_drag_preview{};
 POINT g_project_drag_hotspot{};
 
-enum { ID_D_NAME=2001, ID_D_TYPE=2002, ID_D_GROUP=2003, ID_D_FOLDER=2004, ID_D_COMMAND=2005, ID_D_OK=2006, ID_D_CANCEL=2007, ID_D_BROWSE=2008 };
+enum { ID_D_NAME=2001, ID_D_TYPE=2002, ID_D_GROUP=2003, ID_D_FOLDER=2004, ID_D_COMMAND=2005, ID_D_OK=2006, ID_D_CANCEL=2007, ID_D_BROWSE=2008, ID_D_NOTE=2009 };
 enum { ID_BIND_REFRESH=2101,ID_BIND_CLOSE=2102,ID_BIND_APPROVE=2103,ID_BIND_REJECT=2104 };
 struct ProjectDropdownEntry{std::wstring label;bool selected{};};
 int g_project_dropdown_width=220;
@@ -231,7 +237,7 @@ bool ApplyStoredTheme(){
     const bool next_light=stored==L"light";
     const bool palette_changed=g_theme_manager.light()!=next_light||
                                 !g_edit_brush||!g_focus_brush||
-                                !g_list_brush||!g_bg_brush;
+                                !g_list_brush||!g_bg_brush||!g_detail_surface_brush;
     if(!palette_changed){
         g_light_theme=next_light;
         return false;
@@ -242,10 +248,13 @@ bool ApplyStoredTheme(){
     if(g_focus_brush)DeleteObject(g_focus_brush);
     if(g_list_brush)DeleteObject(g_list_brush);
     if(g_bg_brush)DeleteObject(g_bg_brush);
+    if(g_detail_surface_brush)DeleteObject(g_detail_surface_brush);
     g_edit_brush=CreateSolidBrush(g_theme.field);
     g_focus_brush=CreateSolidBrush(g_theme.field_focus);
     g_list_brush=CreateSolidBrush(panel);
     g_bg_brush=CreateSolidBrush(bg);
+    g_detail_surface_brush=CreateSolidBrush(
+        g_light_theme?RGB(239,243,248):RGB(18,21,27));
     if(g_search) aicli::ui::SetStyledInputTheme(g_search,g_theme);
     return true;
 }
@@ -335,10 +344,10 @@ bool IsProjectWorking(const Project& project){
     return g_island.HasSession(project.id)&&
            g_working_projects.find(project.id)!=g_working_projects.end();
 }
-bool HasVisibleWorkingProject(){
+bool HasVisibleAnimatedProject(){
     return std::any_of(g_visible_project_indices.begin(),g_visible_project_indices.end(),[](int index){
         return index>=0&&index<static_cast<int>(g_projects.size())&&
-               IsProjectWorking(g_projects[index]);
+               g_island.HasSession(g_projects[index].id);
     });
 }
 void StopProjectSpinnerTimer(){
@@ -347,7 +356,7 @@ void StopProjectSpinnerTimer(){
     g_project_spinner_timer_active=false;
 }
 void SyncProjectSpinnerTimer(){
-    const bool shouldRun=g_hwnd&&g_list&&HasVisibleWorkingProject();
+    const bool shouldRun=g_hwnd&&g_list&&HasVisibleAnimatedProject();
     if(shouldRun&&!g_project_spinner_timer_active){
         g_project_spinner_angle=-90.0f;
         g_project_spinner_timer_active=
@@ -394,7 +403,7 @@ bool InvalidateWorkingProjectRows(){
     for(size_t row=0;row<g_visible_project_indices.size();++row){
         const int index=g_visible_project_indices[row];
         if(index<0||index>=static_cast<int>(g_projects.size())||
-           !IsProjectWorking(g_projects[index]))continue;
+           !g_island.HasSession(g_projects[index].id))continue;
         found=true;
         RECT itemRect{};
         if(SendMessageW(g_list,LB_GETITEMRECT,static_cast<WPARAM>(row),
@@ -443,20 +452,24 @@ void RefreshProjectDetails(bool force_git_refresh=false){
     const int index=SelectedProjectIndex();
     if(index<0 || index>=(int)g_projects.size()){
         SetText(g_detail_title,L"未选择项目");
-        SetText(g_detail_folder,L"文件夹: 未设置");
-        SetText(g_detail_command,L"启动命令: 未设置");
-        SetText(g_detail_state,L"状态: 未运行");
+        SetText(g_detail_subtitle,L"");
+        SetText(g_detail_folder,L"未设置");
+        SetText(g_detail_command,L"未设置");
+        SetText(g_detail_note,L"暂无备注");
+        SetText(g_detail_state,L"● 尚未启动");
         RefreshGitStatus(force_git_refresh);
         return;
     }
     const auto& project=g_projects[index];
     g_last_project_id=project.id;
     g_store.SetSetting(L"last_project_id",project.id);
-    SetText(g_detail_title,project.name+L"   /   "+project.type);
-    SetText(g_detail_folder,L"文件夹: "+(project.folder.empty()?L"未设置":project.folder));
-    SetText(g_detail_command,L"启动命令: "+(project.command.empty()?L"未设置":project.command));
-    const wchar_t* state=g_island.HasSession(project.id)?L"运行中":(project.status==L"paused"?L"已暂停":L"未运行");
-    SetText(g_detail_state,std::wstring(L"状态: ")+state);
+    SetText(g_detail_title,project.name);
+    SetText(g_detail_subtitle,project.type+L"  ·  "+(project.group.empty()?L"默认分组":project.group));
+    SetText(g_detail_folder,project.folder.empty()?L"未设置":project.folder);
+    SetText(g_detail_command,project.command.empty()?L"未设置":project.command);
+    SetText(g_detail_note,project.note.empty()?L"暂无备注":project.note);
+    const wchar_t* state=g_island.HasSession(project.id)?L"● 运行中":(project.status==L"paused"?L"● 已暂停":L"● 尚未启动");
+    SetText(g_detail_state,state);
     RefreshGitStatus(force_git_refresh);
 }
 
@@ -509,7 +522,10 @@ void RefreshProjectList(){
         const auto& project=g_projects[i];
         const std::wstring group=project.group.empty()?L"默认分组":project.group;
         if(g_group_name!=kAllGroupsName&&group!=g_group_name)continue;
-        if(!query.empty()&&project.name.find(query)==std::wstring::npos&&project.type.find(query)==std::wstring::npos)continue;
+        if(!query.empty()&&project.name.find(query)==std::wstring::npos&&
+           project.note.find(query)==std::wstring::npos&&
+           project.folder.find(query)==std::wstring::npos&&
+           project.type.find(query)==std::wstring::npos)continue;
         const LRESULT row=SendMessageW(g_list,LB_ADDSTRING,0,(LPARAM)project.name.c_str());
         if(row!=LB_ERR){SendMessageW(g_list,LB_SETITEMDATA,row,static_cast<LPARAM>(i));g_visible_project_indices.push_back(static_cast<int>(i));}
     }
@@ -605,18 +621,59 @@ void Layout(){
     }
     const bool showingTerminal=selectedRunning;
     const bool showingNative=showingTerminal&&g_island.Active();
+    const bool emptyProjects=g_projects.empty();
+    if(g_detail_title){
+        LONG_PTR titleStyle=GetWindowLongPtrW(g_detail_title,GWL_STYLE);
+        const LONG_PTR alignment=emptyProjects?SS_CENTER:SS_LEFT;
+        const LONG_PTR nextStyle=(titleStyle&~SS_TYPEMASK)|alignment;
+        if(nextStyle!=titleStyle){
+            SetWindowLongPtrW(g_detail_title,GWL_STYLE,nextStyle);
+            InvalidateRect(g_detail_title,nullptr,FALSE);
+        }
+    }
     SetMainChildVisible(g_detail_title,!showingTerminal);
-    SetMainChildVisible(g_detail_folder,!showingTerminal);
-    SetMainChildVisible(g_detail_command,!showingTerminal);
-    SetMainChildVisible(g_detail_state,!showingTerminal);
-    SetMainChildVisible(g_start_project,!showingTerminal);
-    SetMainChildVisible(g_edit_project,!showingTerminal);
-    MoveMainChild(g_detail_title,terminal.left+28,terminal.top+28,terminal.right-terminal.left-56,32);
-    MoveMainChild(g_detail_folder,terminal.left+28,terminal.top+100,terminal.right-terminal.left-56,30);
-    MoveMainChild(g_detail_command,terminal.left+28,terminal.top+172,terminal.right-terminal.left-56,30);
-    MoveMainChild(g_detail_state,terminal.left+28,terminal.top+244,terminal.right-terminal.left-56,30);
-    MoveMainChild(g_start_project,terminal.left+28,terminal.bottom-66,112,36);
-    MoveMainChild(g_edit_project,terminal.left+154,terminal.bottom-66,112,36);
+    for(HWND control:{g_detail_subtitle,g_detail_folder_label,g_detail_folder,
+                      g_detail_command_label,g_detail_command,g_detail_note_label,
+                      g_detail_note,g_detail_state})
+        SetMainChildVisible(control,!showingTerminal&&!emptyProjects);
+    SetMainChildVisible(g_start_project,!showingTerminal&&!emptyProjects);
+    SetMainChildVisible(g_edit_project,!showingTerminal&&!emptyProjects);
+    SetMainChildVisible(g_open_project_folder,!showingTerminal&&!emptyProjects);
+    if(emptyProjects){
+        SetRectEmpty(&g_prestart_panel);SetRectEmpty(&g_prestart_folder_surface);
+        SetRectEmpty(&g_prestart_command_surface);SetRectEmpty(&g_prestart_note_surface);
+        SetText(g_detail_title,L"请先添加项目");
+        MoveMainChild(g_detail_title,terminal.left+28,
+                      terminal.top+(terminal.bottom-terminal.top-32)/2,
+                      terminal.right-terminal.left-56,32);
+    }else{
+        const int workspaceWidth=terminal.right-terminal.left;
+        const int panelWidth=std::min(620,std::max(480,workspaceWidth-72));
+        const int panelHeight=466;
+        const int panelLeft=terminal.left+(workspaceWidth-panelWidth)/2;
+        const int panelTop=static_cast<int>(terminal.top)+std::max(
+            22,static_cast<int>((terminal.bottom-terminal.top-panelHeight)/2-12));
+        g_prestart_panel={panelLeft,panelTop,panelLeft+panelWidth,panelTop+panelHeight};
+        MoveMainChild(g_detail_title,panelLeft,panelTop,panelWidth,32);
+        MoveMainChild(g_detail_subtitle,panelLeft,panelTop+36,panelWidth,22);
+        MoveMainChild(g_detail_state,panelLeft,panelTop+68,panelWidth,24);
+        const int surfaceLeft=panelLeft;
+        const int surfaceRight=panelLeft+panelWidth;
+        MoveMainChild(g_detail_folder_label,surfaceLeft,panelTop+112,panelWidth,20);
+        g_prestart_folder_surface={surfaceLeft,panelTop+136,surfaceRight,panelTop+178};
+        MoveMainChild(g_detail_folder,surfaceLeft+14,panelTop+136,panelWidth-28,42);
+        MoveMainChild(g_detail_command_label,surfaceLeft,panelTop+198,panelWidth,20);
+        g_prestart_command_surface={surfaceLeft,panelTop+222,surfaceRight,panelTop+264};
+        MoveMainChild(g_detail_command,surfaceLeft+14,panelTop+222,panelWidth-28,42);
+        MoveMainChild(g_detail_note_label,surfaceLeft,panelTop+284,panelWidth,20);
+        g_prestart_note_surface={surfaceLeft,panelTop+308,surfaceRight,panelTop+370};
+        MoveMainChild(g_detail_note,surfaceLeft+14,panelTop+308,panelWidth-28,62);
+        const int actionsWidth=132+12+38+10+38;
+        const int actionsLeft=panelLeft+(panelWidth-actionsWidth)/2;
+        MoveMainChild(g_start_project,actionsLeft,panelTop+402,132,38);
+        MoveMainChild(g_edit_project,actionsLeft+144,panelTop+403,38,36);
+        MoveMainChild(g_open_project_folder,actionsLeft+192,panelTop+403,38,36);
+    }
     // The central surface is always the real Windows Terminal control.  Do
     // not create a second EDIT-based command line or a text-output fallback:
     // keyboard focus, shortcuts, selection and scrolling must stay native.
@@ -894,13 +951,26 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
         g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputFocusBorderOnly(g_search);
         g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SendMessageW(g_list,LB_SETITEMHEIGHT,0,kProjectListItemHeight);g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
-        g_detail_title=CreateWindowW(L"STATIC",L"选择一个项目",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
-        g_detail_folder=CreateWindowW(L"STATIC",L"文件夹: 未设置",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
-        g_detail_command=CreateWindowW(L"STATIC",L"启动命令: 未设置",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
-        g_detail_state=CreateWindowW(L"STATIC",L"状态: 未运行",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);
-        g_start_project=CreateWindowW(L"BUTTON",L"立即开始",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,0,0,0,0,h,(HMENU)(INT_PTR)ID_START_PROJECT,GetModuleHandleW(nullptr),nullptr);
-        g_edit_project=CreateWindowW(L"BUTTON",L"编辑项目",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,0,0,0,0,h,(HMENU)(INT_PTR)ID_EDIT_PROJECT,GetModuleHandleW(nullptr),nullptr);
-        HWND detailControls[]={g_detail_title,g_detail_folder,g_detail_command,g_detail_state,g_start_project,g_edit_project};for(HWND c:detailControls){SendMessageW(c,WM_SETFONT,(WPARAM)g_font,TRUE);if(c==g_start_project||c==g_edit_project)EnableButtonHover(c);}
+        g_font_project_heading=CreateFontW(-22,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
+        g_font_monospace=CreateFontW(-14,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,FIXED_PITCH,L"Cascadia Mono");
+        auto detailStatic=[&](const wchar_t* text){return CreateWindowW(L"STATIC",text,WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);};
+        g_detail_title=detailStatic(L"选择一个项目");
+        g_detail_subtitle=detailStatic(L"");
+        g_detail_folder_label=detailStatic(L"项目目录");g_detail_folder=detailStatic(L"未设置");
+        g_detail_command_label=detailStatic(L"启动命令");g_detail_command=detailStatic(L"未设置");
+        g_detail_note_label=detailStatic(L"备注");g_detail_note=detailStatic(L"暂无备注");
+        g_detail_state=detailStatic(L"● 尚未启动");
+        g_start_project=CreateWindowW(L"BUTTON",L"▶  立即开始",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,0,0,0,0,h,(HMENU)(INT_PTR)ID_START_PROJECT,GetModuleHandleW(nullptr),nullptr);
+        g_edit_project=CreateWindowW(L"BUTTON",L"\xE70F",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,0,0,0,0,h,(HMENU)(INT_PTR)ID_EDIT_PROJECT,GetModuleHandleW(nullptr),nullptr);
+        g_open_project_folder=CreateWindowW(L"BUTTON",L"\xE8B7",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,0,0,0,0,h,(HMENU)(INT_PTR)ID_OPEN_PROJECT_FOLDER,GetModuleHandleW(nullptr),nullptr);
+        for(HWND c:{g_detail_title,g_detail_subtitle,g_detail_folder_label,g_detail_folder,g_detail_command_label,g_detail_command,g_detail_note_label,g_detail_note,g_detail_state,g_start_project,g_edit_project,g_open_project_folder})SendMessageW(c,WM_SETFONT,(WPARAM)g_font,TRUE);
+        SendMessageW(g_detail_title,WM_SETFONT,(WPARAM)g_font_project_heading,TRUE);
+        SendMessageW(g_detail_subtitle,WM_SETFONT,(WPARAM)g_font_small,TRUE);
+        SendMessageW(g_detail_folder,WM_SETFONT,(WPARAM)g_font_monospace,TRUE);
+        SendMessageW(g_detail_command,WM_SETFONT,(WPARAM)g_font_monospace,TRUE);
+        for(HWND b:{g_start_project,g_edit_project,g_open_project_folder})EnableButtonHover(b);
+        g_detail_tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,h,nullptr,GetModuleHandleW(nullptr),nullptr);
+        if(g_detail_tooltip){for(auto entry:{std::pair<HWND,const wchar_t*>{g_edit_project,L"编辑项目"},{g_open_project_folder,L"打开项目文件夹"}}){TOOLINFOW tool{sizeof(tool)};tool.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tool.hwnd=h;tool.uId=reinterpret_cast<UINT_PTR>(entry.first);tool.lpszText=const_cast<LPWSTR>(entry.second);SendMessageW(g_detail_tooltip,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&tool));}}
         g_status=CreateWindowW(L"STATIC",L"就绪    |    选择项目后查看启动信息",WS_CHILD|WS_VISIBLE,0,0,0,0,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_status,WM_SETFONT,(WPARAM)g_font_small,TRUE);
         g_island.Attach(h,RECT{250,60,500,400});g_island.SetTheme(g_light_theme);RefreshProjectDetails();ExtendCustomTitleBar(h);SetWindowPos(h,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);Layout();ConfigureRemoteAgent();UpdateHeaderTelemetry();SetTimer(h,1,2000,nullptr);PostMessageW(h,WM_RESTORE_LAST_SESSION,0,0);return 0;}
     case WM_ACTIVATE:
@@ -915,11 +985,23 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         break;
     case WM_ACTIVATEAPP:SetTitleBarActive(h,w!=FALSE);break;
     case WM_DWMCOMPOSITIONCHANGED:ExtendCustomTitleBar(h);return 0;
-    case WM_DPICHANGED:
+    case WM_DPICHANGED: {
+        // Per-Monitor-V2 gives Windows ownership of the correct client/frame
+        // geometry when this window moves between screens.  Applying the
+        // suggested rectangle avoids a stale DPI-sized surface that Windows
+        // would otherwise bitmap-scale for a frame.
+        const auto* suggested = reinterpret_cast<const RECT*>(l);
+        if (suggested) {
+            SetWindowPos(h, nullptr, suggested->left, suggested->top,
+                         suggested->right - suggested->left,
+                         suggested->bottom - suggested->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
         g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);
         Layout();
         InvalidateRect(h,nullptr,FALSE);
         return 0;
+    }
     case WM_NCCALCSIZE:if(w){auto* params=(NCCALCSIZE_PARAMS*)l;if(IsZoomed(h)){HMONITOR monitor=MonitorFromRect(&params->rgrc[0],MONITOR_DEFAULTTONEAREST);MONITORINFO info{sizeof(info)};if(GetMonitorInfoW(monitor,&info))params->rgrc[0]=info.rcWork;}return 0;}break;
     case WM_NCHITTEST:return HitTestCustomFrame(h,l);
     case WM_MOUSEMOVE:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(g_window_chrome.OnMouseMove(h,point))return 0;break;}
@@ -936,13 +1018,21 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         // size. This keeps the client surface flush with every monitor edge.
         g_window_chrome.UpdateSizeState(h,border);
         if(aicli::ui::HasActiveModal(h))ResizeModalHosts(h);
-        Layout();return 0;
+        Layout();
+        // Moving the footer's child status HWND does not reliably invalidate
+        // its previous position during the first maximize transition. Since
+        // this window intentionally suppresses WM_ERASEBKGND, that stale
+        // strip can survive until a later restore/resize. Repaint the whole
+        // client composition now so the old footer is covered immediately.
+        RedrawWindow(h, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
+        return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshots.MarkDirtyMessageHandled();if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
     case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;info->ptMinTrackSize.x=900;info->ptMinTrackSize.y=600;return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;
-    case WM_CTLCOLORSTATIC: {HDC dc=(HDC)w;HWND control=(HWND)l;const bool onPanel=control==g_sidebar_title||control==g_status;SetBkMode(dc,OPAQUE);SetTextColor(dc,fg);SetBkColor(dc,onPanel?panel:bg);return (LRESULT)(onPanel?g_list_brush:g_bg_brush);}
+    case WM_CTLCOLORSTATIC: {HDC dc=(HDC)w;HWND control=(HWND)l;const bool onPanel=control==g_sidebar_title||control==g_status;const bool detailValue=control==g_detail_folder||control==g_detail_command||control==g_detail_note;const bool detailLabel=control==g_detail_subtitle||control==g_detail_folder_label||control==g_detail_command_label||control==g_detail_note_label;const bool detail=control==g_detail_title||detailLabel||detailValue||control==g_detail_state;if(detail){const COLORREF detailSurface=g_light_theme?RGB(239,243,248):RGB(18,21,27);SetBkMode(dc,OPAQUE);SetBkColor(dc,detailValue?detailSurface:bg);SetTextColor(dc,control==g_detail_state?(g_light_theme?RGB(177,113,16):RGB(245,178,72)):(detailLabel?muted:fg));return (LRESULT)(detailValue?g_detail_surface_brush:g_bg_brush);}SetBkMode(dc,OPAQUE);SetTextColor(dc,fg);SetBkColor(dc,onPanel?panel:bg);return (LRESULT)(onPanel?g_list_brush:g_bg_brush);}
     case WM_CTLCOLOREDIT: {
         HDC dc=(HDC)w;
         HWND control=(HWND)l;
@@ -968,6 +1058,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(id==ID_NEW_PROJECT){CreateProject();return 0;}
         if(id==ID_START_PROJECT){StartSession();return 0;}
         if(id==ID_EDIT_PROJECT){EditProject();return 0;}
+        if(id==ID_OPEN_PROJECT_FOLDER){OpenProjectFolder();return 0;}
         if(id==ID_CTX_OPEN_FOLDER){OpenProjectFolder();return 0;}
         const UINT moveGroupEnd=static_cast<UINT>(ID_CTX_MOVE_GROUP_BASE)+static_cast<UINT>(g_groups.size());
         if(id>=static_cast<UINT>(ID_CTX_MOVE_GROUP_BASE)&&id<moveGroupEnd){MoveSelectedProjectToGroup(g_groups[id-ID_CTX_MOVE_GROUP_BASE].name);return 0;}
@@ -1140,10 +1231,16 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         aicli::ui::PaintMainWindow(
             target_dc,r,ps.rcPaint,h,g_search,g_app_icon_large,g_font_medium,g_font_small,g_font_git,
             metrics,g_theme,g_window_chrome,g_footer_status);
+        if(!IsRectEmpty(&g_prestart_panel)){
+            const COLORREF surface=g_light_theme?RGB(239,243,248):RGB(18,21,27);
+            for(const RECT& rect:{g_prestart_folder_surface,g_prestart_command_surface,g_prestart_note_surface}){
+                if(!IsRectEmpty(&rect))aicli::ui::DrawSmoothRoundedRect(target_dc,rect,5.0f,surface,border,1.0f);
+            }
+        }
         EndPaint(h,&ps);
         return 0;
     }
-    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
     if(m==WM_NCDESTROY&&g_font_git){
         DeleteObject(g_font_git);
         g_font_git=nullptr;
@@ -1156,6 +1253,11 @@ int WINAPI wWinMain(HINSTANCE instance,
                     HINSTANCE,
                     PWSTR arguments,
                     int show_command) {
+    // Must run before any HWND, GDI or XAML object is created. The manifest
+    // is the authoritative declaration; this call makes the intent explicit
+    // for loose/unpackaged launches as well. It can harmlessly return FALSE
+    // when the manifest has already established this context.
+    (void)SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     GdiplusRuntime gdiplus;
     winrt::init_apartment(winrt::apartment_type::single_threaded);
 

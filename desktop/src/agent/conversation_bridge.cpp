@@ -57,6 +57,7 @@ void ConversationBridge::RefreshConversations(
         items.push_back({
             {"id", aicli::text::Utf8Text(project.id)},
             {"name", aicli::text::Utf8Text(project.name)},
+            {"note", aicli::text::Utf8Text(project.note)},
             {"provider", provider},
             {"type", aicli::text::Utf8Text(project.type)},
             {"group", aicli::text::Utf8Text(project.group)},

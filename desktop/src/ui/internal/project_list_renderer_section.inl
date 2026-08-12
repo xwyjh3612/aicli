@@ -31,6 +31,35 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
             if(!g_list_brush)DeleteObject(brush);
         }
         return 1;
+    }else if(m==WM_PAINT){
+        const LRESULT result=DefSubclassProc(h,m,w,l);
+        if(SendMessageW(h,LB_GETCOUNT,0,0)==0){
+            HDC dc=GetDC(h);
+            if(dc){
+                RECT client{};GetClientRect(h,&client);
+                Gdiplus::Graphics graphics(dc);
+                graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                const float cx=(client.left+client.right)/2.0f;
+                const float cy=(client.top+client.bottom)/2.0f-16.0f;
+                const COLORREF iconColor=g_light_theme?RGB(123,134,149):RGB(112,126,146);
+                Gdiplus::Pen ring(SmoothColor(iconColor),1.4f);
+                Gdiplus::Pen plus(SmoothColor(iconColor),1.6f);
+                ring.SetStartCap(Gdiplus::LineCapRound);ring.SetEndCap(Gdiplus::LineCapRound);
+                plus.SetStartCap(Gdiplus::LineCapRound);plus.SetEndCap(Gdiplus::LineCapRound);
+                graphics.DrawEllipse(&ring,cx-13.0f,cy-13.0f,26.0f,26.0f);
+                graphics.DrawLine(&plus,cx-5.0f,cy,cx+5.0f,cy);
+                graphics.DrawLine(&plus,cx,cy-5.0f,cx,cy+5.0f);
+                SetBkMode(dc,TRANSPARENT);
+                SetTextColor(dc,muted);
+                SelectObject(dc,g_font_project_list?g_font_project_list:g_font_small);
+                RECT text{client.left+8,static_cast<LONG>(cy+22.0f),client.right-8,
+                          static_cast<LONG>(cy+48.0f)};
+                DrawTextW(dc,L"当前没有项目",-1,&text,
+                          DT_CENTER|DT_TOP|DT_SINGLELINE);
+                ReleaseDC(h,dc);
+            }
+        }
+        return result;
     }else if(m==WM_LBUTTONDOWN){
         g_project_drag_candidate=-1;
         if(aicli::ui::GetStyledInputText(g_search).empty()){
@@ -135,7 +164,7 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         if(primary){fill=disabled?g_theme.surface:(down?g_theme.accent_strong:(hover?g_theme.accent:g_theme.accent_strong));stroke=fill;}
         else{fill=disabled?g_theme.surface:(down?g_theme.pressed:(hover?g_theme.hover:g_theme.field));stroke=fill;}
     }else{
-        if(item->CtlID==ID_D_CANCEL||item->CtlID==ID_EDIT_PROJECT)fill=elevated;
+        if(item->CtlID==ID_D_CANCEL||item->CtlID==ID_EDIT_PROJECT||item->CtlID==ID_OPEN_PROJECT_FOLDER)fill=elevated;
         if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)fill=accent2;
         if(disabled)fill=g_light_theme?RGB(235,238,243):RGB(33,37,45);
         else if(down){
@@ -151,7 +180,7 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         stroke=disabled?(g_light_theme?RGB(218,223,231):RGB(43,48,57)):(hover?(g_light_theme?RGB(164,181,205):RGB(78,104,142)):border);if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)stroke=hover?RGB(117,177,255):RGB(64,128,225);
     }
     HBRUSH brush=CreateSolidBrush(fill);HPEN pen=CreatePen(PS_SOLID,1,stroke);auto oldBrush=SelectObject(item->hDC,brush);auto oldPen=SelectObject(item->hDC,pen);RoundRect(item->hDC,r.left+1,r.top+1,r.right-1,r.bottom-1,9,9);SelectObject(item->hDC,oldBrush);SelectObject(item->hDC,oldPen);DeleteObject(brush);DeleteObject(pen);
-    const bool primary_button=item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT;COLORREF text_color=disabled?muted:((primary_button||(!g_light_theme&&hover))?RGB(255,255,255):fg);HFONT text_font=g_font;UINT text_format=DT_CENTER|DT_VCENTER|DT_SINGLELINE;if(onMainTitleBar&&!g_window_chrome.active()&&!hover&&!down){text_color=TitleBarText();}SetTextColor(item->hDC,text_color);SelectObject(item->hDC,text_font);DrawTextW(item->hDC,text,-1,&r,text_format);
+    const bool primary_button=item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT;COLORREF text_color=disabled?muted:((primary_button||(!g_light_theme&&hover))?RGB(255,255,255):fg);HFONT text_font=(item->CtlID==ID_EDIT_PROJECT||item->CtlID==ID_OPEN_PROJECT_FOLDER)?g_icon_font:g_font;UINT text_format=DT_CENTER|DT_VCENTER|DT_SINGLELINE;if(onMainTitleBar&&!g_window_chrome.active()&&!hover&&!down){text_color=TitleBarText();}SetTextColor(item->hDC,text_color);SelectObject(item->hDC,text_font);DrawTextW(item->hDC,text,-1,&r,text_format);
 }
 void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     if(item->itemID==(UINT)-1)return;
@@ -187,7 +216,7 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     StateIcon stateIcon=StateIcon::Idle;
     if(g_island.HasSession(project.id)){
         stateIcon=StateIcon::Running;
-        stateColor=g_light_theme?RGB(28,139,91):RGB(73,203,145);
+        stateColor=RGB(73,203,145);
     }else if(project.status==L"paused"){
         stateIcon=StateIcon::Paused;
         stateColor=g_light_theme?RGB(177,113,16):RGB(245,178,72);
@@ -221,7 +250,8 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         Gdiplus::RectF iconBounds{iconX,iconY,iconSize,iconSize};
         const bool workingSpinner=stateIcon==StateIcon::Running&&IsProjectWorking(project);
         Gdiplus::SolidBrush halo(SmoothColor(stateColor,30));
-        if(!workingSpinner)graphics.FillEllipse(&halo,iconBounds);
+        if(!workingSpinner&&stateIcon!=StateIcon::Running)
+            graphics.FillEllipse(&halo,iconBounds);
         Gdiplus::Pen iconPen(SmoothColor(stateColor),1.65f);
         iconPen.SetStartCap(Gdiplus::LineCapRound);
         iconPen.SetEndCap(Gdiplus::LineCapRound);
@@ -240,8 +270,17 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
                              iconSize-4.0f,iconSize-4.0f,
                              g_project_spinner_angle,112.0f);
         }else if(stateIcon==StateIcon::Running){
-            graphics.DrawEllipse(&iconPen,iconX+2.0f,iconY+2.0f,iconSize-4.0f,iconSize-4.0f);
-            graphics.FillEllipse(&iconBrush,cx-3.0f,cy-3.0f,6.0f,6.0f);
+            const float pulse=(std::sin(
+                g_project_spinner_angle*3.14159265f/180.0f)+1.0f)*0.5f;
+            const float diameter=8.0f+2.0f*pulse;
+            const auto channel=[pulse](BYTE low,BYTE high){
+                return static_cast<BYTE>(low+(high-low)*pulse+0.5f);
+            };
+            const COLORREF pulseColor=RGB(
+                channel(0x1f,0x49),channel(0x79,0xcb),channel(0x55,0x91));
+            Gdiplus::SolidBrush pulseBrush(SmoothColor(pulseColor));
+            graphics.FillEllipse(&pulseBrush,cx-diameter/2.0f,cy-diameter/2.0f,
+                                 diameter,diameter);
         }else if(stateIcon==StateIcon::Paused){
             graphics.DrawLine(&iconPen,cx-2.5f,cy-4.0f,cx-2.5f,cy+4.0f);
             graphics.DrawLine(&iconPen,cx+2.5f,cy-4.0f,cx+2.5f,cy+4.0f);

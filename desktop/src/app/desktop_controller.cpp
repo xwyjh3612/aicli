@@ -531,6 +531,8 @@ std::vector<int> DesktopController::VisibleProjectIndices(const std::wstring& qu
         const auto project_group = project.group.empty() ? L"默认分组" : project.group;
         if (group_name_ != kAllGroups && project_group != group_name_) continue;
         if (!needle.empty() && Lower(project.name).find(needle) == std::wstring::npos &&
+            Lower(project.note).find(needle) == std::wstring::npos &&
+            Lower(project.folder).find(needle) == std::wstring::npos &&
             Lower(project.type).find(needle) == std::wstring::npos) continue;
         result.push_back(static_cast<int>(i));
     }

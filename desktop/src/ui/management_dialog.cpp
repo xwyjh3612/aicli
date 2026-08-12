@@ -277,6 +277,23 @@ void RefreshList(State& state);
 void ReadSelection(State& state);
 
 constexpr UINT_PTR kManagementButtonSubclassId = 0xA1C14;
+constexpr UINT_PTR kSettingsWheelSubclassId = 0xA1C19;
+
+LRESULT CALLBACK SettingsWheelProc(HWND control, UINT message, WPARAM wparam,
+                                   LPARAM lparam, UINT_PTR, DWORD_PTR reference) {
+    auto* state = reinterpret_cast<State*>(reference);
+    if (message == WM_MOUSEWHEEL && state && state->content) {
+        // LISTBOX consumes wheel input even when its own rows do not need to
+        // move. The list is part of the scrolling settings document, so route
+        // wheel input from both its empty surface and owner-drawn items to the
+        // content viewport.
+        return SendMessageW(state->content, WM_MOUSEWHEEL, wparam, lparam);
+    }
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(control, SettingsWheelProc, kSettingsWheelSubclassId);
+    }
+    return DefSubclassProc(control, message, wparam, lparam);
+}
 
 LRESULT CALLBACK ManagementButtonProc(HWND control, UINT message, WPARAM wparam,
                                       LPARAM lparam, UINT_PTR, DWORD_PTR) {
@@ -1815,6 +1832,16 @@ void CreateControls(State& state) {
         state.add = MakeButton(state, L"新增类型", kAdd, state.content);
         state.remove = MakeButton(state, L"删除", kDelete, state.content);
         state.title_close = MakeButton(state, L"\x00D7", kClose);
+        for (HWND control : {state.computer_name, state.listen, state.port,
+                             state.local, state.remote, state.theme,
+                             state.theme_light, state.save, state.firewall,
+                             state.list, state.add, state.remove}) {
+            if (control) {
+                SetWindowSubclass(control, SettingsWheelProc,
+                                  kSettingsWheelSubclassId,
+                                  reinterpret_cast<DWORD_PTR>(&state));
+            }
+        }
         UpdateSettingsPage(state, SettingsPage::Appearance);
     } else if (state.mode == ManagementMode::Groups) {
         state.list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,

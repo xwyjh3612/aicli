@@ -142,6 +142,7 @@ CREATE TABLE IF NOT EXISTS groups(
 CREATE TABLE IF NOT EXISTS projects(
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
     type_name TEXT NOT NULL,
     group_name TEXT NOT NULL,
     folder TEXT NOT NULL,
@@ -190,14 +191,18 @@ CREATE TABLE IF NOT EXISTS settings(
     if (!Execute(schema, error)) return false;
 
     bool has_sort_order = false;
+    bool has_note = false;
     if (auto columns = Prepare(db_, "PRAGMA table_info(projects);"); columns) {
         while (sqlite3_step(columns.get()) == SQLITE_ROW) {
             const auto* name = reinterpret_cast<const char*>(sqlite3_column_text(columns.get(), 1));
-            if (name && strcmp(name, "sort_order") == 0) {
-                has_sort_order = true;
-                break;
-            }
+            if (!name) continue;
+            if (strcmp(name, "sort_order") == 0) has_sort_order = true;
+            else if (strcmp(name, "note") == 0) has_note = true;
         }
+    }
+    if (!has_note &&
+        !Execute("ALTER TABLE projects ADD COLUMN note TEXT NOT NULL DEFAULT '';", error)) {
+        return false;
     }
     if (has_sort_order) return true;
     if (!Execute("ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;", error)) {
@@ -291,18 +296,19 @@ std::vector<Project> DataStore::LoadProjects() {
     std::vector<Project> result;
     if (!db_) return result;
     auto statement = Prepare(db_,
-        "SELECT id,name,type_name,group_name,folder,command,status,sort_order "
+        "SELECT id,name,note,type_name,group_name,folder,command,status,sort_order "
         "FROM projects ORDER BY group_name COLLATE NOCASE,sort_order,id;");
     while (statement && sqlite3_step(statement.get()) == SQLITE_ROW) {
         Project project;
         project.id = ColumnText(statement.get(), 0);
         project.name = ColumnText(statement.get(), 1);
-        project.type = ColumnText(statement.get(), 2);
-        project.group = ColumnText(statement.get(), 3);
-        project.folder = ColumnText(statement.get(), 4);
-        project.command = ColumnText(statement.get(), 5);
-        project.status = ColumnText(statement.get(), 6);
-        project.sort_order = sqlite3_column_int64(statement.get(), 7);
+        project.note = ColumnText(statement.get(), 2);
+        project.type = ColumnText(statement.get(), 3);
+        project.group = ColumnText(statement.get(), 4);
+        project.folder = ColumnText(statement.get(), 5);
+        project.command = ColumnText(statement.get(), 6);
+        project.status = ColumnText(statement.get(), 7);
+        project.sort_order = sqlite3_column_int64(statement.get(), 8);
         result.push_back(std::move(project));
     }
     return result;
@@ -340,9 +346,9 @@ bool DataStore::SaveProject(Project& project, std::wstring* error) {
         }
     }
     auto statement = Prepare(db_, R"SQL(
-INSERT INTO projects(id,name,type_name,group_name,folder,command,status,sort_order,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?, ?,?)
-ON CONFLICT(id) DO UPDATE SET name=excluded.name,type_name=excluded.type_name,
+INSERT INTO projects(id,name,note,type_name,group_name,folder,command,status,sort_order,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET name=excluded.name,note=excluded.note,type_name=excluded.type_name,
 group_name=excluded.group_name,folder=excluded.folder,command=excluded.command,
 status=excluded.status,sort_order=excluded.sort_order,updated_at=excluded.updated_at;
 )SQL");
@@ -352,15 +358,16 @@ status=excluded.status,sort_order=excluded.sort_order,updated_at=excluded.update
     }
     BindText(statement.get(), 1, project.id);
     BindText(statement.get(), 2, project.name);
-    BindText(statement.get(), 3, project.type);
-    BindText(statement.get(), 4, project.group);
-    BindText(statement.get(), 5, project.folder);
-    BindText(statement.get(), 6, project.command);
-    BindText(statement.get(), 7, project.status);
-    sqlite3_bind_int64(statement.get(), 8, project.sort_order);
+    BindText(statement.get(), 3, project.note);
+    BindText(statement.get(), 4, project.type);
+    BindText(statement.get(), 5, project.group);
+    BindText(statement.get(), 6, project.folder);
+    BindText(statement.get(), 7, project.command);
+    BindText(statement.get(), 8, project.status);
+    sqlite3_bind_int64(statement.get(), 9, project.sort_order);
     const auto now = UnixSeconds();
-    sqlite3_bind_int64(statement.get(), 9, now);
     sqlite3_bind_int64(statement.get(), 10, now);
+    sqlite3_bind_int64(statement.get(), 11, now);
     if (sqlite3_step(statement.get()) == SQLITE_DONE) return true;
     if (error) *error = LastError();
     return false;

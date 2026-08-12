@@ -58,6 +58,11 @@ void PaintMainWindow(HDC target_dc,
     LineTo(dc, client.right, metrics.title_bar_height - 1);
     MoveToEx(dc, 0, client.bottom - metrics.footer_height, nullptr);
     LineTo(dc, client.right, client.bottom - metrics.footer_height);
+    // Separate the sidebar heading/action row from the project items without
+    // adding a border around the list itself.
+    const int sidebar_divider_y = metrics.title_bar_height + 80;
+    MoveToEx(dc, 6, sidebar_divider_y, nullptr);
+    LineTo(dc, metrics.sidebar_width - 6, sidebar_divider_y);
     SelectObject(dc, previous_pen);
     DeleteObject(separator);
 

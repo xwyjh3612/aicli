@@ -16,7 +16,7 @@ void LayoutProjectDialog(HWND h){
     RECT client{}; GetClientRect(h,&client);
     const int availableWidth=static_cast<int>(client.right-client.left);
     const int width=std::min(620,std::max(540,availableWidth-96));
-    const int height=476;
+    const int height=550;
     const int left=(client.right-width)/2, top=(client.bottom-height)/2;
     g_project_panel={left,top,left+width,top+height};
     constexpr int padding=34;
@@ -25,12 +25,16 @@ void LayoutProjectDialog(HWND h){
     g_d_group_rect={left+width/2+12,top+181,left+width-padding,top+216};
     g_d_folder_rect={left+padding,top+255,left+width-padding-122,top+290};
     g_d_command_rect={left+padding,top+329,left+width-padding,top+364};
-    auto placeEdit=[&](HWND control,RECT outer){if(!control)return;aicli::ui::LayoutStyledInput(control,outer,2,5);};
-    auto placeDropDown=[&](HWND control,RECT outer){if(!control)return;const int w=outer.right-outer.left-4,h=outer.bottom-outer.top-8;MoveWindow(control,outer.left+2,outer.top+4,w,h,TRUE);ApplyRoundedRegion(control,w,h,5);};
+    g_d_note_rect={left+padding,top+403,left+width-padding,top+438};
+    // Leave only the one-pixel parent outline visible. Wider insets exposed
+    // the modal background between the fill and border, especially the old
+    // four-pixel vertical gap around dropdown buttons.
+    auto placeEdit=[&](HWND control,RECT outer){if(!control)return;aicli::ui::LayoutStyledInput(control,outer,1,5);};
+    auto placeDropDown=[&](HWND control,RECT outer){if(!control)return;const int w=outer.right-outer.left-2,h=outer.bottom-outer.top-2;MoveWindow(control,outer.left+1,outer.top+1,w,h,TRUE);ApplyRoundedRegion(control,w,h,5);};
     auto placeButton=[&](HWND control,RECT outer){if(!control)return;MoveWindow(control,outer.left,outer.top,outer.right-outer.left,outer.bottom-outer.top,TRUE);ApplyRoundedRegion(control,outer.right-outer.left,outer.bottom-outer.top,7);};
-    placeEdit(g_d_name,g_d_name_rect);if(g_project_dialog_edit)placeEdit(g_d_type,g_d_type_rect);else placeDropDown(g_d_type,g_d_type_rect);placeDropDown(g_d_group,g_d_group_rect);placeEdit(g_d_folder,g_d_folder_rect);placeEdit(g_d_command,g_d_command_rect);
+    placeEdit(g_d_name,g_d_name_rect);placeEdit(g_d_note,g_d_note_rect);placeDropDown(g_d_type,g_d_type_rect);placeDropDown(g_d_group,g_d_group_rect);placeEdit(g_d_folder,g_d_folder_rect);placeEdit(g_d_command,g_d_command_rect);
     RECT browse{g_d_folder_rect.right+12,g_d_folder_rect.top,g_project_panel.right-padding,g_d_folder_rect.bottom}; placeButton(g_d_folder_browse,browse);
-    RECT save{left+padding,top+416,left+width/2-7,top+452}, cancel{left+width/2+7,top+416,left+width-padding,top+452};
+    RECT save{left+padding,top+490,left+width/2-7,top+526}, cancel{left+width/2+7,top+490,left+width-padding,top+526};
     HWND child=GetWindow(h,GW_CHILD); while(child){int id=GetDlgCtrlID(child);if(id==ID_D_OK){MoveWindow(child,save.left,save.top,save.right-save.left,save.bottom-save.top,TRUE);ApplyRoundedRegion(child,save.right-save.left,save.bottom-save.top,8);}if(id==ID_D_CANCEL){MoveWindow(child,cancel.left,cancel.top,cancel.right-cancel.left,cancel.bottom-cancel.top,TRUE);ApplyRoundedRegion(child,cancel.right-cancel.left,cancel.bottom-cancel.top,8);}child=GetWindow(child,GW_HWNDNEXT);}
     aicli::ui::SetModalSurfaceRegion(h,g_project_panel,28);
     InvalidateRect(h,nullptr,FALSE);
@@ -39,6 +43,7 @@ void InvalidateProjectControlFrame(HWND dialog, HWND control) {
     if (!dialog || !control) return;
     RECT frame{};
     if (control == g_d_name) frame = g_d_name_rect;
+    else if (control == g_d_note) frame = g_d_note_rect;
     else if (control == g_d_type) frame = g_d_type_rect;
     else if (control == g_d_group) frame = g_d_group_rect;
     else if (control == g_d_folder) frame = g_d_folder_rect;
@@ -75,17 +80,14 @@ void PaintProjectDialogSurface(HDC dc,RECT client){
     label(L"项目名称 / Tab 标题",g_project_panel.top+81);
     label(L"项目类型",g_project_panel.top+155);
     label(L"分组",g_project_panel.top+155,g_project_panel.left+(g_project_panel.right-g_project_panel.left)/2+12);
-    label(L"项目路径",g_project_panel.top+229);label(L"启动命令",g_project_panel.top+303);
-    if(g_project_dialog_edit){
-        SetTextColor(dc,g_theme.titlebar_muted);
-        RECT locked{g_d_type_rect.right-96,g_project_panel.top+155,g_d_type_rect.right,g_project_panel.top+177};
-        DrawTextW(dc,L"不可修改",-1,&locked,DT_RIGHT|DT_SINGLELINE|DT_VCENTER);
-    }
+    label(L"项目路径",g_project_panel.top+229);
+    label(L"启动命令",g_project_panel.top+303);
+    label(L"备注",g_project_panel.top+377);
     auto outline=[&](RECT rect,HWND control){
         const bool active=GetFocus()==control;
         DrawRoundedOutline(dc,rect,active?accent:border,6);
     };
-    outline(g_d_name_rect,g_d_name);outline(g_d_type_rect,g_d_type);
+    outline(g_d_name_rect,g_d_name);outline(g_d_note_rect,g_d_note);outline(g_d_type_rect,g_d_type);
     outline(g_d_group_rect,g_d_group);outline(g_d_folder_rect,g_d_folder);outline(g_d_command_rect,g_d_command);
 }
 void DrawProjectDropdownItem(const DRAWITEMSTRUCT* item){
@@ -130,19 +132,18 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_CREATE:{
         const std::wstring initialType=g_project_dialog_edit?g_project_draft.type:(g_project_types.empty()?L"Codex":g_project_types.front().name);
         g_d_name=aicli::ui::CreateStyledInput(h,ID_D_NAME,g_font,L"输入项目名称");
-        g_d_type=g_project_dialog_edit
-            ?aicli::ui::CreateStyledInput(h,ID_D_TYPE,g_font,L"",true)
-            :MakeDialogControl(L"BUTTON",initialType.c_str(),BS_NOTIFY|WS_TABSTOP,ID_D_TYPE,h,0,0,1,1);
+        g_d_note=aicli::ui::CreateStyledInput(h,ID_D_NOTE,g_font,L"输入项目备注（可选）");
+        g_d_type=MakeDialogControl(L"BUTTON",initialType.c_str(),BS_NOTIFY|WS_TABSTOP,ID_D_TYPE,h,0,0,1,1);
         const std::wstring initialGroup=g_project_draft.group.empty()?(g_group_name==kAllGroupsName?L"默认分组":g_group_name):g_project_draft.group;
         g_d_group=MakeDialogControl(L"BUTTON",initialGroup.c_str(),BS_NOTIFY|WS_TABSTOP,ID_D_GROUP,h,0,0,1,1);
-        g_d_folder=aicli::ui::CreateStyledInput(h,ID_D_FOLDER,g_font,L"请选择项目文件夹",true);
+        g_d_folder=aicli::ui::CreateStyledInput(h,ID_D_FOLDER,g_font,L"输入或选择项目文件夹");
         g_d_folder_browse=MakeDialogControl(L"BUTTON",L"选择文件夹",BS_PUSHBUTTON|WS_TABSTOP,ID_D_BROWSE,h,0,0,1,1);
         g_d_command=aicli::ui::CreateStyledInput(h,ID_D_COMMAND,g_font,L"输入启动命令");
-        for(HWND field:{g_d_name,g_d_type,g_d_folder,g_d_command})
+        for(HWND field:{g_d_name,g_d_note,g_d_folder,g_d_command})
             aicli::ui::SetStyledInputTheme(field,g_theme);
         MakeDialogControl(L"BUTTON",L"保存",BS_DEFPUSHBUTTON|WS_TABSTOP,ID_D_OK,h,0,0,1,1);
         MakeDialogControl(L"BUTTON",L"取消",BS_PUSHBUTTON|WS_TABSTOP,ID_D_CANCEL,h,0,0,1,1);
-        if(g_project_dialog_edit){aicli::ui::SetStyledInputText(g_d_type,g_project_draft.type);aicli::ui::SetStyledInputText(g_d_name,g_project_draft.name);aicli::ui::SetStyledInputText(g_d_folder,g_project_draft.folder);aicli::ui::SetStyledInputText(g_d_command,g_project_draft.command);}else{aicli::ui::SetStyledInputText(g_d_command,DefaultProjectCommand(initialType));}
+        if(g_project_dialog_edit){SetWindowTextW(g_d_type,g_project_draft.type.c_str());aicli::ui::SetStyledInputText(g_d_name,g_project_draft.name);aicli::ui::SetStyledInputText(g_d_note,g_project_draft.note);aicli::ui::SetStyledInputText(g_d_folder,g_project_draft.folder);aicli::ui::SetStyledInputText(g_d_command,g_project_draft.command);}else{aicli::ui::SetStyledInputText(g_d_command,DefaultProjectCommand(initialType));}
         LayoutProjectDialog(h);SetFocus(g_d_name);return 0; }
     case WM_SIZE: LayoutProjectDialog(h);return 0;
     case WM_ERASEBKGND:return 1;
@@ -150,7 +151,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_NCHITTEST:return HTCLIENT;
     case WM_CTLCOLORSTATIC:{
         HDC dc=(HDC)w;HWND control=(HWND)l;
-        if(control==g_d_folder||(g_project_dialog_edit&&control==g_d_type)){
+        if(control==g_d_folder){
             const bool active=GetFocus()==control;const COLORREF color=active?g_theme.field_focus:g_theme.field;
             SetTextColor(dc,active?fg:g_theme.list_text);SetBkColor(dc,color);SetBkMode(dc,OPAQUE);
             return (LRESULT)(active?g_focus_brush:g_edit_brush);
@@ -163,19 +164,19 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_DRAWITEM: {auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){DrawProjectDropdownItem(item);return TRUE;}if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}} break;
     case WM_COMMAND:
         if((HIWORD(w)==EN_SETFOCUS||HIWORD(w)==EN_KILLFOCUS||HIWORD(w)==BN_SETFOCUS||HIWORD(w)==BN_KILLFOCUS)&&
-           (LOWORD(w)==ID_D_NAME||LOWORD(w)==ID_D_TYPE||LOWORD(w)==ID_D_GROUP||LOWORD(w)==ID_D_FOLDER||LOWORD(w)==ID_D_COMMAND)){
+           (LOWORD(w)==ID_D_NAME||LOWORD(w)==ID_D_NOTE||LOWORD(w)==ID_D_TYPE||LOWORD(w)==ID_D_GROUP||LOWORD(w)==ID_D_FOLDER||LOWORD(w)==ID_D_COMMAND)){
             InvalidateProjectControlFrame(h,(HWND)l);
         }
-        if(LOWORD(w)==ID_D_TYPE&&HIWORD(w)==BN_CLICKED&&!g_project_dialog_edit){ShowProjectDropdown(h,g_d_type,true);return 0;}
+        if(LOWORD(w)==ID_D_TYPE&&HIWORD(w)==BN_CLICKED){ShowProjectDropdown(h,g_d_type,true);return 0;}
         if(LOWORD(w)==ID_D_GROUP&&HIWORD(w)==BN_CLICKED){ShowProjectDropdown(h,g_d_group,false);return 0;}
-        if(LOWORD(w)==ID_D_BROWSE){std::wstring selected;if(PickFolder(h,selected))aicli::ui::SetStyledInputText(g_d_folder,selected);InvalidateProjectControlFrame(h,g_d_folder);return 0;}
+        if(LOWORD(w)==ID_D_BROWSE){std::wstring selected;if(PickFolder(h,selected)){aicli::ui::SetStyledInputText(g_d_folder,selected);if(aicli::ui::GetStyledInputText(g_d_name).empty()){std::filesystem::path folder(selected);while(folder.filename().empty()&&folder.has_parent_path())folder=folder.parent_path();const std::wstring folderName=folder.filename().wstring();if(!folderName.empty())aicli::ui::SetStyledInputText(g_d_name,folderName);}InvalidateProjectControlFrame(h,g_d_folder);InvalidateProjectControlFrame(h,g_d_name);}return 0;}
         if(LOWORD(w)==ID_D_CANCEL){DestroyWindow(h);return 0;}
         if(LOWORD(w)==ID_D_OK){
             g_project_draft.name=aicli::ui::GetStyledInputText(g_d_name);
+            g_project_draft.note=aicli::ui::GetStyledInputText(g_d_note);
             g_project_draft.folder=aicli::ui::GetStyledInputText(g_d_folder);
             g_project_draft.command=aicli::ui::GetStyledInputText(g_d_command);
-            if(g_project_dialog_edit) g_project_draft.type=aicli::ui::GetStyledInputText(g_d_type);
-            else { wchar_t type[256]{}; GetWindowTextW(g_d_type,type,256); g_project_draft.type=type; }
+            wchar_t type[256]{}; GetWindowTextW(g_d_type,type,256); g_project_draft.type=type;
             wchar_t group[256]{}; GetWindowTextW(g_d_group,group,256); g_project_draft.group=group;
             if(g_project_draft.name.empty()){MessageBoxW(h,L"项目名称不能为空。",L"项目详情",MB_OK|MB_ICONWARNING);return 0;}
             std::error_code folderError;
@@ -187,7 +188,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
             g_project_dialog_ok=true;DestroyWindow(h);return 0;
         } break;
     case WM_KEYDOWN:if(w==VK_ESCAPE){DestroyWindow(h);return 0;}break;
-    case WM_DESTROY:g_project_dialog=nullptr;g_d_name=g_d_type=g_d_group=g_d_folder=g_d_folder_browse=g_d_command=nullptr;return 0;
+    case WM_DESTROY:g_project_dialog=nullptr;g_d_name=g_d_note=g_d_type=g_d_group=g_d_folder=g_d_folder_browse=g_d_command=nullptr;return 0;
     case WM_CLOSE:DestroyWindow(h);return 0; }
     return DefWindowProcW(h,m,w,l);
 }

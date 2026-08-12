@@ -8,6 +8,7 @@ namespace aicli {
 struct Project {
     std::wstring id;
     std::wstring name;
+    std::wstring note;
     std::wstring type;
     std::wstring group;
     std::wstring folder;
