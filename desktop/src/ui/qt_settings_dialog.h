@@ -28,6 +28,7 @@ private slots:
     void selectPage(int row);
     void setDarkTheme();
     void setLightTheme();
+    void saveTaskbarWorkingPreference();
     void saveNetwork();
     void addProjectType();
     void editProjectType();
@@ -55,6 +56,11 @@ private:
     QStackedWidget* pages_{};
     QPushButton* dark_theme_{};
     QPushButton* light_theme_{};
+    QPushButton* taskbar_working_{};
+    QPushButton* taskbar_style_progress_{};
+    QPushButton* taskbar_style_overlay_{};
+    QPushButton* taskbar_scope_current_{};
+    QPushButton* taskbar_scope_all_{};
     QLineEdit* computer_name_{};
     QLineEdit* listen_address_{};
     QLineEdit* listen_port_{};

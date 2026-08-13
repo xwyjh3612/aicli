@@ -46,9 +46,14 @@ public final class TerminalView extends View {
     private int visualLogicalLines = -1;
     private int[] visualStarts = new int[0];
     private HistoryLoadListener historyLoadListener;
+    private UserScrollListener userScrollListener;
 
     interface HistoryLoadListener {
         void onHistoryLoadRequested();
+    }
+
+    interface UserScrollListener {
+        void onUserScrollStarted();
     }
 
     private static final class VisualLine {
@@ -102,6 +107,7 @@ public final class TerminalView extends View {
         gestures = new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent event) {
                 if (!scroller.isFinished()) scroller.forceFinished(true);
+                if (userScrollListener != null) userScrollListener.onUserScrollStarted();
                 return true;
             }
 
@@ -184,6 +190,10 @@ public final class TerminalView extends View {
 
     void setHistoryLoadListener(@Nullable HistoryLoadListener listener) {
         historyLoadListener = listener;
+    }
+
+    void setUserScrollListener(@Nullable UserScrollListener listener) {
+        userScrollListener = listener;
     }
 
     int captureHistoryContentHeight() {

@@ -94,6 +94,11 @@ final class TerminalTextRenderer {
         view.scrollToBottom();
     }
 
+    synchronized void releaseFollowBottom() {
+        SessionState state = sessions.get(selectedProjectId);
+        if (state != null) state.followBottom = false;
+    }
+
     synchronized StreamResult reset(String terminalSessionId, long baseSequence,
                                     int rows, int columns) {
         SessionState state = selectedState();

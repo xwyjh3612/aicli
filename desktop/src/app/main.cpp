@@ -433,6 +433,30 @@ bool IsProjectWorking(const Project& project){
     return g_island.HasSession(project.id)&&
            g_working_projects.find(project.id)!=g_working_projects.end();
 }
+void RefreshTaskbarWorkingIndicator(){
+    g_taskbar_working_indicator.SetStyle(
+        g_store.GetSetting(L"taskbar_working_style",L"progress")==L"overlay"
+            ? aicli::ui::TaskbarWorkingStyle::OverlaySpinner
+            : aicli::ui::TaskbarWorkingStyle::ProgressBar);
+    if(g_store.GetSetting(L"taskbar_working_enabled",L"1")==L"0"){
+        g_taskbar_working_indicator.SetWorking(false);
+        return;
+    }
+    const bool currentOnly=
+        g_store.GetSetting(L"taskbar_working_scope",L"all")==L"current";
+    bool working=false;
+    if(currentOnly&&!g_last_project_id.empty()){
+        const auto found=std::find_if(g_projects.begin(),g_projects.end(),[](const Project& project){
+            return project.id==g_last_project_id;
+        });
+        working=found!=g_projects.end()&&IsProjectWorking(*found);
+    }else if(!currentOnly){
+        working=std::any_of(g_projects.begin(),g_projects.end(),[](const Project& project){
+            return IsProjectWorking(project);
+        });
+    }
+    g_taskbar_working_indicator.SetWorking(working);
+}
 bool HasVisibleAnimatedProject(){
     return std::any_of(g_visible_project_indices.begin(),g_visible_project_indices.end(),[](int index){
         return index>=0&&index<static_cast<int>(g_projects.size())&&
@@ -480,10 +504,7 @@ void SetProjectWorkingState(const std::wstring& project_id,bool working){
     if(!changed)return;
     InvalidateProjectRow(project_id);
     SyncProjectSpinnerTimer();
-    const bool anyWorking=std::any_of(g_projects.begin(),g_projects.end(),[](const Project& project){
-        return IsProjectWorking(project);
-    });
-    g_taskbar_working_indicator.SetWorking(anyWorking);
+    RefreshTaskbarWorkingIndicator();
 }
 bool InvalidateWorkingProjectRows(){
     if(!g_list||!IsWindow(g_list))return false;
@@ -541,6 +562,7 @@ void RefreshGitStatus(bool force_redraw=false){
 void RefreshProjectDetails(bool force_git_refresh=false){
     const int index=SelectedProjectIndex();
     if(index<0 || index>=(int)g_projects.size()){
+        g_last_project_id.clear();
         SetText(g_detail_title,L"未选择项目");
         SetText(g_detail_subtitle,L"");
         SetText(g_detail_folder,L"未设置");
@@ -548,6 +570,7 @@ void RefreshProjectDetails(bool force_git_refresh=false){
         SetText(g_detail_note,L"暂无备注");
         SetText(g_detail_state,L"● 尚未启动");
         RefreshGitStatus(force_git_refresh);
+        RefreshTaskbarWorkingIndicator();
         return;
     }
     const auto& project=g_projects[index];
@@ -561,6 +584,7 @@ void RefreshProjectDetails(bool force_git_refresh=false){
     const wchar_t* state=g_island.HasSession(project.id)?L"● 运行中":(project.status==L"paused"?L"● 已暂停":L"● 尚未启动");
     SetText(g_detail_state,state);
     RefreshGitStatus(force_git_refresh);
+    RefreshTaskbarWorkingIndicator();
 }
 
 bool InitializePersistentState() {
@@ -990,7 +1014,8 @@ void OpenSettingsDialog() {
         [](const aicli::agent::AgentConfig& config, std::wstring* error) {
             return RestartAgent(config, error);
         },
-        [](bool) { ApplyLiveTheme(); });
+        [](bool) { ApplyLiveTheme(); },
+        [] { RefreshTaskbarWorkingIndicator(); });
     (void)result;
     // Theme selection is saved immediately, even when the dialog is closed
     // without pressing another save button. Repaint the complete workspace

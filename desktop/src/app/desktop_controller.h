@@ -67,6 +67,7 @@ public:
     bool HasSession(const std::wstring& project_id) const;
     bool IsProjectWorking(const std::wstring& project_id) const;
     bool AnyProjectWorking() const;
+    bool ShouldShowTaskbarWorking();
     bool ActivateProject(const std::wstring& project_id, bool focus = true);
     void ResizeTerminal(int width, int height);
     void SetTerminalVisible(bool visible);
@@ -84,6 +85,8 @@ public:
     void ReloadModels();
     void SetGroup(const std::wstring& group);
     void SetTheme(bool light);
+    void SetTaskbarWorkingPreference(bool enabled, bool current_project_only,
+                                     bool overlay_spinner);
     void RefreshTerminalViewport();
 
     std::vector<int> VisibleProjectIndices(const std::wstring& query) const;

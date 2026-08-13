@@ -1,20 +1,46 @@
 package com.aitest.aicli;
 
+import android.Manifest;
+import android.content.ContentResolver;
+import android.content.res.ColorStateList;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.ImageDecoder;
+import android.graphics.Rect;
+import android.net.Uri;
 import android.os.Bundle;
+import androidx.core.content.FileProvider;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewTreeObserver;
+import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.view.animation.AlphaAnimation;
+import android.view.animation.Animation;
 import android.widget.ArrayAdapter;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.OnBackPressedCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.core.view.GravityCompat;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -27,6 +53,10 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 
 import java.util.ArrayList;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -38,6 +68,7 @@ public final class MainActivity extends AppCompatActivity {
     private static final String APP_PREFS = "app_settings";
     private static final String ALL_GROUPS = "__all__";
     private static final String LAST_CONVERSATION_PREFIX = "last_conversation.";
+    private static final String LAST_IME_HEIGHT_KEY = "last_ime_height";
     private static final long[] POST_SEND_REPLAY_DELAYS_MS = {220L, 900L};
 
     private final List<AicliClient.Conversation> allConversations = new ArrayList<>();
@@ -57,6 +88,8 @@ public final class MainActivity extends AppCompatActivity {
     private long serverGeneration;
 
     private DrawerLayout drawerLayout;
+    private View mainHeader;
+    private View conversationContent;
     private View computerSelectorLayout;
     private MaterialAutoCompleteTextView computerSelector;
     private View groupSelectorLayout;
@@ -64,8 +97,12 @@ public final class MainActivity extends AppCompatActivity {
     private View emptyState;
     private TextView emptyStateTitle;
     private TextView emptyStateMessage;
-    private TextView currentProjectTitle;
+    private TextView currentComputerTitle;
     private TextView currentProjectMeta;
+    private ImageView localConnectionIcon;
+    private ImageView remoteConnectionIcon;
+    private ImageView localCurrentRouteIcon;
+    private ImageView remoteCurrentRouteIcon;
     private TextView drawerConnectionStatus;
     private TextView drawerGroupLabel;
     private TerminalView terminalView;
@@ -74,10 +111,28 @@ public final class MainActivity extends AppCompatActivity {
     private View inputBar;
     private MaterialButton startProjectButton;
     private MaterialButton wrapButton;
+    private MaterialButton sendButton;
     private EditText messageInput;
     private RecyclerView conversationList;
     private boolean terminalReconnectScheduled;
     private long postSendReplayGeneration;
+    private boolean terminalKeyPanelVisible;
+    private boolean imeVisible;
+    private int systemBottomInsetPx;
+    private final Rect visibleWindowFrame = new Rect();
+    private ViewTreeObserver.OnGlobalLayoutListener visibleWindowLayoutListener;
+    private int conversationBasePaddingBottom;
+    private int conversationKeyboardInsetPx = Integer.MIN_VALUE;
+    private int headerBasePaddingLeft;
+    private int headerBasePaddingRight;
+    private int headerBasePaddingBottom;
+    private int headerTopInsetPx = Integer.MIN_VALUE;
+    private int lastImeHeightPx;
+    private ActivityResultLauncher<String> galleryLauncher;
+    private ActivityResultLauncher<Uri> cameraLauncher;
+    private ActivityResultLauncher<String> cameraPermissionLauncher;
+    private Uri pendingCameraUri;
+    private File pendingCameraFile;
 
     private void initializeDeviceIdentity() {
         SharedPreferences preferences = getSharedPreferences("device_identity", MODE_PRIVATE);
@@ -96,11 +151,25 @@ public final class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // API 27 devices ignore ADJUST_RESIZE while the decor remains in
+        // layout-fullscreen mode. Material/AppCompat can retain those flags
+        // even when the manifest requests resize, so clear them explicitly.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        registerImageLaunchers();
         setContentView(R.layout.activity_main);
+        enforceResizableWindow();
+        getWindow().getDecorView().post(this::enforceResizableWindow);
         initializeDeviceIdentity();
         connectionStore = new ComputerConnectionStore(this);
 
         drawerLayout = findViewById(R.id.drawerLayout);
+        mainHeader = findViewById(R.id.mainHeader);
+        headerBasePaddingLeft = mainHeader.getPaddingLeft();
+        headerBasePaddingRight = mainHeader.getPaddingRight();
+        headerBasePaddingBottom = mainHeader.getPaddingBottom();
+        conversationContent = findViewById(R.id.conversationContent);
+        conversationBasePaddingBottom = conversationContent.getPaddingBottom();
         computerSelectorLayout = findViewById(R.id.computerSelectorLayout);
         computerSelector = findViewById(R.id.computerSelector);
         groupSelectorLayout = findViewById(R.id.groupSelectorLayout);
@@ -108,19 +177,27 @@ public final class MainActivity extends AppCompatActivity {
         emptyState = findViewById(R.id.emptyState);
         emptyStateTitle = findViewById(R.id.emptyStateTitle);
         emptyStateMessage = findViewById(R.id.emptyStateMessage);
-        currentProjectTitle = findViewById(R.id.currentProjectTitle);
+        currentComputerTitle = findViewById(R.id.currentComputerTitle);
         currentProjectMeta = findViewById(R.id.currentProjectMeta);
+        localConnectionIcon = findViewById(R.id.localConnectionIcon);
+        remoteConnectionIcon = findViewById(R.id.remoteConnectionIcon);
+        localCurrentRouteIcon = findViewById(R.id.localCurrentRouteIcon);
+        remoteCurrentRouteIcon = findViewById(R.id.remoteCurrentRouteIcon);
         drawerConnectionStatus = findViewById(R.id.drawerConnectionStatus);
         drawerGroupLabel = findViewById(R.id.drawerGroupLabel);
         terminalView = findViewById(R.id.terminalView);
         terminalRenderer = new TerminalTextRenderer(terminalView);
         terminalView.setHistoryLoadListener(this::loadOlderTerminalHistory);
+        terminalView.setUserScrollListener(terminalRenderer::releaseFollowBottom);
         terminalKeyBar = findViewById(R.id.terminalKeyBar);
         inputBar = findViewById(R.id.inputBar);
         startProjectButton = findViewById(R.id.startProjectButton);
         wrapButton = findViewById(R.id.wrapButton);
+        sendButton = findViewById(R.id.sendButton);
         messageInput = findViewById(R.id.messageInput);
         conversationList = findViewById(R.id.conversationList);
+        lastImeHeightPx = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
+                .getInt(LAST_IME_HEIGHT_KEY, dpToPx(260));
 
         selectedGroup = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
                 .getString("selected_group", ALL_GROUPS);
@@ -151,7 +228,7 @@ public final class MainActivity extends AppCompatActivity {
         findViewById(R.id.conversationsButton).setOnClickListener(view -> toggleConversationList());
         findViewById(R.id.closeDrawerButton).setOnClickListener(view ->
                 drawerLayout.closeDrawer(GravityCompat.START));
-        findViewById(R.id.sendButton).setOnClickListener(view -> sendInput());
+        sendButton.setOnClickListener(view -> handleComposerAction());
         startProjectButton.setOnClickListener(view -> startSelectedProject());
         wrapButton.setOnClickListener(view -> toggleSoftWrap());
         findViewById(R.id.keyLeftButton).setOnClickListener(view -> sendTerminalKey("left"));
@@ -159,6 +236,33 @@ public final class MainActivity extends AppCompatActivity {
         findViewById(R.id.keyDownButton).setOnClickListener(view -> sendTerminalKey("down"));
         findViewById(R.id.keyRightButton).setOnClickListener(view -> sendTerminalKey("right"));
         findViewById(R.id.keyEnterButton).setOnClickListener(view -> sendTerminalKey("enter"));
+        findViewById(R.id.cameraButton).setOnClickListener(view -> openCamera());
+        findViewById(R.id.galleryButton).setOnClickListener(view ->
+                galleryLauncher.launch("image/*"));
+
+        messageInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start,
+                    int count, int after) { }
+            @Override public void onTextChanged(CharSequence value, int start,
+                    int before, int count) {
+                updateComposerAction();
+            }
+            @Override public void afterTextChanged(Editable value) { }
+        });
+        messageInput.setOnTouchListener((view, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_DOWN && terminalKeyPanelVisible) {
+                switchPanelToKeyboard();
+            }
+            return false;
+        });
+        messageInput.setOnFocusChangeListener((view, hasFocus) -> {
+            if (hasFocus && !terminalKeyPanelVisible) {
+                terminalRenderer.followBottom();
+                terminalView.post(terminalView::scrollToBottom);
+            }
+        });
+        observeImeHeight();
+        updateComposerAction();
 
         messageInput.setOnEditorActionListener((view, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_SEND ||
@@ -172,7 +276,9 @@ public final class MainActivity extends AppCompatActivity {
 
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() {
-                if (drawerLayout.isDrawerOpen(GravityCompat.START)) {
+                if (terminalKeyPanelVisible) {
+                    hideTerminalKeyPanel(false);
+                } else if (drawerLayout.isDrawerOpen(GravityCompat.START)) {
                     drawerLayout.closeDrawer(GravityCompat.START);
                 } else {
                     setEnabled(false);
@@ -185,6 +291,22 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) enforceResizableWindow();
+    }
+
+    @SuppressWarnings("deprecation")
+    private void enforceResizableWindow() {
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN |
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS |
+                WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS |
+                WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         configureClient();
@@ -192,7 +314,15 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        if (client != null) client.close();
+        if (visibleWindowLayoutListener != null && drawerLayout != null &&
+                drawerLayout.getViewTreeObserver().isAlive()) {
+            drawerLayout.getViewTreeObserver().removeOnGlobalLayoutListener(
+                    visibleWindowLayoutListener);
+        }
+        if (client != null) {
+            client.setRouteStatusListener(null);
+            client.close();
+        }
         super.onDestroy();
     }
 
@@ -218,13 +348,22 @@ public final class MainActivity extends AppCompatActivity {
                     + preferences.getString("computerId", "")
                 : activeComputer.connectionKey();
         if (client == null || !connectionKey.equals(configuredConnectionKey)) {
-            if (client != null) client.close();
+            if (client != null) {
+                client.setRouteStatusListener(null);
+                client.close();
+            }
             client = new AicliClient(this, "");
+            client.setRouteStatusListener(this::handleRouteStatus);
             configuredConnectionKey = connectionKey;
             serverGeneration++;
             resetForComputerChange();
         }
         if (baseUrl.isEmpty()) {
+            updateComputerTitle();
+            renderRouteStatus(localConnectionIcon, localCurrentRouteIcon,
+                    "本地", AicliClient.RouteHealth.UNAVAILABLE, false);
+            renderRouteStatus(remoteConnectionIcon, remoteCurrentRouteIcon,
+                    "远程", AicliClient.RouteHealth.UNAVAILABLE, false);
             setConnectionStatus("未绑定电脑");
             showEmptyState("连接你的 AI 工作台", "扫描电脑端二维码后，即可查看进度并继续当前会话。");
             allConversations.clear();
@@ -251,6 +390,7 @@ public final class MainActivity extends AppCompatActivity {
                     allConversations.clear();
                     allConversations.addAll(conversations);
                     refreshComputerSelector(connectionStore.active());
+                    updateComputerTitle();
                     prepareLastConversationRestore(conversations);
                     rebuildGroupSelector(conversations);
                     setConnectionStatus(activeComputerName() + " · 已连接 · "
@@ -407,6 +547,360 @@ public final class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> appendOutput("[发送失败] " + message));
             }
         });
+    }
+
+    private void handleComposerAction() {
+        if (messageInput.getText().length() > 0) {
+            sendInput();
+            return;
+        }
+        if (terminalKeyPanelVisible) {
+            hideTerminalKeyPanel(true);
+        } else {
+            showTerminalKeyPanel();
+        }
+    }
+
+    private void registerImageLaunchers() {
+        galleryLauncher = registerForActivityResult(
+                new ActivityResultContracts.GetContent(), uri -> {
+                    if (uri != null) importImage(uri);
+                });
+        cameraLauncher = registerForActivityResult(
+                new ActivityResultContracts.TakePicture(), saved -> {
+                    if (saved && pendingCameraUri != null) importImage(pendingCameraUri);
+                    else deletePendingCameraFile();
+                });
+        cameraPermissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestPermission(), granted -> {
+                    if (granted) launchCameraCapture();
+                    else Toast.makeText(this, "需要相机权限才能拍照", Toast.LENGTH_SHORT).show();
+                });
+    }
+
+    private void openCamera() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED) {
+            launchCameraCapture();
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA);
+        }
+    }
+
+    private void launchCameraCapture() {
+        try {
+            File directory = new File(getCacheDir(), "camera");
+            if (!directory.exists() && !directory.mkdirs()) {
+                throw new IOException("无法创建拍照缓存目录");
+            }
+            pendingCameraFile = File.createTempFile("aicli-camera-", ".jpg", directory);
+            pendingCameraUri = FileProvider.getUriForFile(
+                    this, getPackageName() + ".fileprovider", pendingCameraFile);
+            cameraLauncher.launch(pendingCameraUri);
+        } catch (Exception error) {
+            deletePendingCameraFile();
+            Toast.makeText(this, "无法打开相机：" + error.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void deletePendingCameraFile() {
+        if (pendingCameraFile != null && pendingCameraFile.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            pendingCameraFile.delete();
+        }
+        pendingCameraFile = null;
+        pendingCameraUri = null;
+    }
+
+    private void importImage(Uri uri) {
+        Toast.makeText(this, "正在处理图片…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            try {
+                ContentResolver resolver = getContentResolver();
+                Bitmap bitmap;
+                if (android.os.Build.VERSION.SDK_INT >= 28) {
+                    bitmap = ImageDecoder.decodeBitmap(
+                            ImageDecoder.createSource(resolver, uri),
+                            (decoder, info, source) -> {
+                                decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
+                                int width = info.getSize().getWidth();
+                                int height = info.getSize().getHeight();
+                                int largest = Math.max(width, height);
+                                if (largest > 2048) {
+                                    float scale = 2048f / largest;
+                                    decoder.setTargetSize(
+                                            Math.max(1, Math.round(width * scale)),
+                                            Math.max(1, Math.round(height * scale)));
+                                }
+                            });
+                } else {
+                    BitmapFactory.Options bounds = new BitmapFactory.Options();
+                    bounds.inJustDecodeBounds = true;
+                    try (InputStream input = resolver.openInputStream(uri)) {
+                        BitmapFactory.decodeStream(input, null, bounds);
+                    }
+                    BitmapFactory.Options options = new BitmapFactory.Options();
+                    int largest = Math.max(bounds.outWidth, bounds.outHeight);
+                    while (largest / options.inSampleSize > 2048) options.inSampleSize *= 2;
+                    try (InputStream input = resolver.openInputStream(uri)) {
+                        bitmap = BitmapFactory.decodeStream(input, null, options);
+                    }
+                }
+                if (bitmap == null) throw new IOException("无法读取所选图片");
+                uploadBitmap(bitmap);
+            } catch (Exception error) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "图片读取失败：" + error.getMessage(), Toast.LENGTH_LONG).show());
+            } finally {
+                if (pendingCameraUri != null && pendingCameraUri.equals(uri)) {
+                    deletePendingCameraFile();
+                }
+            }
+        }, "aicli-image-import").start();
+    }
+
+    private void uploadBitmap(Bitmap original) {
+        if (selectedConversationId == null || client == null) return;
+        new Thread(() -> {
+            Bitmap prepared = original;
+            try {
+                final int maximumDimension = 2048;
+                int width = original.getWidth();
+                int height = original.getHeight();
+                int largest = Math.max(width, height);
+                if (largest > maximumDimension) {
+                    float scale = maximumDimension / (float) largest;
+                    prepared = Bitmap.createScaledBitmap(original,
+                            Math.max(1, Math.round(width * scale)),
+                            Math.max(1, Math.round(height * scale)), true);
+                }
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                int quality = 88;
+                prepared.compress(Bitmap.CompressFormat.JPEG, quality, output);
+                while (output.size() > 5 * 1024 * 1024 && quality > 55) {
+                    output.reset();
+                    quality -= 8;
+                    prepared.compress(Bitmap.CompressFormat.JPEG, quality, output);
+                }
+                if (output.size() > 5 * 1024 * 1024) throw new IOException("图片压缩后仍超过 5MB");
+                byte[] bytes = output.toByteArray();
+                String conversationId = selectedConversationId;
+                runOnUiThread(() -> Toast.makeText(this,
+                        "正在上传图片…", Toast.LENGTH_SHORT).show());
+                client.uploadImage(conversationId, bytes, "image/jpeg",
+                        new AicliClient.AttachmentCallback() {
+                    @Override public void onSuccess(String path) {
+                        runOnUiThread(() -> insertUploadedImagePath(path));
+                    }
+                    @Override public void onError(String message) {
+                        runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                                "图片上传失败：" + message, Toast.LENGTH_LONG).show());
+                    }
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "图片处理失败：" + error.getMessage(), Toast.LENGTH_LONG).show());
+            } finally {
+                if (!prepared.isRecycled()) prepared.recycle();
+                if (prepared != original && !original.isRecycled()) original.recycle();
+            }
+        }, "aicli-image-upload").start();
+    }
+
+    private void insertUploadedImagePath(String path) {
+        if (path == null || path.isEmpty()) {
+            Toast.makeText(this, "电脑没有返回图片路径", Toast.LENGTH_LONG).show();
+            return;
+        }
+        String current = messageInput.getText().toString();
+        String reference = '"' + path + '"';
+        if (!current.isEmpty() && !Character.isWhitespace(current.charAt(current.length() - 1))) {
+            current += " ";
+        }
+        messageInput.setText(current + reference + " ");
+        messageInput.setSelection(messageInput.length());
+        hideTerminalKeyPanel(true);
+        Toast.makeText(this, "图片已上传，可补充问题后发送", Toast.LENGTH_SHORT).show();
+    }
+
+    private void showTerminalKeyPanel() {
+        if (selectedConversation == null ||
+                !"running".equalsIgnoreCase(selectedConversation.status)) return;
+        int availableHeight = drawerLayout.getHeight() - dpToPx(180);
+        int panelHeight = lastImeHeightPx;
+        if (panelHeight < dpToPx(160)) panelHeight = dpToPx(260);
+        if (availableHeight > 0) panelHeight = Math.min(panelHeight, availableHeight);
+        android.view.ViewGroup.LayoutParams params = terminalKeyBar.getLayoutParams();
+        if (params.height != panelHeight) {
+            params.height = panelHeight;
+            terminalKeyBar.setLayoutParams(params);
+        }
+        terminalKeyPanelVisible = true;
+        messageInput.clearFocus();
+        setConversationKeyboardInset(0);
+        terminalKeyBar.setVisibility(View.VISIBLE);
+        terminalKeyBar.setAlpha(1f);
+        if (imeVisible) {
+            hideSoftKeyboard();
+        }
+        terminalView.post(terminalView::scrollToBottom);
+        updateComposerAction();
+    }
+
+    private void hideTerminalKeyPanel(boolean reopenKeyboard) {
+        if (reopenKeyboard) {
+            switchPanelToKeyboard();
+            return;
+        }
+        terminalKeyPanelVisible = false;
+        terminalKeyBar.setAlpha(1f);
+        terminalKeyBar.setVisibility(View.GONE);
+        setConversationKeyboardInset(0);
+        updateComposerAction();
+    }
+
+    private void switchPanelToKeyboard() {
+        terminalKeyPanelVisible = false;
+        messageInput.requestFocus();
+        updateComposerAction();
+        showSoftKeyboard();
+        terminalKeyBar.postDelayed(() -> {
+            if (!terminalKeyPanelVisible && !imeVisible) {
+                terminalKeyBar.setVisibility(View.GONE);
+                terminalKeyBar.setAlpha(1f);
+                terminalView.post(terminalView::scrollToBottom);
+            }
+        }, 400L);
+    }
+
+    private void showSoftKeyboard() {
+        messageInput.requestFocus();
+        WindowInsetsControllerCompat controller =
+                ViewCompat.getWindowInsetsController(messageInput);
+        if (controller != null) {
+            controller.show(WindowInsetsCompat.Type.ime());
+            return;
+        }
+        InputMethodManager manager =
+                (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (manager != null) manager.showSoftInput(messageInput, InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    private void hideSoftKeyboard() {
+        WindowInsetsControllerCompat controller =
+                ViewCompat.getWindowInsetsController(messageInput);
+        if (controller != null) {
+            controller.hide(WindowInsetsCompat.Type.ime());
+            return;
+        }
+        InputMethodManager manager =
+                (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (manager != null) manager.hideSoftInputFromWindow(messageInput.getWindowToken(), 0);
+    }
+
+    private void observeImeHeight() {
+        ViewCompat.setOnApplyWindowInsetsListener(drawerLayout, (view, insets) -> {
+            applyHeaderTopInset(insets.getInsets(
+                    WindowInsetsCompat.Type.statusBars()).top);
+            systemBottomInsetPx = insets.getInsets(
+                    WindowInsetsCompat.Type.navigationBars()).bottom;
+            int imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
+            if (insets.isVisible(WindowInsetsCompat.Type.ime()) && imeBottom > 0) {
+                rememberImeHeight(Math.max(0, imeBottom - systemBottomInsetPx));
+            }
+            return insets;
+        });
+        visibleWindowLayoutListener = this::updateVisibleWindowLayout;
+        drawerLayout.getViewTreeObserver().addOnGlobalLayoutListener(
+                visibleWindowLayoutListener);
+        ViewCompat.requestApplyInsets(drawerLayout);
+    }
+
+    private void updateVisibleWindowLayout() {
+        if (drawerLayout == null || conversationContent == null ||
+                !drawerLayout.isAttachedToWindow()) return;
+        View root = drawerLayout.getRootView();
+        root.getWindowVisibleDisplayFrame(visibleWindowFrame);
+        int[] rootLocation = new int[2];
+        int[] contentLocation = new int[2];
+        root.getLocationOnScreen(rootLocation);
+        conversationContent.getLocationOnScreen(contentLocation);
+        applyHeaderTopInset(Math.max(0, visibleWindowFrame.top - rootLocation[1]));
+        int rootBottom = rootLocation[1] + root.getHeight();
+        int coveredHeight = Math.max(0, rootBottom - visibleWindowFrame.bottom);
+        boolean keyboardVisible = coveredHeight >= dpToPx(120);
+        imeVisible = keyboardVisible;
+        if (!keyboardVisible) {
+            if (!terminalKeyPanelVisible) setConversationKeyboardInset(0);
+            return;
+        }
+
+        rememberImeHeight(Math.max(0, coveredHeight - systemBottomInsetPx));
+        if (!terminalKeyPanelVisible && terminalKeyBar.getVisibility() == View.VISIBLE) {
+            terminalKeyBar.setVisibility(View.GONE);
+            terminalKeyBar.setAlpha(1f);
+        }
+        if (!terminalKeyPanelVisible) {
+            int contentBottom = contentLocation[1] + conversationContent.getHeight();
+            int keyboardOverlap = Math.max(0, contentBottom - visibleWindowFrame.bottom);
+            setConversationKeyboardInset(keyboardOverlap);
+            terminalView.post(terminalView::scrollToBottom);
+        }
+    }
+
+    private void setConversationKeyboardInset(int inset) {
+        int safeInset = Math.max(0, inset);
+        if (conversationKeyboardInsetPx == safeInset) return;
+        conversationKeyboardInsetPx = safeInset;
+        conversationContent.setPadding(conversationContent.getPaddingLeft(),
+                conversationContent.getPaddingTop(), conversationContent.getPaddingRight(),
+                conversationBasePaddingBottom + safeInset);
+    }
+
+    private void applyHeaderTopInset(int inset) {
+        if (mainHeader == null) return;
+        int safeInset = Math.max(0, inset);
+        if (headerTopInsetPx == safeInset) return;
+        headerTopInsetPx = safeInset;
+        mainHeader.setPadding(headerBasePaddingLeft, safeInset,
+                headerBasePaddingRight, headerBasePaddingBottom);
+    }
+
+    private void rememberImeHeight(int height) {
+        if (height < dpToPx(160) || height == lastImeHeightPx) return;
+        lastImeHeightPx = height;
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit()
+                .putInt(LAST_IME_HEIGHT_KEY, height).apply();
+    }
+
+    private void updateComposerAction() {
+        if (sendButton == null || messageInput == null) return;
+        boolean hasInput = messageInput.getText().length() > 0;
+        int color;
+        if (hasInput) {
+            sendButton.setIconResource(R.drawable.ic_send);
+            sendButton.setContentDescription("发送");
+            color = ContextCompat.getColor(this, R.color.aicli_primary);
+            sendButton.setStrokeWidth(0);
+            sendButton.setIconTint(ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.aicli_text)));
+        } else {
+            sendButton.setIconResource(terminalKeyPanelVisible
+                    ? R.drawable.ic_panel_return : R.drawable.ic_add);
+            sendButton.setContentDescription(terminalKeyPanelVisible
+                    ? "返回输入键盘" : "展开终端按键");
+            color = ContextCompat.getColor(this, R.color.aicli_surface_high);
+            sendButton.setStrokeWidth(dpToPx(1));
+            sendButton.setStrokeColor(ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.aicli_outline_strong)));
+            sendButton.setIconTint(ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.aicli_text_secondary)));
+        }
+        sendButton.setBackgroundTintList(ColorStateList.valueOf(color));
+    }
+
+    private int dpToPx(int dp) {
+        return Math.round(dp * getResources().getDisplayMetrics().density);
     }
 
     /**
@@ -702,6 +1196,49 @@ public final class MainActivity extends AppCompatActivity {
         drawerConnectionStatus.setText(value);
     }
 
+    private void handleRouteStatus(AicliClient.RouteHealth local,
+                                   AicliClient.RouteHealth remote,
+                                   boolean usingLocal, boolean usingRemote) {
+        runOnUiThread(() -> {
+            renderRouteStatus(localConnectionIcon, localCurrentRouteIcon,
+                    "本地", local, usingLocal);
+            renderRouteStatus(remoteConnectionIcon, remoteCurrentRouteIcon,
+                    "远程", remote, usingRemote);
+        });
+    }
+
+    private void renderRouteStatus(ImageView icon, ImageView currentRouteIcon, String name,
+                                   AicliClient.RouteHealth health,
+                                   boolean activeRoute) {
+        if (icon == null || currentRouteIcon == null) return;
+        icon.clearAnimation();
+        int iconColor;
+        String state;
+        if (health == AicliClient.RouteHealth.ONLINE) {
+            iconColor = getColor(R.color.aicli_running);
+            state = "已连接";
+        } else if (health == AicliClient.RouteHealth.CONNECTING) {
+            iconColor = getColor(R.color.aicli_connection_connecting);
+            state = "连接中";
+            AlphaAnimation pulse = new AlphaAnimation(0.28f, 1f);
+            pulse.setDuration(520L);
+            pulse.setRepeatMode(Animation.REVERSE);
+            pulse.setRepeatCount(Animation.INFINITE);
+            icon.startAnimation(pulse);
+        } else if (health == AicliClient.RouteHealth.OFFLINE) {
+            iconColor = getColor(R.color.aicli_connection_failed);
+            state = "连接失败";
+        } else {
+            iconColor = getColor(R.color.aicli_text_tertiary);
+            state = "未连接";
+        }
+        icon.setImageTintList(android.content.res.ColorStateList.valueOf(iconColor));
+        icon.setContentDescription(name + "，" + state);
+        boolean current = activeRoute && health == AicliClient.RouteHealth.ONLINE;
+        currentRouteIcon.setVisibility(current ? View.VISIBLE : View.GONE);
+        currentRouteIcon.setContentDescription(current ? name + "，当前连接" : null);
+    }
+
     private void switchComputer(ComputerConnectionStore.Computer computer) {
         if (computer == null) return;
         ComputerConnectionStore.Computer active = connectionStore.active();
@@ -731,6 +1268,7 @@ public final class MainActivity extends AppCompatActivity {
         computerSelector.setText(selectedIndex >= 0
                 ? labels.get(selectedIndex) : "未绑定服务端", false);
         computerSelectorLayout.setVisibility(View.VISIBLE);
+        updateComputerTitle();
         rebuildingComputers = false;
     }
 
@@ -789,7 +1327,15 @@ public final class MainActivity extends AppCompatActivity {
 
     private String activeComputerName() {
         ComputerConnectionStore.Computer active = connectionStore.active();
-        return active == null ? "电脑" : active.displayName();
+        if (active == null) return "电脑";
+        return active.name == null || active.name.trim().isEmpty()
+                ? active.displayName() : active.name.trim();
+    }
+
+    private void updateComputerTitle() {
+        if (currentComputerTitle != null) currentComputerTitle.setText(
+                connectionStore == null || connectionStore.active() == null
+                        ? "未绑定电脑" : activeComputerName());
     }
 
     private static String computerLabel(ComputerConnectionStore.Computer computer) {
@@ -797,22 +1343,24 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void updateProjectHeader(AicliClient.Conversation conversation) {
+        updateComputerTitle();
         if (conversation == null) {
-            currentProjectTitle.setText("未选择项目");
-            currentProjectMeta.setText("项目分组 · 项目类型");
+            currentProjectMeta.setText("未选择项目 · 未设置类型");
             return;
         }
-        String group = conversation.group.isEmpty() ? "默认分组" : conversation.group;
         String type = conversation.type.isEmpty() ? conversation.provider : conversation.type;
-        currentProjectTitle.setText(conversation.name.isEmpty() ? "未命名项目" : conversation.name);
-        currentProjectMeta.setText(group + " · " + (type.isEmpty() ? "未设置类型" : type));
+        String project = conversation.name.isEmpty() ? "未命名项目" : conversation.name;
+        currentProjectMeta.setText(project + " · " + (type.isEmpty() ? "未设置类型" : type));
     }
 
     private void updateProjectControls(AicliClient.Conversation conversation) {
         boolean running = conversation != null &&
                 "running".equalsIgnoreCase(conversation.status);
-        terminalKeyBar.setVisibility(running ? View.VISIBLE : View.GONE);
+        if (!running) terminalKeyPanelVisible = false;
+        terminalKeyBar.setVisibility(running && terminalKeyPanelVisible
+                ? View.VISIBLE : View.GONE);
         inputBar.setVisibility(running ? View.VISIBLE : View.GONE);
+        updateComposerAction();
         startProjectButton.setVisibility(conversation != null && !running
                 ? View.VISIBLE : View.GONE);
         startProjectButton.setEnabled(true);
@@ -838,6 +1386,7 @@ public final class MainActivity extends AppCompatActivity {
         updateProjectHeader(null);
         terminalRenderer.detach();
         terminalView.setVisibility(View.GONE);
+        terminalKeyPanelVisible = false;
         terminalKeyBar.setVisibility(View.GONE);
         startProjectButton.setVisibility(View.GONE);
         inputBar.setVisibility(View.GONE);

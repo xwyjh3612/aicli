@@ -55,6 +55,15 @@
                     android:textStyle="bold" />
 
                 <TextView
+                    android:id="@+id/computerOnlineStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="未连接"
+                    android:textColor="@color/aicli_text_tertiary"
+                    android:textSize="11sp" />
+
+                <TextView
                     android:id="@+id/computerActiveBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"

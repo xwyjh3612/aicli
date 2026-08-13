@@ -3,6 +3,8 @@ package com.aitest.aicli;
 import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.View;
 import android.widget.Button;
 import android.widget.PopupMenu;
@@ -28,7 +30,9 @@ import com.journeyapps.barcodescanner.ScanOptions;
 
 import java.text.DateFormat;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** Connection, multi-desktop management, QR pairing and Android settings. */
@@ -39,6 +43,7 @@ public final class SettingsActivity extends AppCompatActivity {
     private static final int MENU_DETAILS = 2;
     private static final int MENU_REMARK = 3;
     private static final int MENU_DELETE = 4;
+    private static final long AVAILABILITY_REFRESH_MS = 15_000L;
 
     private TextInputEditText deviceNameInput;
     private TextView deviceNameStatus;
@@ -50,6 +55,17 @@ public final class SettingsActivity extends AppCompatActivity {
     private ComputerConnectionStore connectionStore;
     private AicliClient client;
     private boolean scannerOpened;
+    private final Handler availabilityHandler = new Handler(Looper.getMainLooper());
+    private final Map<String, AicliClient> availabilityClients = new HashMap<>();
+    private long availabilityGeneration;
+    private boolean availabilityMonitoring;
+    private final Runnable availabilityRefresh = new Runnable() {
+        @Override public void run() {
+            if (!availabilityMonitoring) return;
+            probeAllComputers();
+            availabilityHandler.postDelayed(this, AVAILABILITY_REFRESH_MS);
+        }
+    };
 
     private final ActivityResultLauncher<ScanOptions> scanner =
             registerForActivityResult(new ScanContract(), this::onScanResult);
@@ -103,6 +119,19 @@ public final class SettingsActivity extends AppCompatActivity {
         if (getIntent().getBooleanExtra(EXTRA_OPEN_SCANNER, false)) {
             addComputerButton.postDelayed(this::startQrBinding, 180L);
         }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        availabilityMonitoring = true;
+        scheduleAvailabilityRefresh(true);
+    }
+
+    @Override
+    protected void onPause() {
+        stopAvailabilityMonitoring();
+        super.onPause();
     }
 
     private void saveDeviceName() {
@@ -330,6 +359,7 @@ public final class SettingsActivity extends AppCompatActivity {
                     else {
                         refreshComputerList();
                         updateStatus();
+                        scheduleAvailabilityRefresh(true);
                     }
                     dialog.dismiss();
                     Toast.makeText(this, "服务端连接设置已保存", Toast.LENGTH_SHORT).show();
@@ -390,6 +420,7 @@ public final class SettingsActivity extends AppCompatActivity {
         else {
             refreshComputerList();
             updateStatus();
+            scheduleAvailabilityRefresh(true);
         }
         Toast.makeText(this, "已删除 " + removed.displayName(), Toast.LENGTH_SHORT).show();
     }
@@ -402,6 +433,61 @@ public final class SettingsActivity extends AppCompatActivity {
         computerListEmpty.setVisibility(computers.isEmpty() ? View.VISIBLE : View.GONE);
         findViewById(R.id.computerList).setVisibility(
                 computers.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    private void scheduleAvailabilityRefresh(boolean immediate) {
+        availabilityHandler.removeCallbacks(availabilityRefresh);
+        if (!availabilityMonitoring) return;
+        availabilityHandler.postDelayed(availabilityRefresh,
+                immediate ? 0L : AVAILABILITY_REFRESH_MS);
+    }
+
+    private void probeAllComputers() {
+        closeAvailabilityClients();
+        long generation = ++availabilityGeneration;
+        for (ComputerConnectionStore.Computer computer : connectionStore.all()) {
+            if (!hasConfiguredAddress(computer)) {
+                computerAdapter.setHealth(computer.computerId,
+                        ComputerConnectionAdapter.Health.NOT_CONNECTED);
+                continue;
+            }
+            computerAdapter.setHealth(computer.computerId,
+                    ComputerConnectionAdapter.Health.CONNECTING);
+            AicliClient probeClient = new AicliClient(this, computer, false);
+            availabilityClients.put(computer.computerId, probeClient);
+            probeClient.probeAvailability(online -> runOnUiThread(() -> {
+                AicliClient current = availabilityClients.get(computer.computerId);
+                if (!availabilityMonitoring || generation != availabilityGeneration ||
+                        current != probeClient) {
+                    probeClient.close();
+                    return;
+                }
+                availabilityClients.remove(computer.computerId);
+                probeClient.close();
+                computerAdapter.setHealth(computer.computerId, online
+                        ? ComputerConnectionAdapter.Health.CONNECTED
+                        : ComputerConnectionAdapter.Health.FAILED);
+            }));
+        }
+    }
+
+    private static boolean hasConfiguredAddress(ComputerConnectionStore.Computer computer) {
+        return computer != null && (!computer.baseUrl.isEmpty() ||
+                !computer.localUrl.isEmpty() || !computer.remoteUrl.isEmpty());
+    }
+
+    private void stopAvailabilityMonitoring() {
+        availabilityMonitoring = false;
+        availabilityHandler.removeCallbacks(availabilityRefresh);
+        availabilityGeneration++;
+        closeAvailabilityClients();
+    }
+
+    private void closeAvailabilityClients() {
+        for (AicliClient probeClient : availabilityClients.values()) {
+            probeClient.close();
+        }
+        availabilityClients.clear();
     }
 
     private void updateStatus() {
@@ -460,10 +546,12 @@ public final class SettingsActivity extends AppCompatActivity {
         deviceNameInput.setText(client.deviceName());
         refreshComputerList();
         updateStatus();
+        scheduleAvailabilityRefresh(true);
     }
 
     @Override
     protected void onDestroy() {
+        stopAvailabilityMonitoring();
         if (client != null) client.close();
         super.onDestroy();
     }

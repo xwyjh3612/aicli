@@ -126,6 +126,20 @@ QDialog { background: @window@; color: @text@; border: 1px solid @border@; borde
   QWidget#settingsBody, QStackedWidget#settingsPages, QWidget#settingsPage {
       background: transparent; color: @text@; border: none; border-radius: 0;
   }
+  QFrame#settingsCard {
+      background: @surface@; border: 1px solid @border@; border-radius: 12px;
+  }
+  QWidget#settingsCardRow { background: transparent; border: none; }
+  QLabel#settingsRowLabel { color: @text@; font-size: 14px; }
+  QFrame#settingsCardDivider { background: @border@; border: none; }
+  QPushButton[settingsChoice="true"] {
+      min-height: 34px; padding: 0 14px; background: @field@;
+      border: 1px solid @border@; border-radius: 8px;
+  }
+  QPushButton[settingsChoice="true"]:hover { background: @hover@; border-color: @accent@; }
+  QPushButton[settingsChoice="true"]:checked {
+      background: @selection@; border-color: @accent@; color: @text@;
+  }
   QWidget#dialogSurface { background: @window@; color: @text@; border: none; border-radius: 0; }
   QWidget#settingsNavigationPanel {
       background: @surface@; border: none; border-right: 1px solid @border@;
@@ -145,6 +159,9 @@ QListWidget#settingsProjectTypes::item:selected, QListWidget#settingsGroups::ite
     background: @selection@; color: @text@;
 }
 QDialog QLineEdit, QDialog QComboBox { min-height: 42px; padding: 0 14px; }
+QDialog QCheckBox, QDialog QRadioButton { color: @text@; spacing: 9px; min-height: 28px; }
+QDialog QCheckBox::indicator, QDialog QRadioButton::indicator { width: 17px; height: 17px; }
+QLabel#settingsHint { color: @muted@; font-size: 12px; }
 QDialog QPushButton { min-height: 40px; padding: 0 18px; }
 QDialog QPushButton#captionButton { min-height: 0; padding: 0; }
 QDialogButtonBox QPushButton { min-width: 100px; }

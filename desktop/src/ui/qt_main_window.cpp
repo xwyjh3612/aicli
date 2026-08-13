@@ -490,7 +490,11 @@ void MainWindow::refreshAll() {
         QString::number(controller_.ProjectCount(controller_.group())) + QStringLiteral(")  ▾"));
     title_bar_->devicesButton()->setText(
         QStringLiteral("已绑定 ") + QString::number(controller_.BoundDeviceCount()) + QStringLiteral(" 台"));
-    taskbar_working_indicator_.SetWorking(controller_.AnyProjectWorking());
+    taskbar_working_indicator_.SetStyle(
+        controller_.store().GetSetting(L"taskbar_working_style", L"progress") == L"overlay"
+            ? TaskbarWorkingStyle::OverlaySpinner
+            : TaskbarWorkingStyle::ProgressBar);
+    taskbar_working_indicator_.SetWorking(controller_.ShouldShowTaskbarWorking());
     refreshing_ = false;
     refreshProjectList();
     refreshProjectDetails();

@@ -471,6 +471,14 @@ bool DesktopController::AnyProjectWorking() const {
         });
 }
 
+bool DesktopController::ShouldShowTaskbarWorking() {
+    if (store_.GetSetting(L"taskbar_working_enabled", L"1") == L"0") return false;
+    if (store_.GetSetting(L"taskbar_working_scope", L"all") == L"current") {
+        return !selected_project_id_.empty() && IsProjectWorking(selected_project_id_);
+    }
+    return AnyProjectWorking();
+}
+
 bool DesktopController::ActivateProject(const std::wstring& project_id, bool focus) {
     selected_project_id_ = project_id;
     store_.SetSetting(L"last_project_id", project_id);
@@ -633,6 +641,18 @@ void DesktopController::SetTheme(bool light) {
     store_.SetSetting(L"theme", light ? L"light" : L"dark");
     theme_manager_.LoadMode(light ? ui::ThemeMode::Light : ui::ThemeMode::Dark);
     terminal_.SetTheme(light);
+    NotifyState();
+}
+
+void DesktopController::SetTaskbarWorkingPreference(
+    bool enabled,
+    bool current_project_only,
+    bool overlay_spinner) {
+    store_.SetSetting(L"taskbar_working_enabled", enabled ? L"1" : L"0");
+    store_.SetSetting(L"taskbar_working_scope",
+                      current_project_only ? L"current" : L"all");
+    store_.SetSetting(L"taskbar_working_style",
+                      overlay_spinner ? L"overlay" : L"progress");
     NotifyState();
 }
 

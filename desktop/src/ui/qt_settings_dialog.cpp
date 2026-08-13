@@ -1,6 +1,7 @@
 #include "ui/qt_settings_dialog.h"
 
 #include <QDialogButtonBox>
+#include <QButtonGroup>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -13,6 +14,8 @@
 #include <QStackedWidget>
 #include <QVBoxLayout>
 #include <QWindow>
+
+#include <initializer_list>
 
 #include "core/text_utils.h"
 #include "ui/qt_widgets.h"
@@ -150,10 +153,12 @@ QWidget* PageWithHeading(const QString& title,
     font.setWeight(QFont::DemiBold);
     heading->setFont(font);
     layout->addWidget(heading);
-    auto* description = new QLabel(subtitle, page);
-    description->setObjectName(QStringLiteral("mutedLabel"));
-    description->setWordWrap(true);
-    layout->addWidget(description);
+    if (!subtitle.isEmpty()) {
+        auto* description = new QLabel(subtitle, page);
+        description->setObjectName(QStringLiteral("mutedLabel"));
+        description->setWordWrap(true);
+        layout->addWidget(description);
+    }
     return page;
 }
 
@@ -298,21 +303,98 @@ void SettingsDialog::selectPage(int row) {
 
 QWidget* SettingsDialog::buildAppearancePage() {
     QVBoxLayout* layout{};
-    auto* page = PageWithHeading(
-        QStringLiteral("外观"), QStringLiteral("主题会立即应用到主界面、设置和当前终端。"),
-        layout, pages_);
-    auto* row = new QHBoxLayout();
+    auto* page = PageWithHeading(QStringLiteral("外观设置"), QString(), layout, pages_);
+
+    auto* card = new QFrame(page);
+    card->setObjectName(QStringLiteral("settingsCard"));
+    card->setAttribute(Qt::WA_StyledBackground, true);
+    auto* cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(20, 8, 20, 8);
+    cardLayout->setSpacing(0);
+
+    const auto prepareChoice = [](QPushButton* button, int minimumWidth = 94) {
+        button->setCheckable(true);
+        button->setProperty("settingsChoice", true);
+        button->setMinimumWidth(minimumWidth);
+        button->setCursor(Qt::PointingHandCursor);
+    };
+    const auto addRow = [card, cardLayout](
+        const QString& text, std::initializer_list<QPushButton*> buttons,
+        bool divider) {
+        auto* row = new QWidget(card);
+        row->setObjectName(QStringLiteral("settingsCardRow"));
+        auto* rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 8, 0, 8);
+        rowLayout->setSpacing(8);
+        auto* label = new QLabel(text, row);
+        label->setObjectName(QStringLiteral("settingsRowLabel"));
+        rowLayout->addWidget(label);
+        rowLayout->addStretch(1);
+        for (auto* button : buttons) rowLayout->addWidget(button);
+        cardLayout->addWidget(row);
+        if (divider) {
+            auto* line = new QFrame(card);
+            line->setObjectName(QStringLiteral("settingsCardDivider"));
+            line->setFrameShape(QFrame::NoFrame);
+            line->setFixedHeight(1);
+            cardLayout->addWidget(line);
+        }
+    };
+
     dark_theme_ = new QPushButton(QStringLiteral("夜间模式"), page);
     light_theme_ = new QPushButton(QStringLiteral("白天模式"), page);
-    dark_theme_->setCheckable(true);
-    light_theme_->setCheckable(true);
-    row->addWidget(dark_theme_);
-    row->addWidget(light_theme_);
-    row->addStretch(1);
-    layout->addLayout(row);
+    prepareChoice(dark_theme_);
+    prepareChoice(light_theme_);
+
+    taskbar_working_ = new QPushButton(page);
+    prepareChoice(taskbar_working_, 86);
+    taskbar_working_->setChecked(
+        controller_.store().GetSetting(L"taskbar_working_enabled", L"1") != L"0");
+    taskbar_working_->setText(taskbar_working_->isChecked()
+        ? QStringLiteral("开启") : QStringLiteral("关闭"));
+
+    taskbar_style_progress_ = new QPushButton(QStringLiteral("进度条"), page);
+    taskbar_style_overlay_ = new QPushButton(QStringLiteral("图标转圈"), page);
+    prepareChoice(taskbar_style_progress_);
+    prepareChoice(taskbar_style_overlay_, 104);
+    const bool overlayStyle = controller_.store().GetSetting(
+        L"taskbar_working_style", L"progress") == L"overlay";
+    taskbar_style_progress_->setChecked(!overlayStyle);
+    taskbar_style_overlay_->setChecked(overlayStyle);
+    auto* styleGroup = new QButtonGroup(page);
+    styleGroup->addButton(taskbar_style_progress_);
+    styleGroup->addButton(taskbar_style_overlay_);
+    taskbar_scope_current_ = new QPushButton(QStringLiteral("当前项目"), page);
+    taskbar_scope_all_ = new QPushButton(QStringLiteral("所有项目"), page);
+    prepareChoice(taskbar_scope_current_);
+    prepareChoice(taskbar_scope_all_);
+    const bool currentOnly = controller_.store().GetSetting(
+        L"taskbar_working_scope", L"all") == L"current";
+    taskbar_scope_current_->setChecked(currentOnly);
+    taskbar_scope_all_->setChecked(!currentOnly);
+    auto* scopeGroup = new QButtonGroup(page);
+    scopeGroup->addButton(taskbar_scope_current_);
+    scopeGroup->addButton(taskbar_scope_all_);
+    addRow(QStringLiteral("应用主题"), {dark_theme_, light_theme_}, true);
+    addRow(QStringLiteral("任务栏缓冲动画"), {taskbar_working_}, true);
+    addRow(QStringLiteral("缓冲样式"),
+           {taskbar_style_progress_, taskbar_style_overlay_}, true);
+    addRow(QStringLiteral("作用范围"),
+           {taskbar_scope_current_, taskbar_scope_all_}, false);
+    layout->addWidget(card);
     layout->addStretch(1);
     connect(dark_theme_, &QPushButton::clicked, this, &SettingsDialog::setDarkTheme);
     connect(light_theme_, &QPushButton::clicked, this, &SettingsDialog::setLightTheme);
+    connect(taskbar_working_, &QPushButton::clicked,
+            this, &SettingsDialog::saveTaskbarWorkingPreference);
+    connect(taskbar_style_progress_, &QPushButton::clicked,
+            this, &SettingsDialog::saveTaskbarWorkingPreference);
+    connect(taskbar_style_overlay_, &QPushButton::clicked,
+            this, &SettingsDialog::saveTaskbarWorkingPreference);
+    connect(taskbar_scope_current_, &QPushButton::clicked,
+            this, &SettingsDialog::saveTaskbarWorkingPreference);
+    connect(taskbar_scope_all_, &QPushButton::clicked,
+            this, &SettingsDialog::saveTaskbarWorkingPreference);
     return page;
 }
 
@@ -427,6 +509,15 @@ void SettingsDialog::setLightTheme() {
     refreshThemeButtons();
 }
 
+void SettingsDialog::saveTaskbarWorkingPreference() {
+    if (!taskbar_working_ || !taskbar_scope_current_ || !taskbar_style_overlay_) return;
+    taskbar_working_->setText(taskbar_working_->isChecked()
+        ? QStringLiteral("开启") : QStringLiteral("关闭"));
+    controller_.SetTaskbarWorkingPreference(
+        taskbar_working_->isChecked(), taskbar_scope_current_->isChecked(),
+        taskbar_style_overlay_->isChecked());
+}
+
 void SettingsDialog::refreshThemeButtons() {
     dark_theme_->setChecked(!controller_.lightTheme());
     light_theme_->setChecked(controller_.lightTheme());
@@ -436,6 +527,10 @@ void SettingsDialog::refreshThemeButtons() {
     dark_theme_->style()->polish(dark_theme_);
     light_theme_->style()->unpolish(light_theme_);
     light_theme_->style()->polish(light_theme_);
+    if (taskbar_working_) {
+        taskbar_working_->setText(taskbar_working_->isChecked()
+            ? QStringLiteral("开启") : QStringLiteral("关闭"));
+    }
 }
 
 void SettingsDialog::saveNetwork() {

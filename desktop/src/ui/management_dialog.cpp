@@ -72,6 +72,11 @@ enum : int {
     kSettingsConnection = 2321,
     kSettingsProjectTypes = 2322,
     kSettingsGroups = 2323,
+    kTaskbarWorking = 2324,
+    kTaskbarScopeCurrent = 2325,
+    kTaskbarScopeAll = 2326,
+    kTaskbarStyleProgress = 2327,
+    kTaskbarStyleOverlay = 2328,
 };
 
 enum : int {
@@ -117,6 +122,7 @@ struct State {
     agent::RemoteAgent* agent{};
     AgentRestartCallback restart_agent;
     ThemeChangedCallback theme_changed;
+    AppearanceChangedCallback appearance_changed;
     ManagementDialogResult result;
     RECT panel{};
     RECT content_rect{};
@@ -137,6 +143,11 @@ struct State {
     HWND remote{};
     HWND theme{};
     HWND theme_light{};
+    HWND taskbar_working{};
+    HWND taskbar_style_progress{};
+    HWND taskbar_style_overlay{};
+    HWND taskbar_scope_current{};
+    HWND taskbar_scope_all{};
     HWND add{};
     HWND save{};
     HWND remove{};
@@ -984,7 +995,17 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
     const bool active_navigation = state && IsActiveSettingsNavigation(*state, item->CtlID);
     const bool active_theme = state &&
         ((item->CtlID == kTheme && !state->light_theme) ||
-         (item->CtlID == kThemeLight && state->light_theme));
+         (item->CtlID == kThemeLight && state->light_theme) ||
+         (item->CtlID == kTaskbarWorking &&
+          state->store->GetSetting(L"taskbar_working_enabled", L"1") != L"0") ||
+         (item->CtlID == kTaskbarStyleProgress &&
+          state->store->GetSetting(L"taskbar_working_style", L"progress") != L"overlay") ||
+         (item->CtlID == kTaskbarStyleOverlay &&
+          state->store->GetSetting(L"taskbar_working_style", L"progress") == L"overlay") ||
+         (item->CtlID == kTaskbarScopeCurrent &&
+          state->store->GetSetting(L"taskbar_working_scope", L"all") == L"current") ||
+         (item->CtlID == kTaskbarScopeAll &&
+          state->store->GetSetting(L"taskbar_working_scope", L"all") != L"current"));
     const bool active = active_navigation || active_theme;
     RECT rect = item->rcItem;
     const bool light = state && state->light_theme;
@@ -1386,7 +1407,7 @@ void Paint(State& state, HDC dc) {
 
 int SettingsContentExtent(SettingsPage page) {
     switch (page) {
-    case SettingsPage::Appearance: return 390;
+    case SettingsPage::Appearance: return 370;
     case SettingsPage::Connection: return 500;
     case SettingsPage::ProjectTypes: return 590;
     case SettingsPage::Groups: return 590;
@@ -1470,13 +1491,19 @@ void LayoutSettingsContent(State& state) {
 
     if (state.settings_page == SettingsPage::Appearance) {
         const int gap = S(10);
-        // Give the theme choices the same generous inset as the rest of the
-        // card content so the first button never appears attached to its edge.
-        const int inset = S(24);
-        const int available_button_width = std::max(S(96), (available - inset * 2 - gap) / 2);
-        const int button_width = std::min(S(124), available_button_width);
-        button(state.theme, x + inset, 198, button_width, 36);
-        button(state.theme_light, x + inset + button_width + gap, 198, button_width, 36);
+        const int right_inset = S(18);
+        const int button_width = S(112);
+        const int wide_button = S(128);
+        const int right_edge = right - right_inset;
+        button(state.theme_light, right_edge - button_width, 88, button_width, 36);
+        button(state.theme, right_edge - button_width * 2 - gap, 88, button_width, 36);
+        button(state.taskbar_working, right_edge - button_width, 144, button_width, 36);
+        button(state.taskbar_style_overlay, right_edge - wide_button, 200, wide_button, 36);
+        button(state.taskbar_style_progress,
+               right_edge - wide_button - button_width - gap, 200, button_width, 36);
+        button(state.taskbar_scope_all, right_edge - button_width, 256, button_width, 36);
+        button(state.taskbar_scope_current,
+               right_edge - button_width * 2 - gap, 256, button_width, 36);
     } else if (state.settings_page == SettingsPage::Connection) {
         const int label_width = S(120);
         const int field_x = x + label_width;
@@ -1517,8 +1544,8 @@ void PaintSettingsContent(State& state, HDC dc) {
     const int x = S(20);
     const int right = std::max(x + S(160), width - S(20));
 
-    const wchar_t* title = L"界面外观";
-    const wchar_t* subtitle = L"主题切换会立即作用于主窗口、设置页和原生终端。";
+    const wchar_t* title = L"外观设置";
+    const wchar_t* subtitle = L"";
     if (state.settings_page == SettingsPage::Connection) {
         title = L"本机与网络";
         subtitle = L"本机名称显示在手机端；保存名称或网络设置时重启 HTTPS/WSS Agent。";
@@ -1534,11 +1561,13 @@ void PaintSettingsContent(State& state, HDC dc) {
     SetTextColor(dc, state.text_color);
     RECT title_rect{x, S(20), right, S(52)};
     DrawTextW(dc, title, -1, &title_rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
-    SetTextColor(dc, state.muted_color);
-    RECT subtitle_rect{x, S(54), right, S(84)};
-    DrawTextW(dc, subtitle, -1, &subtitle_rect,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (subtitle[0] != L'\0') {
+        SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
+        SetTextColor(dc, state.muted_color);
+        RECT subtitle_rect{x, S(54), right, S(84)};
+        DrawTextW(dc, subtitle, -1, &subtitle_rect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
 
     auto label = [&](const wchar_t* text, int y) {
         SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
@@ -1559,20 +1588,26 @@ void PaintSettingsContent(State& state, HDC dc) {
     };
 
     if (state.settings_page == SettingsPage::Appearance) {
-        card({x, S(106), right, S(294)});
+        card({x, S(64), right, S(310)});
         SelectObject(dc, state.settings_content_font ? state.settings_content_font : state.font);
         SetTextColor(dc, state.text_color);
-        RECT card_title{x + S(24), S(124), right - S(24), S(151)};
-        DrawTextW(dc, L"应用主题", -1, &card_title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
-        SetTextColor(dc, state.muted_color);
-        RECT detail{x + S(24), S(151), right - S(24), S(184)};
-        DrawTextW(dc, L"点击后立即保存，无需再按“保存”。默认使用夜间模式。", -1, &detail,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        SetTextColor(dc, state.muted_color);
-        RECT hint{x, S(318), right, S(354)};
-        DrawTextW(dc, L"原生终端会保留 ANSI 颜色层次，并同步切换背景与默认前景色。", -1,
-                  &hint, DT_LEFT | DT_TOP | DT_WORDBREAK);
+        auto row_label = [&](const wchar_t* text, int y) {
+            RECT rect{x + S(20), S(y), right - S(280), S(y + 36)};
+            DrawTextW(dc, text, -1, &rect,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        };
+        row_label(L"应用主题", 88);
+        row_label(L"任务栏缓冲动画", 144);
+        row_label(L"缓冲样式", 200);
+        row_label(L"作用范围", 256);
+        HPEN divider = CreatePen(PS_SOLID, 1, state.panel_edge);
+        HGDIOBJ old_pen = SelectObject(dc, divider);
+        for (int y : {136, 192, 248}) {
+            MoveToEx(dc, x + S(20), S(y), nullptr);
+            LineTo(dc, right - S(20), S(y));
+        }
+        SelectObject(dc, old_pen);
+        DeleteObject(divider);
     } else if (state.settings_page == SettingsPage::Connection) {
         auto row_label = [&](const wchar_t* text, int y) {
             SelectObject(dc, state.settings_content_font ?
@@ -1623,6 +1658,11 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     };
     visible(state.theme, appearance);
     visible(state.theme_light, appearance);
+    visible(state.taskbar_working, appearance);
+    visible(state.taskbar_style_progress, appearance);
+    visible(state.taskbar_style_overlay, appearance);
+    visible(state.taskbar_scope_current, appearance);
+    visible(state.taskbar_scope_all, appearance);
     visible(state.computer_name, connection);
     visible(state.listen, connection);
     visible(state.port, connection);
@@ -1875,10 +1915,21 @@ void CreateControls(State& state) {
         state.light_theme = theme == L"light";
         state.theme = MakeButton(state, L"夜间模式", kTheme, state.content);
         state.theme_light = MakeButton(state, L"白天模式", kThemeLight, state.content);
+        state.taskbar_working = MakeButton(state,
+            state.store->GetSetting(L"taskbar_working_enabled", L"1") == L"0"
+                ? L"关闭" : L"开启",
+            kTaskbarWorking, state.content);
+        state.taskbar_style_progress = MakeButton(state, L"进度条", kTaskbarStyleProgress, state.content);
+        state.taskbar_style_overlay = MakeButton(state, L"图标转圈", kTaskbarStyleOverlay, state.content);
+        state.taskbar_scope_current = MakeButton(state, L"当前项目", kTaskbarScopeCurrent, state.content);
+        state.taskbar_scope_all = MakeButton(state, L"所有项目", kTaskbarScopeAll, state.content);
         state.save = MakeButton(state, L"保存并重启 Agent", kSave, state.content);
         state.firewall = MakeButton(state, L"允许手机访问", kFirewall, state.content);
         for (HWND control : {state.computer_name, state.listen, state.port, state.local,
-                             state.remote, state.theme, state.theme_light, state.save,
+                              state.remote, state.theme, state.theme_light,
+                              state.taskbar_working, state.taskbar_style_progress,
+                              state.taskbar_style_overlay, state.taskbar_scope_current,
+                              state.taskbar_scope_all, state.save,
                              state.firewall}) {
             if (control && state.settings_content_font)
                 SendMessageW(control, WM_SETFONT,
@@ -1898,8 +1949,11 @@ void CreateControls(State& state) {
         state.remove = MakeButton(state, L"删除", kDelete, state.content);
         state.title_close = MakeButton(state, L"\x00D7", kClose);
         for (HWND control : {state.computer_name, state.listen, state.port,
-                             state.local, state.remote, state.theme,
-                             state.theme_light, state.save, state.firewall,
+                              state.local, state.remote, state.theme,
+                              state.theme_light, state.taskbar_working,
+                              state.taskbar_style_progress, state.taskbar_style_overlay,
+                              state.taskbar_scope_current, state.taskbar_scope_all,
+                              state.save, state.firewall,
                              state.list, state.add, state.remove}) {
             if (control) {
                 SetWindowSubclass(control, SettingsWheelProc,
@@ -2086,6 +2140,32 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                     RedrawWindow(state->window, nullptr, nullptr,
                                  RDW_INVALIDATE | RDW_ALLCHILDREN);
                 }
+                return 0;
+            }
+            if (id == kTaskbarWorking || id == kTaskbarStyleProgress ||
+                id == kTaskbarStyleOverlay || id == kTaskbarScopeCurrent ||
+                id == kTaskbarScopeAll) {
+                if (id == kTaskbarWorking) {
+                    const bool enabled = state->store->GetSetting(
+                        L"taskbar_working_enabled", L"1") != L"0";
+                    state->store->SetSetting(L"taskbar_working_enabled", enabled ? L"0" : L"1");
+                    SetWindowTextW(state->taskbar_working,
+                        enabled ? L"关闭" : L"开启");
+                } else if (id == kTaskbarStyleProgress || id == kTaskbarStyleOverlay) {
+                    state->store->SetSetting(L"taskbar_working_style",
+                        id == kTaskbarStyleOverlay ? L"overlay" : L"progress");
+                } else {
+                    state->store->SetSetting(L"taskbar_working_scope",
+                        id == kTaskbarScopeCurrent ? L"current" : L"all");
+                }
+                for (HWND control : {state->taskbar_working,
+                                     state->taskbar_style_progress,
+                                     state->taskbar_style_overlay,
+                                     state->taskbar_scope_current,
+                                     state->taskbar_scope_all}) {
+                    InvalidateRect(control, nullptr, FALSE);
+                }
+                if (state->appearance_changed) state->appearance_changed();
                 return 0;
             }
             if (state->settings_page == SettingsPage::Connection && id == kFirewall) {
@@ -2397,7 +2477,8 @@ bool ShowProjectTypeEditorDialog(HWND owner,
 ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
                                             DataStore& store, agent::RemoteAgent& agent,
                                             AgentRestartCallback restart_agent,
-                                            ThemeChangedCallback theme_changed) {
+                                            ThemeChangedCallback theme_changed,
+                                            AppearanceChangedCallback appearance_changed) {
     static bool registered = false;
     if (!registered) {
         WNDCLASSW klass{};
@@ -2423,6 +2504,7 @@ ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
     state.agent = &agent;
     state.restart_agent = std::move(restart_agent);
     state.theme_changed = std::move(theme_changed);
+    state.appearance_changed = std::move(appearance_changed);
     ApplyTheme(state, store.GetSetting(L"theme", L"dark") == L"light");
     state.font = CreateDialogFont(owner, 15, FW_NORMAL);
     state.title_font = CreateDialogFont(owner, 22, FW_SEMIBOLD);

@@ -11,6 +11,9 @@
     <color name="aicli_text_secondary">#A6A6A6</color>
     <color name="aicli_text_tertiary">#727272</color>
     <color name="aicli_running">#35C38F</color>
+    <color name="aicli_connection_offline">#666B73</color>
+    <color name="aicli_connection_connecting">#69A7FF</color>
+    <color name="aicli_connection_failed">#E66773</color>
     <color name="aicli_paused">#F0A63A</color>
     <color name="aicli_stopped">#E66773</color>
     <color name="aicli_ready">#7D91AC</color>

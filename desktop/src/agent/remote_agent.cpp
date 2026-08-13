@@ -26,6 +26,7 @@
 #include <sstream>
 #include <string_view>
 #include <atomic>
+#include <cctype>
 #include <cstring>
 
 namespace aicli::agent {
@@ -33,6 +34,7 @@ namespace {
 
 using json = nlohmann::json;
 constexpr std::size_t kMaximumWireMessageBytes = 1024 * 1024;
+constexpr std::size_t kMaximumAttachmentBytes = 6 * 1024 * 1024;
 
 std::int64_t Now() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -122,20 +124,72 @@ std::string Hex(const unsigned char* bytes, size_t size) {
     return stream.str();
 }
 
-std::string ReadBody(struct mg_connection* connection) {
+std::optional<std::string> ReadBody(struct mg_connection* connection,
+                                    std::size_t maximum_bytes) {
     const auto* info = mg_get_request_info(connection);
-    if (!info) return {};
+    if (!info) return std::nullopt;
     const char* length_header = mg_get_header(connection, "Content-Length");
     const long long length = length_header ? _strtoi64(length_header, nullptr, 10) : 0;
-    if (length < 0 || length > 1024 * 1024) return {};
+    if (length < 0 || static_cast<unsigned long long>(length) > maximum_bytes)
+        return std::nullopt;
     std::string body(static_cast<size_t>(length), '\0');
     size_t offset = 0;
     while (offset < body.size()) {
         const int read = mg_read(connection, body.data() + offset, body.size() - offset);
-        if (read <= 0) return {};
+        if (read <= 0) return std::nullopt;
         offset += static_cast<size_t>(read);
     }
     return body;
+}
+
+bool IsSafeUploadId(std::string_view value) {
+    if (value.size() < 8 || value.size() > 80) return false;
+    return std::all_of(value.begin(), value.end(), [](unsigned char current) {
+        return std::isalnum(current) || current == '-' || current == '_';
+    });
+}
+
+std::wstring SafePathSegment(std::wstring_view value) {
+    std::wstring result;
+    result.reserve(value.size());
+    for (const wchar_t current : value) {
+        const bool safe = (current >= L'a' && current <= L'z') ||
+                          (current >= L'A' && current <= L'Z') ||
+                          (current >= L'0' && current <= L'9') ||
+                          current == L'-' || current == L'_' || current == L'.';
+        result.push_back(safe ? current : L'_');
+    }
+    return result.empty() ? L"project" : result;
+}
+
+bool ValidateImageBytes(const std::string& body, std::string content_type,
+                        std::wstring& extension) {
+    const auto delimiter = content_type.find(';');
+    if (delimiter != std::string::npos) content_type.resize(delimiter);
+    std::transform(content_type.begin(), content_type.end(), content_type.begin(),
+                   [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    const auto byte = [&](std::size_t index) {
+        return static_cast<unsigned char>(body[index]);
+    };
+    if (content_type == "image/jpeg" && body.size() >= 3 &&
+        byte(0) == 0xff && byte(1) == 0xd8 && byte(2) == 0xff) {
+        extension = L".jpg";
+        return true;
+    }
+    static constexpr unsigned char png_signature[]{0x89, 0x50, 0x4e, 0x47,
+                                                    0x0d, 0x0a, 0x1a, 0x0a};
+    if (content_type == "image/png" && body.size() >= std::size(png_signature) &&
+        std::equal(std::begin(png_signature), std::end(png_signature),
+                   reinterpret_cast<const unsigned char*>(body.data()))) {
+        extension = L".png";
+        return true;
+    }
+    if (content_type == "image/webp" && body.size() >= 12 &&
+        body.compare(0, 4, "RIFF") == 0 && body.compare(8, 4, "WEBP") == 0) {
+        extension = L".webp";
+        return true;
+    }
+    return false;
 }
 
 std::string QueryValue(const struct mg_request_info* info, const char* name) {
@@ -373,7 +427,18 @@ void RemoteAgent::WriteError(struct mg_connection* connection,int status,const s
 int RemoteAgent::OnHttp(struct mg_connection* connection) {
     const auto* info=mg_get_request_info(connection);if(!info||!info->local_uri)return 0;
     const std::string path=info->local_uri;const std::string method=info->request_method?info->request_method:"GET";
-    const std::string body=(method=="POST"||method=="PUT")?ReadBody(connection):std::string{};
+    const bool attachment_request = path.rfind("/api/conversations/", 0) == 0 &&
+                                    path.ends_with("/attachment");
+    const auto body_result = (method=="POST"||method=="PUT")
+        ? ReadBody(connection, attachment_request ? kMaximumAttachmentBytes
+                                                  : kMaximumWireMessageBytes)
+        : std::optional<std::string>{std::string{}};
+    if (!body_result.has_value()) {
+        WriteError(connection, 413, attachment_request
+            ? L"图片超过 6MB 上传上限" : L"请求内容超过 1MB 安全上限");
+        return 413;
+    }
+    const std::string body=*body_result;
     try {
         if(path=="/api/health"){
             WriteJson(connection,200,JsonString(json{
@@ -450,6 +515,48 @@ int RemoteAgent::OnHttp(struct mg_connection* connection) {
                     {"totalLines",page.total_lines},
                     {"hasMore",page.has_more},{"lines",page.lines}}));
                 return 200;
+            }
+            if(action=="attachment"&&method=="POST"){
+                if(body.empty()){WriteError(connection,400,L"图片内容为空");return 400;}
+                const auto upload_id=QueryValue(info,"uploadId");
+                if(!IsSafeUploadId(upload_id)){WriteError(connection,400,L"图片上传标识无效");return 400;}
+                bool project_found=false;
+                try{
+                    const auto callback=conversations_callback_;
+                    const auto root=json::parse(callback?callback():"{\"items\":[]}");
+                    if(root.contains("items")&&root["items"].is_array()){
+                        for(const auto& item:root["items"]){
+                            if(item.is_object()&&item.value("id",std::string{})==Utf8(project_id)){
+                                project_found=true;break;
+                            }
+                        }
+                    }
+                }catch(...){project_found=false;}
+                if(!project_found){WriteError(connection,404,L"项目不存在");return 404;}
+                std::wstring extension;
+                if(!ValidateImageBytes(body,Header(connection,"Content-Type"),extension)){
+                    WriteError(connection,400,L"仅支持有效的 JPEG、PNG 或 WebP 图片");return 400;
+                }
+                std::error_code filesystem_error;
+                const auto directory=std::filesystem::path(config_.data_directory)/
+                    L"mobile_uploads"/SafePathSegment(project_id);
+                std::filesystem::create_directories(directory,filesystem_error);
+                if(filesystem_error){WriteError(connection,500,L"无法创建手机图片目录");return 500;}
+                const auto target=directory/(Wide(upload_id)+extension);
+                if(!std::filesystem::exists(target,filesystem_error)){
+                    std::ofstream output(target,std::ios::binary|std::ios::trunc);
+                    if(!output){WriteError(connection,500,L"无法保存手机图片");return 500;}
+                    output.write(body.data(),static_cast<std::streamsize>(body.size()));
+                    output.close();
+                    if(!output){
+                        std::filesystem::remove(target,filesystem_error);
+                        WriteError(connection,500,L"手机图片写入失败");return 500;
+                    }
+                }
+                const auto absolute=std::filesystem::absolute(target,filesystem_error);
+                const auto stored_path=filesystem_error?target:absolute;
+                WriteJson(connection,201,JsonString(json{{"ok",true},{"path",Utf8(stored_path.wstring())}}));
+                return 201;
             }
             const auto value=body.empty()?json::object():json::parse(body);
             if(action=="input"||action=="chat"){

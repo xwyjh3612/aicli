@@ -100,6 +100,7 @@ public final class AicliClient {
 
     public interface ConversationCallback { void onSuccess(List<Conversation> conversations); void onError(String message); }
     public interface ActionCallback { void onSuccess(); void onError(String message); }
+    public interface AttachmentCallback { void onSuccess(String path); void onError(String message); }
     public interface EventCallback {
         void onEvent(String eventJson);
         void onClosed();
@@ -112,6 +113,22 @@ public final class AicliClient {
         void onError(String message);
     }
 
+    public enum RouteHealth {
+        UNAVAILABLE,
+        CONNECTING,
+        ONLINE,
+        OFFLINE,
+    }
+
+    public interface RouteStatusListener {
+        void onRouteStatus(RouteHealth local, RouteHealth remote,
+                           boolean usingLocal, boolean usingRemote);
+    }
+
+    public interface AvailabilityCallback {
+        void onResult(boolean online);
+    }
+
     public interface PairingCallback {
         void onStatus(String status, String message);
         void onComplete();
@@ -120,7 +137,7 @@ public final class AicliClient {
 
     private final Gson gson = new Gson();
     private final DeviceKeyManager keyManager = new DeviceKeyManager();
-    private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
+    private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(3);
     private final Object authLock = new Object();
     private final Object routeLock = new Object();
     private final SharedPreferences preferences;
@@ -145,19 +162,31 @@ public final class AicliClient {
     private final AtomicLong eventsGeneration = new AtomicLong();
     private ScheduledFuture<?> reconnectTask;
     private ScheduledFuture<?> preferredRouteRecoveryTask;
+    private ScheduledFuture<?> routeStatusProbeTask;
+    private volatile RouteStatusListener routeStatusListener;
+    private volatile RouteHealth localRouteHealth = RouteHealth.UNAVAILABLE;
+    private volatile RouteHealth remoteRouteHealth = RouteHealth.UNAVAILABLE;
     private volatile boolean closed;
     private volatile boolean clientClosed;
+    private final boolean monitorRoutes;
 
     public AicliClient(Context context, String baseUrl) {
-        this(context, baseUrl, null);
+        this(context, baseUrl, null, true);
     }
 
     AicliClient(Context context, ComputerConnectionStore.Computer computer) {
-        this(context, "", computer);
+        this(context, "", computer, true);
+    }
+
+    AicliClient(Context context, ComputerConnectionStore.Computer computer,
+                boolean monitorRoutes) {
+        this(context, "", computer, monitorRoutes);
     }
 
     private AicliClient(Context context, String requestedBaseUrl,
-                        ComputerConnectionStore.Computer requestedComputer) {
+                        ComputerConnectionStore.Computer requestedComputer,
+                        boolean monitorRoutes) {
+        this.monitorRoutes = monitorRoutes;
         preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         connectionStore = new ComputerConnectionStore(context);
         identityPreferences = context.getSharedPreferences(PHONE_PREFS, Context.MODE_PRIVATE);
@@ -189,7 +218,10 @@ public final class AicliClient {
         this.computerId = active == null
                 ? preferences.getString("computerId", "") : active.computerId;
         rebuildHttpClient();
-        updatePreferredRouteProbe();
+        if (monitorRoutes) {
+            updatePreferredRouteProbe();
+            updateRouteStatusProbe();
+        }
     }
 
     /** Compatibility constructor used only by old callers; it has no identity until configured. */
@@ -198,6 +230,7 @@ public final class AicliClient {
         identityPreferences = null;
         connectionStore = null;
         phoneId = "";
+        monitorRoutes = false;
         this.baseUrl = normalize(baseUrl);
         rebuildHttpClient();
     }
@@ -209,6 +242,31 @@ public final class AicliClient {
     public String localUrl() { return localUrl; }
     public String remoteUrl() { return remoteUrl; }
     public String routePreference() { return routePreference; }
+
+    public void setRouteStatusListener(RouteStatusListener listener) {
+        routeStatusListener = listener;
+        notifyRouteStatus();
+        if (monitorRoutes) updateRouteStatusProbe();
+    }
+
+    public void probeAvailability(AvailabilityCallback callback) {
+        if (callback == null) return;
+        executor.execute(() -> {
+            boolean online = false;
+            String current = baseUrl;
+            String local = localUrl;
+            String remote = remoteUrl;
+            if (!current.isEmpty()) online = probeAddress(current);
+            if (!online && !local.isEmpty() && !local.equals(current)) {
+                online = probeAddress(local);
+            }
+            if (!online && !remote.isEmpty() && !remote.equals(current) &&
+                    !remote.equals(local)) {
+                online = probeAddress(remote);
+            }
+            callback.onResult(online);
+        });
+    }
 
     public String deviceName() {
         String saved = identityPreferences == null
@@ -247,13 +305,17 @@ public final class AicliClient {
         } else if (preferences != null) {
             preferences.edit().putString("baseUrl", baseUrl).apply();
         }
-        updatePreferredRouteProbe();
+        if (monitorRoutes) {
+            updatePreferredRouteProbe();
+            updateRouteStatusProbe();
+        }
     }
 
     /** Stop network callbacks when the owning activity is discarded. */
     public void close() {
         clientClosed = true;
         stopPreferredRouteProbe();
+        stopRouteStatusProbe();
         closeEvents();
         executor.shutdownNow();
     }
@@ -300,7 +362,10 @@ public final class AicliClient {
                     .putString("computerId", computerId).apply();
         }
         rebuildHttpClient();
-        if (persist) updatePreferredRouteProbe();
+        if (monitorRoutes) {
+            updateRouteStatusProbe();
+            if (persist) updatePreferredRouteProbe();
+        }
     }
 
     public void listConversations(String provider, ConversationCallback callback) {
@@ -354,6 +419,27 @@ public final class AicliClient {
         }
         postJson("/api/conversations/" + safePath(conversationId) + "/key",
                 gson.toJson(new KeyPayload(key)), callback);
+    }
+
+    public void uploadImage(String conversationId, byte[] image, String contentType,
+                            AttachmentCallback callback) {
+        if (image == null || image.length == 0) {
+            callback.onError("图片内容为空");
+            return;
+        }
+        if (image.length > 6 * 1024 * 1024) {
+            callback.onError("图片超过 6MB 上传上限");
+            return;
+        }
+        String normalizedType = contentType == null ? "" : contentType.toLowerCase(Locale.US);
+        if (!"image/jpeg".equals(normalizedType) && !"image/png".equals(normalizedType) &&
+                !"image/webp".equals(normalizedType)) {
+            callback.onError("仅支持 JPEG、PNG 或 WebP 图片");
+            return;
+        }
+        String path = "/api/conversations/" + safePath(conversationId)
+                + "/attachment?uploadId=" + UUID.randomUUID().toString();
+        signedBinaryRequest("POST", path, image, normalizedType, callback);
     }
 
     public void listEvents(String conversationId, long afterEventId, HistoryCallback callback) {
@@ -475,6 +561,7 @@ public final class AicliClient {
     public void clearConnection() {
         closeEvents();
         stopPreferredRouteProbe();
+        stopRouteStatusProbe();
         localUrl = "";
         remoteUrl = "";
         baseUrl = "";
@@ -492,6 +579,9 @@ public final class AicliClient {
                     .remove("computerId").apply();
         }
         rebuildHttpClient();
+        localRouteHealth = RouteHealth.UNAVAILABLE;
+        remoteRouteHealth = RouteHealth.UNAVAILABLE;
+        notifyRouteStatus();
     }
 
     /** Starts the QR pairing flow. The payload is the JSON embedded by desktop. */
@@ -618,10 +708,54 @@ public final class AicliClient {
         });
     }
 
+    private void signedBinaryRequest(String method, String path, byte[] body,
+                                     String contentType, AttachmentCallback callback) {
+        executor.execute(() -> {
+            Exception lastFailure = null;
+            for (int connectionAttempt = 0; connectionAttempt < 2; connectionAttempt++) {
+                String attemptedAddress = baseUrl;
+                try {
+                    Response response = executeSignedBinary(method, path, body, contentType);
+                    String text = response.body() == null ? "{}" : response.body().string();
+                    int status = response.code();
+                    response.close();
+                    if (status == 401) {
+                        synchronized (authLock) { token = ""; tokenExpiresAt = 0L; }
+                        ensureAuthenticated();
+                        response = executeSignedBinary(method, path, body, contentType);
+                        text = response.body() == null ? "{}" : response.body().string();
+                        status = response.code();
+                        response.close();
+                    }
+                    if (status < 200 || status >= 300) {
+                        callback.onError("电脑返回 HTTP " + status + errorText(text));
+                        return;
+                    }
+                    recordSuccessfulAddress(attemptedAddress);
+                    callback.onSuccess(stringValue(parseObject(text), "path"));
+                    return;
+                } catch (Exception exception) {
+                    lastFailure = exception;
+                    if (connectionAttempt == 0 && switchAfterFailure(attemptedAddress, true)) continue;
+                    break;
+                }
+            }
+            callback.onError(messageOf(lastFailure == null ? new IOException("连接失败") : lastFailure));
+        });
+    }
+
     private Response executeSigned(String method, String path, String body) throws Exception {
         if (!transportError.isEmpty()) throw new IOException(transportError);
         ensureAuthenticated();
         return http.newCall(signedBuilder(method, path, body, true)
+                .url(baseUrl + path).build()).execute();
+    }
+
+    private Response executeSignedBinary(String method, String path, byte[] body,
+                                         String contentType) throws Exception {
+        if (!transportError.isEmpty()) throw new IOException(transportError);
+        ensureAuthenticated();
+        return http.newCall(signedBinaryBuilder(method, path, body, contentType, true)
                 .url(baseUrl + path).build()).execute();
     }
 
@@ -645,6 +779,29 @@ public final class AicliClient {
                 .header("X-Aicli-Signature", keyManager.sign(canonical));
         if (includeToken && !token.isEmpty()) builder.header("Authorization", "Bearer " + token);
         if ("GET".equals(method)) return builder.get();
+        return builder.method(method, requestBody);
+    }
+
+    private Request.Builder signedBinaryBuilder(String method, String path, byte[] body,
+                                                String contentType, boolean includeToken)
+            throws Exception {
+        if (phoneId.isEmpty()) throw new IOException("设备身份未初始化");
+        String canonicalPath = path;
+        int query = canonicalPath.indexOf('?');
+        if (query >= 0) canonicalPath = canonicalPath.substring(0, query);
+        String requestId = UUID.randomUUID().toString();
+        long timestamp = System.currentTimeMillis() / 1000L;
+        long currentSequence = nextSequence();
+        String canonical = method + "\n" + canonicalPath + "\n" + requestId + "\n"
+                + timestamp + "\n" + currentSequence + "\n" + sha256Hex(body);
+        RequestBody requestBody = RequestBody.create(body, MediaType.get(contentType));
+        Request.Builder builder = new Request.Builder().url(baseUrl + path)
+                .header("X-Aicli-Phone", phoneId)
+                .header("X-Aicli-Request-Id", requestId)
+                .header("X-Aicli-Timestamp", Long.toString(timestamp))
+                .header("X-Aicli-Sequence", Long.toString(currentSequence))
+                .header("X-Aicli-Signature", keyManager.sign(canonical));
+        if (includeToken && !token.isEmpty()) builder.header("Authorization", "Bearer " + token);
         return builder.method(method, requestBody);
     }
 
@@ -802,6 +959,13 @@ public final class AicliClient {
         String alternate;
         synchronized (routeLock) {
             if (!failed.equals(baseUrl)) return !baseUrl.isEmpty();
+            if (!localUrl.isEmpty() && failed.equals(localUrl)) {
+                localRouteHealth = RouteHealth.OFFLINE;
+            }
+            if (!remoteUrl.isEmpty() && failed.equals(remoteUrl)) {
+                remoteRouteHealth = RouteHealth.OFFLINE;
+            }
+            notifyRouteStatus();
             if (failed.equals(localUrl)) {
                 alternate = distinctAddress(remoteUrl, failed);
             } else {
@@ -820,7 +984,10 @@ public final class AicliClient {
             baseUrl = address;
         }
         synchronized (authLock) { token = ""; tokenExpiresAt = 0L; }
-        updatePreferredRouteProbe();
+        if (monitorRoutes) {
+            updatePreferredRouteProbe();
+            updateRouteStatusProbe();
+        }
         if (reconnectEvents) reconnectEventsForAddressChange();
         return true;
     }
@@ -896,6 +1063,70 @@ public final class AicliClient {
         }
     }
 
+    private void updateRouteStatusProbe() {
+        if (clientClosed) return;
+        synchronized (routeLock) {
+            if (routeStatusProbeTask != null && !routeStatusProbeTask.isDone()) {
+                notifyRouteStatus();
+                return;
+            }
+            localRouteHealth = localUrl.isEmpty()
+                    ? RouteHealth.UNAVAILABLE : RouteHealth.CONNECTING;
+            remoteRouteHealth = remoteUrl.isEmpty()
+                    ? RouteHealth.UNAVAILABLE : RouteHealth.CONNECTING;
+            notifyRouteStatus();
+            try {
+                routeStatusProbeTask = executor.scheduleWithFixedDelay(
+                        this::probeConfiguredRoutes, 0L, 10L, TimeUnit.SECONDS);
+            } catch (RuntimeException ignored) { }
+        }
+    }
+
+    private void stopRouteStatusProbe() {
+        synchronized (routeLock) {
+            if (routeStatusProbeTask != null) routeStatusProbeTask.cancel(false);
+            routeStatusProbeTask = null;
+        }
+    }
+
+    private void probeConfiguredRoutes() {
+        if (clientClosed) return;
+        String local = localUrl;
+        String remote = remoteUrl;
+        if (local.isEmpty()) localRouteHealth = RouteHealth.UNAVAILABLE;
+        else if (localRouteHealth != RouteHealth.ONLINE) {
+            localRouteHealth = RouteHealth.CONNECTING;
+        }
+        if (remote.isEmpty()) remoteRouteHealth = RouteHealth.UNAVAILABLE;
+        else if (remoteRouteHealth != RouteHealth.ONLINE) {
+            remoteRouteHealth = RouteHealth.CONNECTING;
+        }
+        notifyRouteStatus();
+
+        RouteHealth nextLocal = local.isEmpty() ? RouteHealth.UNAVAILABLE
+                : probeAddress(local) ? RouteHealth.ONLINE : RouteHealth.OFFLINE;
+        RouteHealth nextRemote;
+        if (remote.isEmpty()) {
+            nextRemote = RouteHealth.UNAVAILABLE;
+        } else if (remote.equals(local)) {
+            nextRemote = nextLocal;
+        } else {
+            nextRemote = probeAddress(remote) ? RouteHealth.ONLINE : RouteHealth.OFFLINE;
+        }
+        localRouteHealth = nextLocal;
+        remoteRouteHealth = nextRemote;
+        notifyRouteStatus();
+    }
+
+    private void notifyRouteStatus() {
+        RouteStatusListener listener = routeStatusListener;
+        if (listener == null) return;
+        String current = normalize(baseUrl);
+        listener.onRouteStatus(localRouteHealth, remoteRouteHealth,
+                !localUrl.isEmpty() && current.equals(localUrl),
+                !remoteUrl.isEmpty() && current.equals(remoteUrl));
+    }
+
     private String preferredRouteAddress() {
         return ComputerConnectionStore.preferredAddress(
                 localUrl, remoteUrl, routePreference);
@@ -904,12 +1135,22 @@ public final class AicliClient {
     private void recordSuccessfulAddress(String value) {
         String address = normalize(value);
         if (address.isEmpty() || !address.equals(baseUrl)) return;
+        if (!localUrl.isEmpty() && address.equals(localUrl)) {
+            localRouteHealth = RouteHealth.ONLINE;
+        }
+        if (!remoteUrl.isEmpty() && address.equals(remoteUrl)) {
+            remoteRouteHealth = RouteHealth.ONLINE;
+        }
+        notifyRouteStatus();
         if (persistConnectionState && connectionStore != null && !computerId.isEmpty()) {
             connectionStore.updateBaseUrl(computerId, address);
         } else if (persistConnectionState && preferences != null) {
             preferences.edit().putString("baseUrl", address).apply();
         }
-        updatePreferredRouteProbe();
+        if (monitorRoutes) {
+            updatePreferredRouteProbe();
+            updateRouteStatusProbe();
+        }
     }
 
     private static String startingAddress(String local, String remote, String lastSuccessful,
@@ -963,6 +1204,7 @@ public final class AicliClient {
     }
     private static String normalizeFingerprint(String value) { return value == null ? "" : value.replace(":", "").replace(" ", "").toUpperCase(Locale.US); }
     private static String sha256Hex(String value) { try { return bytesToHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8))); } catch (Exception exception) { return ""; } }
+    private static String sha256Hex(byte[] value) { try { return bytesToHex(MessageDigest.getInstance("SHA-256").digest(value)); } catch (Exception exception) { return ""; } }
     private static String bytesToHex(byte[] bytes) { StringBuilder builder = new StringBuilder(bytes.length * 2); for (byte value : bytes) builder.append(String.format(Locale.US, "%02X", value & 0xff)); return builder.toString(); }
     private static String safePath(String value) { return value == null ? "" : value.replaceAll("[^A-Za-z0-9_.-]", ""); }
     private static String stringValue(JsonObject object, String name) { return object.has(name) && !object.get(name).isJsonNull() ? object.get(name).getAsString() : ""; }

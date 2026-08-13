@@ -8,14 +8,16 @@
     android:fitsSystemWindows="true">
 
     <LinearLayout
+        android:id="@+id/mainContent"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:background="@color/aicli_background"
         android:orientation="vertical">
 
         <LinearLayout
+            android:id="@+id/mainHeader"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
+            android:layout_height="80dp"
             android:gravity="center_vertical"
             android:paddingStart="8dp"
             android:paddingEnd="8dp">
@@ -39,24 +41,70 @@
                 android:paddingStart="8dp">
 
                 <TextView
-                    android:id="@+id/currentProjectTitle"
-                    android:layout_width="wrap_content"
+                    android:id="@+id/currentComputerTitle"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:ellipsize="end"
                     android:maxLines="1"
-                    android:text="未选择项目"
+                    android:text="未绑定电脑"
                     android:textColor="@color/aicli_text"
-                    android:textSize="18sp"
+                    android:textSize="16sp"
                     android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:layout_marginBottom="2dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <ImageView
+                        android:id="@+id/localConnectionIcon"
+                        android:layout_width="8dp"
+                        android:layout_height="8dp"
+                        android:contentDescription="本地，未连接"
+                        android:src="@drawable/ic_local_network"
+                        app:tint="@color/aicli_text_tertiary" />
+
+                    <ImageView
+                        android:id="@+id/localCurrentRouteIcon"
+                        android:layout_width="5dp"
+                        android:layout_height="5dp"
+                        android:layout_marginStart="1dp"
+                        android:contentDescription="当前连接"
+                        android:src="@drawable/ic_current_route"
+                        android:visibility="gone"
+                        app:tint="@color/aicli_primary" />
+
+                    <ImageView
+                        android:id="@+id/remoteConnectionIcon"
+                        android:layout_width="8dp"
+                        android:layout_height="8dp"
+                        android:layout_marginStart="12dp"
+                        android:contentDescription="远程，未连接"
+                        android:src="@drawable/ic_remote_network"
+                        app:tint="@color/aicli_text_tertiary" />
+
+                    <ImageView
+                        android:id="@+id/remoteCurrentRouteIcon"
+                        android:layout_width="5dp"
+                        android:layout_height="5dp"
+                        android:layout_marginStart="1dp"
+                        android:contentDescription="当前连接"
+                        android:src="@drawable/ic_current_route"
+                        android:visibility="gone"
+                        app:tint="@color/aicli_primary" />
+                </LinearLayout>
 
                 <TextView
                     android:id="@+id/currentProjectMeta"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
+                    android:layout_marginTop="0dp"
                     android:ellipsize="end"
                     android:maxLines="1"
-                    android:text="项目分组 · 项目类型"
+                    android:text="未选择项目 · 未设置类型"
                     android:textColor="@color/aicli_text_secondary"
                     android:textSize="12sp" />
             </LinearLayout>
@@ -149,137 +197,6 @@
                     app:strokeWidth="1dp" />
 
                 <LinearLayout
-                    android:id="@+id/terminalKeyBar"
-                    android:layout_width="match_parent"
-                    android:layout_height="42dp"
-                    android:layout_marginTop="6dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:visibility="gone">
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/wrapButton"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="0dp"
-                        android:layout_height="38dp"
-                        android:layout_marginEnd="4dp"
-                        android:layout_weight="1.35"
-                        android:insetTop="0dp"
-                        android:insetBottom="0dp"
-                        android:minWidth="0dp"
-                        android:paddingStart="4dp"
-                        android:paddingEnd="4dp"
-                        android:text="换行"
-                        android:textAllCaps="false"
-                        android:textColor="@color/aicli_text_secondary"
-                        android:textSize="12sp"
-                        app:backgroundTint="@color/aicli_surface_high"
-                        app:cornerRadius="11dp"
-                        app:strokeColor="@color/aicli_outline"
-                        app:strokeWidth="1dp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/keyLeftButton"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="0dp"
-                        android:layout_height="38dp"
-                        android:layout_marginEnd="4dp"
-                        android:layout_weight="1"
-                        android:insetTop="0dp"
-                        android:insetBottom="0dp"
-                        android:minWidth="0dp"
-                        android:padding="0dp"
-                        android:text="←"
-                        android:textAllCaps="false"
-                        android:textColor="@color/aicli_text"
-                        android:textSize="19sp"
-                        app:backgroundTint="@color/aicli_surface_high"
-                        app:cornerRadius="11dp"
-                        app:strokeColor="@color/aicli_outline"
-                        app:strokeWidth="1dp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/keyUpButton"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="0dp"
-                        android:layout_height="38dp"
-                        android:layout_marginEnd="4dp"
-                        android:layout_weight="1"
-                        android:insetTop="0dp"
-                        android:insetBottom="0dp"
-                        android:minWidth="0dp"
-                        android:padding="0dp"
-                        android:text="↑"
-                        android:textAllCaps="false"
-                        android:textColor="@color/aicli_text"
-                        android:textSize="19sp"
-                        app:backgroundTint="@color/aicli_surface_high"
-                        app:cornerRadius="11dp"
-                        app:strokeColor="@color/aicli_outline"
-                        app:strokeWidth="1dp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/keyDownButton"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="0dp"
-                        android:layout_height="38dp"
-                        android:layout_marginEnd="4dp"
-                        android:layout_weight="1"
-                        android:insetTop="0dp"
-                        android:insetBottom="0dp"
-                        android:minWidth="0dp"
-                        android:padding="0dp"
-                        android:text="↓"
-                        android:textAllCaps="false"
-                        android:textColor="@color/aicli_text"
-                        android:textSize="19sp"
-                        app:backgroundTint="@color/aicli_surface_high"
-                        app:cornerRadius="11dp"
-                        app:strokeColor="@color/aicli_outline"
-                        app:strokeWidth="1dp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/keyRightButton"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="0dp"
-                        android:layout_height="38dp"
-                        android:layout_marginEnd="4dp"
-                        android:layout_weight="1"
-                        android:insetTop="0dp"
-                        android:insetBottom="0dp"
-                        android:minWidth="0dp"
-                        android:padding="0dp"
-                        android:text="→"
-                        android:textAllCaps="false"
-                        android:textColor="@color/aicli_text"
-                        android:textSize="19sp"
-                        app:backgroundTint="@color/aicli_surface_high"
-                        app:cornerRadius="11dp"
-                        app:strokeColor="@color/aicli_outline"
-                        app:strokeWidth="1dp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/keyEnterButton"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="0dp"
-                        android:layout_height="38dp"
-                        android:layout_weight="1.35"
-                        android:insetTop="0dp"
-                        android:insetBottom="0dp"
-                        android:minWidth="0dp"
-                        android:paddingStart="4dp"
-                        android:paddingEnd="4dp"
-                        android:text="回车"
-                        android:textAllCaps="false"
-                        android:textColor="@color/aicli_text"
-                        android:textSize="12sp"
-                        app:backgroundTint="@color/aicli_surface_high"
-                        app:cornerRadius="11dp"
-                        app:strokeColor="@color/aicli_outline"
-                        app:strokeWidth="1dp" />
-                </LinearLayout>
-
-                <LinearLayout
                     android:id="@+id/inputBar"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -315,14 +232,219 @@
                         style="@style/Widget.Material3.Button.IconButton.Filled"
                         android:layout_width="38dp"
                         android:layout_height="38dp"
-                        android:contentDescription="发送"
-                        app:backgroundTint="@color/aicli_primary"
+                        android:contentDescription="展开终端按键"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:padding="0dp"
+                        app:backgroundTint="@color/aicli_surface_high"
                         app:cornerRadius="19dp"
-                        app:icon="@drawable/ic_send"
+                        app:icon="@drawable/ic_add"
                         app:iconGravity="textStart"
                         app:iconPadding="0dp"
                         app:iconSize="20dp"
-                        app:iconTint="@color/aicli_text" />
+                        app:iconTint="@color/aicli_text_secondary"
+                        app:strokeColor="@color/aicli_outline_strong"
+                        app:strokeWidth="1dp" />
+                </LinearLayout>
+
+                <!--
+                    This panel replaces the IME instead of permanently using
+                    terminal height. MainActivity updates its pixel height to
+                    the last visible keyboard height before showing it.
+                -->
+                <LinearLayout
+                    android:id="@+id/terminalKeyBar"
+                    android:layout_width="match_parent"
+                    android:layout_height="260dp"
+                    android:background="@drawable/bg_terminal_key_panel"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:paddingStart="14dp"
+                    android:paddingTop="18dp"
+                    android:paddingEnd="14dp"
+                    android:paddingBottom="18dp"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="54dp"
+                        android:gravity="center"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/wrapButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="50dp"
+                            android:layout_marginEnd="8dp"
+                            android:layout_weight="1"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:text="换行"
+                            android:textAllCaps="false"
+                            android:textColor="@color/aicli_text_secondary"
+                            android:textSize="13sp"
+                            app:backgroundTint="@color/aicli_surface_high"
+                            app:cornerRadius="14dp"
+                            app:strokeColor="@color/aicli_outline"
+                            app:strokeWidth="1dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/keyUpButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="50dp"
+                            android:layout_marginEnd="8dp"
+                            android:layout_weight="1"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:text="↑"
+                            android:textAllCaps="false"
+                            android:textColor="@color/aicli_text"
+                            android:textSize="21sp"
+                            app:backgroundTint="@color/aicli_surface_high"
+                            app:cornerRadius="14dp"
+                            app:strokeColor="@color/aicli_outline"
+                            app:strokeWidth="1dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/keyEnterButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="50dp"
+                            android:layout_weight="1"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:text="回车"
+                            android:textAllCaps="false"
+                            android:textColor="@color/aicli_text"
+                            android:textSize="13sp"
+                            app:backgroundTint="@color/aicli_surface_high"
+                            app:cornerRadius="14dp"
+                            app:strokeColor="@color/aicli_outline"
+                            app:strokeWidth="1dp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="54dp"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/keyLeftButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="50dp"
+                            android:layout_marginEnd="8dp"
+                            android:layout_weight="1"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:text="←"
+                            android:textAllCaps="false"
+                            android:textColor="@color/aicli_text"
+                            android:textSize="21sp"
+                            app:backgroundTint="@color/aicli_surface_high"
+                            app:cornerRadius="14dp"
+                            app:strokeColor="@color/aicli_outline"
+                            app:strokeWidth="1dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/keyDownButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="50dp"
+                            android:layout_marginEnd="8dp"
+                            android:layout_weight="1"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:text="↓"
+                            android:textAllCaps="false"
+                            android:textColor="@color/aicli_text"
+                            android:textSize="21sp"
+                            app:backgroundTint="@color/aicli_surface_high"
+                            app:cornerRadius="14dp"
+                            app:strokeColor="@color/aicli_outline"
+                            app:strokeWidth="1dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/keyRightButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="50dp"
+                            android:layout_weight="1"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:text="→"
+                            android:textAllCaps="false"
+                            android:textColor="@color/aicli_text"
+                            android:textSize="21sp"
+                            app:backgroundTint="@color/aicli_surface_high"
+                            app:cornerRadius="14dp"
+                            app:strokeColor="@color/aicli_outline"
+                            app:strokeWidth="1dp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="58dp"
+                        android:layout_marginTop="14dp"
+                        android:gravity="center"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/cameraButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="54dp"
+                            android:layout_marginEnd="8dp"
+                            android:layout_weight="1"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:text="拍照"
+                            android:textAllCaps="false"
+                            android:textColor="@color/aicli_text"
+                            android:textSize="13sp"
+                            app:backgroundTint="@color/aicli_surface_high"
+                            app:cornerRadius="14dp"
+                            app:icon="@drawable/ic_camera"
+                            app:iconPadding="8dp"
+                            app:iconSize="20dp"
+                            app:iconTint="@color/aicli_text_secondary"
+                            app:strokeColor="@color/aicli_outline"
+                            app:strokeWidth="1dp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/galleryButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="54dp"
+                            android:layout_weight="1"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:text="相册"
+                            android:textAllCaps="false"
+                            android:textColor="@color/aicli_text"
+                            android:textSize="13sp"
+                            app:backgroundTint="@color/aicli_surface_high"
+                            app:cornerRadius="14dp"
+                            app:icon="@drawable/ic_gallery"
+                            app:iconPadding="8dp"
+                            app:iconSize="20dp"
+                            app:iconTint="@color/aicli_text_secondary"
+                            app:strokeColor="@color/aicli_outline"
+                            app:strokeWidth="1dp" />
+                    </LinearLayout>
                 </LinearLayout>
             </LinearLayout>
 
