@@ -403,6 +403,25 @@
                         android:orientation="horizontal">
 
                         <com.google.android.material.button.MaterialButton
+                            android:id="@+id/keyCtrlCButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="54dp"
+                            android:layout_marginEnd="8dp"
+                            android:layout_weight="1"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:text="Ctrl+C"
+                            android:textAllCaps="false"
+                            android:textColor="@color/aicli_text"
+                            android:textSize="13sp"
+                            app:backgroundTint="@color/aicli_surface_high"
+                            app:cornerRadius="14dp"
+                            app:strokeColor="@color/aicli_outline"
+                            app:strokeWidth="1dp" />
+
+                        <com.google.android.material.button.MaterialButton
                             android:id="@+id/cameraButton"
                             style="@style/Widget.Material3.Button.TonalButton"
                             android:layout_width="0dp"

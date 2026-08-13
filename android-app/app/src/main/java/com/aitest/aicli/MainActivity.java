@@ -236,6 +236,7 @@ public final class MainActivity extends AppCompatActivity {
         findViewById(R.id.keyDownButton).setOnClickListener(view -> sendTerminalKey("down"));
         findViewById(R.id.keyRightButton).setOnClickListener(view -> sendTerminalKey("right"));
         findViewById(R.id.keyEnterButton).setOnClickListener(view -> sendTerminalKey("enter"));
+        findViewById(R.id.keyCtrlCButton).setOnClickListener(view -> sendTerminalInterrupt());
         findViewById(R.id.cameraButton).setOnClickListener(view -> openCamera());
         findViewById(R.id.galleryButton).setOnClickListener(view ->
                 galleryLauncher.launch("image/*"));
@@ -930,6 +931,18 @@ public final class MainActivity extends AppCompatActivity {
             @Override public void onError(String message) {
                 runOnUiThread(() -> Toast.makeText(
                         MainActivity.this, "按键发送失败：" + message, Toast.LENGTH_SHORT).show());
+            }
+        });
+    }
+
+    private void sendTerminalInterrupt() {
+        if (selectedConversationId == null || client == null) return;
+        client.control(selectedConversationId, "ctrl_c", new AicliClient.ActionCallback() {
+            @Override public void onSuccess() { }
+            @Override public void onError(String message) {
+                runOnUiThread(() -> Toast.makeText(
+                        MainActivity.this, "终止信号发送失败：" + message,
+                        Toast.LENGTH_SHORT).show());
             }
         });
     }
