@@ -60,9 +60,9 @@ void PaintMainWindow(HDC target_dc,
     LineTo(dc, client.right, client.bottom - metrics.footer_height);
     // Separate the sidebar heading/action row from the project items without
     // adding a border around the list itself.
-    const int sidebar_divider_y = metrics.title_bar_height + 80;
-    MoveToEx(dc, 6, sidebar_divider_y, nullptr);
-    LineTo(dc, metrics.sidebar_width - 6, sidebar_divider_y);
+    const int sidebar_divider_y = metrics.title_bar_height + metrics.Scale(80);
+    MoveToEx(dc, metrics.Scale(6), sidebar_divider_y, nullptr);
+    LineTo(dc, metrics.sidebar_width - metrics.Scale(6), sidebar_divider_y);
     SelectObject(dc, previous_pen);
     DeleteObject(separator);
 
@@ -74,13 +74,15 @@ void PaintMainWindow(HDC target_dc,
     (void)search;
 
     if (app_icon) {
-        DrawIconEx(dc, 14, 8, app_icon, 24, 24, 0, nullptr, DI_NORMAL);
+        DrawIconEx(dc, metrics.Scale(14), metrics.Scale(8), app_icon,
+                   metrics.Scale(24), metrics.Scale(24),
+                   0, nullptr, DI_NORMAL);
     }
 
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, chrome.Text(theme));
     SelectObject(dc, medium_font);
-    TextOutW(dc, 48, 10, L"AI CLI", 6);
+    TextOutW(dc, metrics.Scale(48), metrics.Scale(10), L"AI CLI", 6);
 
     footer_status.Draw(
         dc, client, metrics.footer_height, small_font, git_font, theme);

@@ -40,20 +40,35 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
                 Gdiplus::Graphics graphics(dc);
                 graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
                 const float cx=(client.left+client.right)/2.0f;
-                const float cy=(client.top+client.bottom)/2.0f-16.0f;
+                const float cy=(client.top+client.bottom)/2.0f-ScaleUiF(16.0f);
                 const COLORREF iconColor=g_light_theme?RGB(123,134,149):RGB(112,126,146);
-                Gdiplus::Pen ring(SmoothColor(iconColor),1.4f);
-                Gdiplus::Pen plus(SmoothColor(iconColor),1.6f);
-                ring.SetStartCap(Gdiplus::LineCapRound);ring.SetEndCap(Gdiplus::LineCapRound);
-                plus.SetStartCap(Gdiplus::LineCapRound);plus.SetEndCap(Gdiplus::LineCapRound);
-                graphics.DrawEllipse(&ring,cx-13.0f,cy-13.0f,26.0f,26.0f);
-                graphics.DrawLine(&plus,cx-5.0f,cy,cx+5.0f,cy);
-                graphics.DrawLine(&plus,cx,cy-5.0f,cx,cy+5.0f);
+                Gdiplus::Pen folderPen(SmoothColor(iconColor),ScaleUiF(1.5f));
+                folderPen.SetStartCap(Gdiplus::LineCapRound);
+                folderPen.SetEndCap(Gdiplus::LineCapRound);
+                folderPen.SetLineJoin(Gdiplus::LineJoinRound);
+                const float folderX=cx-ScaleUiF(19.0f);
+                const float folderY=cy-ScaleUiF(14.0f);
+                const float folderW=ScaleUiF(38.0f);
+                const float folderH=ScaleUiF(28.0f);
+                Gdiplus::GraphicsPath folderPath;
+                folderPath.StartFigure();
+                folderPath.AddLine(folderX+ScaleUiF(2.0f),folderY+ScaleUiF(5.0f),
+                                   folderX+ScaleUiF(13.0f),folderY+ScaleUiF(5.0f));
+                folderPath.AddLine(folderX+ScaleUiF(13.0f),folderY+ScaleUiF(5.0f),
+                                   folderX+ScaleUiF(18.0f),folderY+ScaleUiF(10.0f));
+                folderPath.AddLine(folderX+ScaleUiF(18.0f),folderY+ScaleUiF(10.0f),
+                                   folderX+folderW-ScaleUiF(2.0f),folderY+ScaleUiF(10.0f));
+                folderPath.AddLine(folderX+folderW-ScaleUiF(2.0f),folderY+ScaleUiF(10.0f),
+                                   folderX+folderW-ScaleUiF(2.0f),folderY+folderH-ScaleUiF(2.0f));
+                folderPath.AddLine(folderX+folderW-ScaleUiF(2.0f),folderY+folderH-ScaleUiF(2.0f),
+                                   folderX+ScaleUiF(2.0f),folderY+folderH-ScaleUiF(2.0f));
+                folderPath.CloseFigure();
+                graphics.DrawPath(&folderPen,&folderPath);
                 SetBkMode(dc,TRANSPARENT);
                 SetTextColor(dc,muted);
                 SelectObject(dc,g_font_project_list?g_font_project_list:g_font_small);
-                RECT text{client.left+8,static_cast<LONG>(cy+22.0f),client.right-8,
-                          static_cast<LONG>(cy+48.0f)};
+                RECT text{client.left+ScaleUi(8),static_cast<LONG>(cy+ScaleUiF(22.0f)),client.right-ScaleUi(8),
+                          static_cast<LONG>(cy+ScaleUiF(48.0f))};
                 DrawTextW(dc,L"当前没有项目",-1,&text,
                           DT_CENTER|DT_TOP|DT_SINGLELINE);
                 ReleaseDC(h,dc);
@@ -69,7 +84,7 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
                 const int row=static_cast<int>(LOWORD(hit));
                 RECT item{};
                 if(SendMessageW(h,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))!=LB_ERR){
-                    const RECT handle{item.left+3,item.top+3,item.left+31,item.bottom-3};
+                    const RECT handle{item.left+ScaleUi(3),item.top+ScaleUi(3),item.left+ScaleUi(31),item.bottom-ScaleUi(3)};
                     if(PtInRect(&handle,point))g_project_drag_candidate=row;
                 }
             }
@@ -101,7 +116,7 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
             RECT item{};
             const int row=static_cast<int>(LOWORD(hit));
             if(SendMessageW(h,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))!=LB_ERR){
-                const RECT handle{item.left+3,item.top+3,item.left+31,item.bottom-3};
+                const RECT handle{item.left+ScaleUi(3),item.top+ScaleUi(3),item.left+ScaleUi(31),item.bottom-ScaleUi(3)};
                 if(PtInRect(&handle,point)){
                     SetCursor(LoadCursorW(nullptr,IDC_SIZEALL));
                     return TRUE;
@@ -154,9 +169,14 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
     if(projectDropDown){
         const COLORREF fill=down?g_theme.pressed:
             (focused?g_theme.field_focus:(hover?g_theme.hover:g_theme.field));
-        HBRUSH brush=CreateSolidBrush(fill);auto oldBrush=SelectObject(item->hDC,brush);auto oldPen=SelectObject(item->hDC,GetStockObject(NULL_PEN));RoundRect(item->hDC,r.left,r.top,r.right,r.bottom,7,7);SelectObject(item->hDC,oldBrush);SelectObject(item->hDC,oldPen);DeleteObject(brush);
-        SetTextColor(item->hDC,fg);SelectObject(item->hDC,g_font);RECT textRect{r.left+10,r.top,r.right-34,r.bottom};DrawTextW(item->hDC,text,-1,&textRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
-        SetTextColor(item->hDC,focused?accent:muted);SelectObject(item->hDC,g_icon_font?g_icon_font:g_font);RECT arrow{r.right-30,r.top,r.right-7,r.bottom};DrawTextW(item->hDC,L"\xE70D",-1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);return;
+        // Fill the entire rounded child region first. A fill made only through
+        // RoundRect leaves its antialiased/exclusive edge showing the modal
+        // background, which looked like the dropdown did not reach its frame.
+        HBRUSH brush=CreateSolidBrush(fill);FillRect(item->hDC,&r,brush);DeleteObject(brush);
+        const COLORREF stroke=focused?accent:border;
+        HPEN pen=CreatePen(PS_SOLID,1,stroke);auto oldPen=SelectObject(item->hDC,pen);auto oldBrush=SelectObject(item->hDC,GetStockObject(HOLLOW_BRUSH));RoundRect(item->hDC,r.left,r.top,r.right,r.bottom,7,7);SelectObject(item->hDC,oldBrush);SelectObject(item->hDC,oldPen);DeleteObject(pen);
+        SetTextColor(item->hDC,fg);SelectObject(item->hDC,g_font);RECT textRect{r.left+ScaleUi(10),r.top,r.right-ScaleUi(34),r.bottom};DrawTextW(item->hDC,text,-1,&textRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        SetTextColor(item->hDC,focused?accent:muted);SelectObject(item->hDC,g_icon_font?g_icon_font:g_font);RECT arrow{r.right-ScaleUi(30),r.top,r.right-ScaleUi(7),r.bottom};DrawTextW(item->hDC,L"\xE70D",-1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);return;
     }
     COLORREF fill=under,stroke=RGB(52,59,70);
     if(projectButton){
@@ -236,43 +256,43 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         Gdiplus::Pen grip(SmoothColor(
             hovered&&!sourceDragging
                 ?(g_light_theme?RGB(111,128,150):RGB(131,145,165))
-                :(g_light_theme?RGB(157,166,178):RGB(91,101,116))),1.25f);
+                :(g_light_theme?RGB(157,166,178):RGB(91,101,116))),ScaleUiF(1.25f));
         grip.SetStartCap(Gdiplus::LineCapRound);
         grip.SetEndCap(Gdiplus::LineCapRound);
         const float gripCenter=(card.top+card.bottom)/2.0f;
-        for(float offset=-4.0f;offset<=4.0f;offset+=4.0f)
-            graphics.DrawLine(&grip,static_cast<float>(card.left+11),gripCenter+offset,
-                              static_cast<float>(card.left+20),gripCenter+offset);
+        for(float offset=-ScaleUiF(4.0f);offset<=ScaleUiF(4.0f);offset+=ScaleUiF(4.0f))
+            graphics.DrawLine(&grip,static_cast<float>(card.left)+ScaleUiF(11.0f),gripCenter+offset,
+                              static_cast<float>(card.left)+ScaleUiF(20.0f),gripCenter+offset);
 
-        const float iconSize=20.0f;
-        const float iconX=static_cast<float>(card.right)-iconSize-11.0f;
+        const float iconSize=ScaleUiF(20.0f);
+        const float iconX=static_cast<float>(card.right)-iconSize-ScaleUiF(11.0f);
         const float iconY=(card.top+card.bottom-iconSize)/2.0f;
         Gdiplus::RectF iconBounds{iconX,iconY,iconSize,iconSize};
         const bool workingSpinner=stateIcon==StateIcon::Running&&IsProjectWorking(project);
         Gdiplus::SolidBrush halo(SmoothColor(stateColor,30));
         if(!workingSpinner&&stateIcon!=StateIcon::Running)
             graphics.FillEllipse(&halo,iconBounds);
-        Gdiplus::Pen iconPen(SmoothColor(stateColor),1.65f);
+        Gdiplus::Pen iconPen(SmoothColor(stateColor),ScaleUiF(1.65f));
         iconPen.SetStartCap(Gdiplus::LineCapRound);
         iconPen.SetEndCap(Gdiplus::LineCapRound);
         Gdiplus::SolidBrush iconBrush(SmoothColor(stateColor));
         const float cx=iconX+iconSize/2.0f,cy=iconY+iconSize/2.0f;
         if(workingSpinner){
-            Gdiplus::Pen trackPen(SmoothColor(stateColor,65),1.65f);
-            Gdiplus::Pen spinnerPen(SmoothColor(stateColor),2.35f);
+            Gdiplus::Pen trackPen(SmoothColor(stateColor,65),ScaleUiF(1.65f));
+            Gdiplus::Pen spinnerPen(SmoothColor(stateColor),ScaleUiF(2.35f));
             trackPen.SetStartCap(Gdiplus::LineCapRound);
             trackPen.SetEndCap(Gdiplus::LineCapRound);
             spinnerPen.SetStartCap(Gdiplus::LineCapRound);
             spinnerPen.SetEndCap(Gdiplus::LineCapRound);
-            graphics.DrawEllipse(&trackPen,iconX+2.0f,iconY+2.0f,
-                                 iconSize-4.0f,iconSize-4.0f);
-            graphics.DrawArc(&spinnerPen,iconX+2.0f,iconY+2.0f,
-                             iconSize-4.0f,iconSize-4.0f,
+            graphics.DrawEllipse(&trackPen,iconX+ScaleUiF(2.0f),iconY+ScaleUiF(2.0f),
+                                 iconSize-ScaleUiF(4.0f),iconSize-ScaleUiF(4.0f));
+            graphics.DrawArc(&spinnerPen,iconX+ScaleUiF(2.0f),iconY+ScaleUiF(2.0f),
+                             iconSize-ScaleUiF(4.0f),iconSize-ScaleUiF(4.0f),
                              g_project_spinner_angle,112.0f);
         }else if(stateIcon==StateIcon::Running){
             const float pulse=(std::sin(
-                g_project_spinner_angle*3.14159265f/180.0f)+1.0f)*0.5f;
-            const float diameter=8.0f+2.0f*pulse;
+                g_project_idle_pulse_angle*3.14159265f/180.0f)+1.0f)*0.5f;
+            const float diameter=ScaleUiF(8.0f+2.0f*pulse);
             const auto channel=[pulse](BYTE low,BYTE high){
                 return static_cast<BYTE>(low+(high-low)*pulse+0.5f);
             };
@@ -282,18 +302,18 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
             graphics.FillEllipse(&pulseBrush,cx-diameter/2.0f,cy-diameter/2.0f,
                                  diameter,diameter);
         }else if(stateIcon==StateIcon::Paused){
-            graphics.DrawLine(&iconPen,cx-2.5f,cy-4.0f,cx-2.5f,cy+4.0f);
-            graphics.DrawLine(&iconPen,cx+2.5f,cy-4.0f,cx+2.5f,cy+4.0f);
+            graphics.DrawLine(&iconPen,cx-ScaleUiF(2.5f),cy-ScaleUiF(4.0f),cx-ScaleUiF(2.5f),cy+ScaleUiF(4.0f));
+            graphics.DrawLine(&iconPen,cx+ScaleUiF(2.5f),cy-ScaleUiF(4.0f),cx+ScaleUiF(2.5f),cy+ScaleUiF(4.0f));
         }else if(stateIcon==StateIcon::Warning){
             Gdiplus::PointF triangle[3]{
-                {cx,iconY+3.0f},
-                {iconX+3.0f,iconY+iconSize-3.0f},
-                {iconX+iconSize-3.0f,iconY+iconSize-3.0f}};
+                {cx,iconY+ScaleUiF(3.0f)},
+                {iconX+ScaleUiF(3.0f),iconY+iconSize-ScaleUiF(3.0f)},
+                {iconX+iconSize-ScaleUiF(3.0f),iconY+iconSize-ScaleUiF(3.0f)}};
             graphics.DrawPolygon(&iconPen,triangle,3);
-            graphics.DrawLine(&iconPen,cx,cy-2.5f,cx,cy+1.5f);
-            graphics.FillEllipse(&iconBrush,cx-0.9f,cy+3.0f,1.8f,1.8f);
+            graphics.DrawLine(&iconPen,cx,cy-ScaleUiF(2.5f),cx,cy+ScaleUiF(1.5f));
+            graphics.FillEllipse(&iconBrush,cx-ScaleUiF(0.9f),cy+ScaleUiF(3.0f),ScaleUiF(1.8f),ScaleUiF(1.8f));
         }else{
-            graphics.DrawEllipse(&iconPen,cx-4.0f,cy-4.0f,8.0f,8.0f);
+            graphics.DrawEllipse(&iconPen,cx-ScaleUiF(4.0f),cy-ScaleUiF(4.0f),ScaleUiF(8.0f),ScaleUiF(8.0f));
         }
     }
 
@@ -302,7 +322,7 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     wchar_t name[256]{};
     SendMessageW(item->hwndItem,LB_GETTEXT,item->itemID,(LPARAM)name);
     SetTextColor(item->hDC,sourceDragging?muted:fg);
-    RECT title{card.left+29,card.top,card.right-39,card.bottom};
+    RECT title{card.left+ScaleUi(29),card.top,card.right-ScaleUi(39),card.bottom};
     DrawTextW(item->hDC,name,-1,&title,
               DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
     SelectObject(item->hDC,oldFont);

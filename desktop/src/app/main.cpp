@@ -193,6 +193,7 @@ COLORREF& accent = g_theme.accent;
 COLORREF& accent2 = g_theme.accent_strong;
 HBRUSH g_edit_brush{},g_focus_brush{},g_list_brush{},g_bg_brush{},g_detail_surface_brush{};bool g_light_theme{};bool g_theme_workspace_dirty{};
 bool g_settings_open_posted{};
+bool g_close_confirmation_open{};
 HWND g_project_dialog{}, g_d_name{}, g_d_note{}, g_d_type{}, g_d_group{}, g_d_folder{}, g_d_folder_browse{}, g_d_command{}; bool g_project_dialog_ok{}; bool g_project_dialog_edit{}; Project g_project_draft{};
 HWND g_binding_dialog{},g_binding_refresh{},g_binding_close{},g_binding_approve{},g_binding_reject{};
 aicli::agent::PairingInfo g_binding_info{};
@@ -209,6 +210,7 @@ aicli::agent::TerminalStreamPublisher g_terminal_streams;
 bool g_terminal_snapshot_timer_active{};
 bool g_project_spinner_timer_active{};
 float g_project_spinner_angle{-90.0f};
+float g_project_idle_pulse_angle{-90.0f};
 std::atomic_uint64_t g_git_status_request_id{};
 std::atomic_bool g_git_status_query_active{};
 std::unordered_set<std::wstring> g_working_projects;
@@ -221,6 +223,14 @@ UINT g_project_drag_message{};
 UINT g_taskbar_button_created_message{};
 HWND g_project_drag_preview{};
 POINT g_project_drag_hotspot{};
+
+int ScaleUi(int value) noexcept {
+    return g_layout_metrics.Scale(value);
+}
+
+float ScaleUiF(float value) noexcept {
+    return value * static_cast<float>(std::max(1, g_layout_metrics.dpi)) / 96.0f;
+}
 
 enum { ID_D_NAME=2001, ID_D_TYPE=2002, ID_D_GROUP=2003, ID_D_FOLDER=2004, ID_D_COMMAND=2005, ID_D_OK=2006, ID_D_CANCEL=2007, ID_D_BROWSE=2008, ID_D_NOTE=2009 };
 enum { ID_BIND_REFRESH=2101,ID_BIND_CLOSE=2102,ID_BIND_APPROVE=2103,ID_BIND_REJECT=2104 };
@@ -289,7 +299,7 @@ void ApplyLiveTheme(bool flush_workspace=true){
     g_theme_workspace_dirty=false;
 }
 void ExecuteTitleButton(HWND window,int id){
-    if(id==ID_CLOSE)DestroyWindow(window);
+    if(id==ID_CLOSE)SendMessageW(window,WM_CLOSE,0,0);
     else if(id==ID_MINIMIZE)ShowWindow(window,SW_MINIMIZE);
     else if(id==ID_MAXIMIZE){ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);Layout();}
 }
@@ -302,6 +312,85 @@ void CenterProjectEditText(HWND control){
     HFONT font=(HFONT)SendMessageW(control,WM_GETFONT,0,0);auto oldFont=font?SelectObject(dc,font):nullptr;TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);if(oldFont)SelectObject(dc,oldFont);ReleaseDC(control,dc);
     const int height=client.bottom-client.top;const int textHeight=std::min(height,std::max(1,(int)metrics.tmHeight));const int top=std::max(0,(height-textHeight)/2);
     RECT format{10,top,std::max(11,(int)client.right-10),std::min(height,top+textHeight+1)};SendMessageW(control,EM_SETRECTNP,0,(LPARAM)&format);InvalidateRect(control,nullptr,FALSE);
+}
+
+HFONT CreateMainFont(int logical_height, int weight, const wchar_t* face,
+                     DWORD pitch = DEFAULT_PITCH) {
+    return CreateFontW(-ScaleUi(logical_height), 0, 0, 0, weight,
+                       FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                       OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                       CLEARTYPE_QUALITY, pitch, face);
+}
+
+void ApplyMainFontsToControls() {
+    for (HWND control : {g_group, g_group_add, g_bind, g_devices,
+                         g_new_project, g_settings, g_detail_folder_label,
+                         g_detail_command_label, g_detail_note_label,
+                         g_detail_note, g_detail_state, g_start_project}) {
+        if (control) SendMessageW(control, WM_SETFONT,
+                                  reinterpret_cast<WPARAM>(g_font), TRUE);
+    }
+    for (HWND control : {g_edit_project, g_open_project_folder}) {
+        if (control) SendMessageW(control, WM_SETFONT,
+                                  reinterpret_cast<WPARAM>(g_icon_font), TRUE);
+    }
+    if (g_sidebar_title)
+        SendMessageW(g_sidebar_title, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(g_font_sidebar_title), TRUE);
+    if (g_search)
+        SendMessageW(g_search, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(g_font), TRUE);
+    if (g_list) {
+        SendMessageW(g_list, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(g_font_project_list), TRUE);
+        SendMessageW(g_list, LB_SETITEMHEIGHT, 0, ScaleUi(kProjectListItemHeight));
+    }
+    if (g_detail_title)
+        SendMessageW(g_detail_title, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(g_font_project_heading), TRUE);
+    if (g_detail_subtitle)
+        SendMessageW(g_detail_subtitle, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(g_font_small), TRUE);
+    for (HWND control : {g_detail_folder, g_detail_command}) {
+        if (control) SendMessageW(control, WM_SETFONT,
+                                  reinterpret_cast<WPARAM>(g_font_monospace), TRUE);
+    }
+    if (g_status)
+        SendMessageW(g_status, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(g_font_git), TRUE);
+
+    for (HWND control : {g_d_name, g_d_note, g_d_type, g_d_group,
+                         g_d_folder, g_d_folder_browse, g_d_command,
+                         g_binding_refresh, g_binding_close,
+                         g_binding_approve, g_binding_reject}) {
+        if (control) SendMessageW(control, WM_SETFONT,
+                                  reinterpret_cast<WPARAM>(g_font), TRUE);
+    }
+}
+
+void RecreateMainFontsForDpi() {
+    const std::array<HFONT, 11> previous{
+        g_font, g_font_medium, g_font_small, g_font_git,
+        g_font_sidebar_title, g_font_project_list, g_font_modal_title,
+        g_font_modal_subtitle, g_font_project_heading, g_font_monospace,
+        g_icon_font};
+
+    g_font = CreateMainFont(15, FW_NORMAL, L"Segoe UI");
+    g_font_medium = CreateMainFont(17, FW_SEMIBOLD, L"Segoe UI");
+    g_font_small = CreateMainFont(13, FW_NORMAL, L"Segoe UI");
+    g_font_git = CreateMainFont(12, FW_NORMAL, L"Segoe UI");
+    g_font_sidebar_title = CreateMainFont(16, FW_NORMAL, L"Segoe UI");
+    g_font_project_list = CreateMainFont(14, FW_NORMAL, L"Segoe UI");
+    g_font_modal_title = CreateMainFont(16, FW_SEMIBOLD, L"Segoe UI");
+    g_font_modal_subtitle = CreateMainFont(14, FW_NORMAL, L"Segoe UI");
+    g_font_project_heading = CreateMainFont(22, FW_SEMIBOLD, L"Segoe UI");
+    g_font_monospace = CreateMainFont(14, FW_NORMAL, L"Cascadia Mono", FIXED_PITCH);
+    g_icon_font = CreateMainFont(16, FW_NORMAL, L"Segoe MDL2 Assets");
+
+    ApplyMainFontsToControls();
+    for (HFONT font : previous) {
+        if (font) DeleteObject(font);
+    }
 }
 
 void SetText(HWND h,const std::wstring& s){
@@ -359,6 +448,7 @@ void SyncProjectSpinnerTimer(){
     const bool shouldRun=g_hwnd&&g_list&&HasVisibleAnimatedProject();
     if(shouldRun&&!g_project_spinner_timer_active){
         g_project_spinner_angle=-90.0f;
+        g_project_idle_pulse_angle=-90.0f;
         g_project_spinner_timer_active=
             SetTimer(g_hwnd,kProjectSpinnerTimerId,kProjectSpinnerIntervalMs,nullptr)!=0;
     }else if(!shouldRun){
@@ -547,26 +637,27 @@ void Layout(){
     const int top=g_layout_metrics.title_bar_height;
     const int left=g_layout_metrics.sidebar_width;
     const int bottom=g_layout_metrics.footer_height;
-    if(r.right<=left+80 || r.bottom<=top+bottom+120)return;
-    MoveMainChild(g_group,168,4,154,32);
-    MoveMainChild(g_group_add,326,4,34,32);
+    if(r.right<=left+ScaleUi(80) || r.bottom<=top+bottom+ScaleUi(120))return;
+    const auto S=[](int value){return ScaleUi(value);};
+    MoveMainChild(g_group,S(168),S(4),S(154),S(32));
+    MoveMainChild(g_group_add,S(326),S(4),S(34),S(32));
     // Anchor the complete phone/settings cluster from the native caption
     // buttons and lay each control out sequentially. Clamping every button to
     // its own minimum X made the first two overlap on narrower/high-DPI
     // windows even though the cluster as a whole still had enough room.
-    constexpr int headerGap=8;
-    constexpr int bindWidth=104;
-    constexpr int devicesWidth=116;
-    constexpr int settingsWidth=72;
-    const int captionReserve=MulDiv(144,(int)GetDpiForWindow(g_hwnd),96);
-    const int clusterRight=(int)r.right-captionReserve-8;
+    const int headerGap=S(8);
+    const int bindWidth=S(104);
+    const int devicesWidth=S(116);
+    const int settingsWidth=S(72);
+    const int captionReserve=g_layout_metrics.caption_button_width*3;
+    const int clusterRight=(int)r.right-captionReserve-S(8);
     const int settingsX=clusterRight-settingsWidth;
     const int devicesX=settingsX-headerGap-devicesWidth;
     const int bindX=devicesX-headerGap-bindWidth;
     const bool headerControlsMoved =
-        MoveMainChild(g_bind,bindX,4,bindWidth,32) |
-        MoveMainChild(g_devices,devicesX,4,devicesWidth,32) |
-        MoveMainChild(g_settings,settingsX,4,settingsWidth,32);
+        MoveMainChild(g_bind,bindX,S(4),bindWidth,S(32)) |
+        MoveMainChild(g_devices,devicesX,S(4),devicesWidth,S(32)) |
+        MoveMainChild(g_settings,settingsX,S(4),settingsWidth,S(32));
     if(headerControlsMoved){
         // During interactive horizontal resizing USER32 otherwise preserves
         // pixels from the controls' old positions.  The parent title bar is
@@ -577,18 +668,18 @@ void Layout(){
                      RDW_INVALIDATE|RDW_NOERASE|RDW_ALLCHILDREN);
     }
 
-    constexpr int sidebarInset=6;
-    constexpr int searchHeight=35;
-    constexpr int titleTopGap=6;
-    constexpr int titleHeight=28;
-    constexpr int titleBottomGap=10;
-    constexpr int addButtonSize=28;
-    const int searchTop=top+6;
+    const int sidebarInset=S(6);
+    const int searchHeight=S(35);
+    const int titleTopGap=S(6);
+    const int titleHeight=S(28);
+    const int titleBottomGap=S(10);
+    const int addButtonSize=S(28);
+    const int searchTop=top+S(6);
     const int searchBottom=searchTop+searchHeight;
     RECT search_rect{sidebarInset,searchTop,left-sidebarInset,searchBottom};
-    aicli::ui::LayoutStyledInput(g_search,search_rect,2,9);
+    aicli::ui::LayoutStyledInput(g_search,search_rect,S(2),S(9));
     const int titleTop=searchBottom+titleTopGap;
-    MoveMainChild(g_sidebar_title,9,titleTop,200,titleHeight);
+    MoveMainChild(g_sidebar_title,S(9),titleTop,S(200),titleHeight);
     MoveMainChild(g_new_project,left-sidebarInset-addButtonSize,titleTop,addButtonSize,addButtonSize);
     SetWindowPos(g_new_project,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
     const int footer_top=r.bottom-bottom;
@@ -596,16 +687,14 @@ void Layout(){
     const int git_left=g_footer_status.git_bounds().left;
     const int listTop=titleTop+titleHeight+titleBottomGap;
     MoveMainChild(g_list,sidebarInset,listTop,left-sidebarInset*2,
-                  std::max(80,footer_top-listTop-sidebarInset));
+                  std::max(S(80),footer_top-listTop-sidebarInset));
 
     // WM_NCCALCSIZE makes the complete custom frame part of the client area.
     // Keep the XAML Island off the outermost right-hand compositor rim so the
     // parent HWND always owns a real, directly hittable resize strip. The
     // island may otherwise visually cover the border and consume the initial
     // drag even when its outer host returns HTTRANSPARENT.
-    const int terminalRightInset=IsZoomed(g_hwnd)
-        ?0
-        :std::max(2,MulDiv(2,static_cast<int>(GetDpiForWindow(g_hwnd)),96));
+    const int terminalRightInset=IsZoomed(g_hwnd)?0:S(2);
     const LONG terminalRight=std::max<LONG>(left+1,r.right-terminalRightInset);
     RECT terminal{left,top,terminalRight,r.bottom-bottom};
     const int selectedIndex=SelectedProjectIndex();
@@ -643,42 +732,42 @@ void Layout(){
         SetRectEmpty(&g_prestart_panel);SetRectEmpty(&g_prestart_folder_surface);
         SetRectEmpty(&g_prestart_command_surface);SetRectEmpty(&g_prestart_note_surface);
         SetText(g_detail_title,L"请先添加项目");
-        MoveMainChild(g_detail_title,terminal.left+28,
-                      terminal.top+(terminal.bottom-terminal.top-32)/2,
-                      terminal.right-terminal.left-56,32);
+        MoveMainChild(g_detail_title,terminal.left+S(28),
+                      terminal.top+(terminal.bottom-terminal.top-S(32))/2,
+                      terminal.right-terminal.left-S(56),S(32));
     }else{
         const int workspaceWidth=terminal.right-terminal.left;
-        const int panelWidth=std::min(620,std::max(480,workspaceWidth-72));
-        const int panelHeight=466;
+        const int panelWidth=std::min(S(620),std::max(S(480),workspaceWidth-S(72)));
+        const int panelHeight=S(466);
         const int panelLeft=terminal.left+(workspaceWidth-panelWidth)/2;
         const int panelTop=static_cast<int>(terminal.top)+std::max(
-            22,static_cast<int>((terminal.bottom-terminal.top-panelHeight)/2-12));
+            S(22),static_cast<int>((terminal.bottom-terminal.top-panelHeight)/2-S(12)));
         g_prestart_panel={panelLeft,panelTop,panelLeft+panelWidth,panelTop+panelHeight};
-        MoveMainChild(g_detail_title,panelLeft,panelTop,panelWidth,32);
-        MoveMainChild(g_detail_subtitle,panelLeft,panelTop+36,panelWidth,22);
-        MoveMainChild(g_detail_state,panelLeft,panelTop+68,panelWidth,24);
+        MoveMainChild(g_detail_title,panelLeft,panelTop,panelWidth,S(32));
+        MoveMainChild(g_detail_subtitle,panelLeft,panelTop+S(36),panelWidth,S(22));
+        MoveMainChild(g_detail_state,panelLeft,panelTop+S(68),panelWidth,S(24));
         const int surfaceLeft=panelLeft;
         const int surfaceRight=panelLeft+panelWidth;
-        MoveMainChild(g_detail_folder_label,surfaceLeft,panelTop+112,panelWidth,20);
-        g_prestart_folder_surface={surfaceLeft,panelTop+136,surfaceRight,panelTop+178};
-        MoveMainChild(g_detail_folder,surfaceLeft+14,panelTop+136,panelWidth-28,42);
-        MoveMainChild(g_detail_command_label,surfaceLeft,panelTop+198,panelWidth,20);
-        g_prestart_command_surface={surfaceLeft,panelTop+222,surfaceRight,panelTop+264};
-        MoveMainChild(g_detail_command,surfaceLeft+14,panelTop+222,panelWidth-28,42);
-        MoveMainChild(g_detail_note_label,surfaceLeft,panelTop+284,panelWidth,20);
-        g_prestart_note_surface={surfaceLeft,panelTop+308,surfaceRight,panelTop+370};
-        MoveMainChild(g_detail_note,surfaceLeft+14,panelTop+308,panelWidth-28,62);
-        const int actionsWidth=132+12+38+10+38;
+        MoveMainChild(g_detail_folder_label,surfaceLeft,panelTop+S(112),panelWidth,S(20));
+        g_prestart_folder_surface={surfaceLeft,panelTop+S(136),surfaceRight,panelTop+S(178)};
+        MoveMainChild(g_detail_folder,surfaceLeft+S(14),panelTop+S(136),panelWidth-S(28),S(42));
+        MoveMainChild(g_detail_command_label,surfaceLeft,panelTop+S(198),panelWidth,S(20));
+        g_prestart_command_surface={surfaceLeft,panelTop+S(222),surfaceRight,panelTop+S(264)};
+        MoveMainChild(g_detail_command,surfaceLeft+S(14),panelTop+S(222),panelWidth-S(28),S(42));
+        MoveMainChild(g_detail_note_label,surfaceLeft,panelTop+S(284),panelWidth,S(20));
+        g_prestart_note_surface={surfaceLeft,panelTop+S(308),surfaceRight,panelTop+S(370)};
+        MoveMainChild(g_detail_note,surfaceLeft+S(14),panelTop+S(308),panelWidth-S(28),S(62));
+        const int actionsWidth=S(132+12+38+10+38);
         const int actionsLeft=panelLeft+(panelWidth-actionsWidth)/2;
-        MoveMainChild(g_start_project,actionsLeft,panelTop+402,132,38);
-        MoveMainChild(g_edit_project,actionsLeft+144,panelTop+403,38,36);
-        MoveMainChild(g_open_project_folder,actionsLeft+192,panelTop+403,38,36);
+        MoveMainChild(g_start_project,actionsLeft,panelTop+S(402),S(132),S(38));
+        MoveMainChild(g_edit_project,actionsLeft+S(144),panelTop+S(403),S(38),S(36));
+        MoveMainChild(g_open_project_folder,actionsLeft+S(192),panelTop+S(403),S(38),S(36));
     }
     // The central surface is always the real Windows Terminal control.  Do
     // not create a second EDIT-based command line or a text-output fallback:
     // keyboard focus, shortcuts, selection and scrolling must stay native.
-    MoveMainChild(g_status,14,r.bottom-bottom+6,
-                  std::max(160,git_left-22),20);
+    MoveMainChild(g_status,S(14),r.bottom-bottom+S(6),
+                  std::max(S(160),git_left-S(22)),S(20));
     if(g_island.Window()){
         if(showingNative)g_island.Resize(terminal);
         // Modal windows are now separate owned popups.  Keep the real
@@ -947,12 +1036,10 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     if(g_project_drag_message&&m==g_project_drag_message)return HandleProjectDragListMessage(h,l);
     if(g_taskbar_button_created_message&&m==g_taskbar_button_created_message){g_taskbar_working_indicator.OnTaskbarButtonCreated();return 0;}
     switch(m){
-    case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY); g_font=CreateFontW(-15,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_medium=CreateFontW(-17,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_small=CreateFontW(-13,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_sidebar_title=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_project_list=CreateFontW(-14,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_modal_title=CreateFontW(-16,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_font_modal_subtitle=CreateFontW(-14,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");g_icon_font=CreateFontW(-16,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe MDL2 Assets");
+    case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY);g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);RecreateMainFontsForDpi();
         g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
         g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputFocusBorderOnly(g_search);
-        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SendMessageW(g_list,LB_SETITEMHEIGHT,0,kProjectListItemHeight);g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
-        g_font_project_heading=CreateFontW(-22,0,0,0,600,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
-        g_font_monospace=CreateFontW(-14,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,FIXED_PITCH,L"Cascadia Mono");
+        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SendMessageW(g_list,LB_SETITEMHEIGHT,0,ScaleUi(kProjectListItemHeight));g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
         auto detailStatic=[&](const wchar_t* text){return CreateWindowW(L"STATIC",text,WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);};
         g_detail_title=detailStatic(L"选择一个项目");
         g_detail_subtitle=detailStatic(L"");
@@ -971,7 +1058,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         for(HWND b:{g_start_project,g_edit_project,g_open_project_folder})EnableButtonHover(b);
         g_detail_tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         if(g_detail_tooltip){for(auto entry:{std::pair<HWND,const wchar_t*>{g_edit_project,L"编辑项目"},{g_open_project_folder,L"打开项目文件夹"}}){TOOLINFOW tool{sizeof(tool)};tool.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tool.hwnd=h;tool.uId=reinterpret_cast<UINT_PTR>(entry.first);tool.lpszText=const_cast<LPWSTR>(entry.second);SendMessageW(g_detail_tooltip,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&tool));}}
-        g_status=CreateWindowW(L"STATIC",L"就绪    |    选择项目后查看启动信息",WS_CHILD|WS_VISIBLE,0,0,0,0,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_status,WM_SETFONT,(WPARAM)g_font_small,TRUE);
+        g_status=CreateWindowW(L"STATIC",L"就绪    |    选择项目后查看启动信息",WS_CHILD|WS_VISIBLE,0,0,0,0,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);ApplyMainFontsToControls();
         g_island.Attach(h,RECT{250,60,500,400});g_island.SetTheme(g_light_theme);RefreshProjectDetails();ExtendCustomTitleBar(h);SetWindowPos(h,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);Layout();ConfigureRemoteAgent();UpdateHeaderTelemetry();SetTimer(h,1,2000,nullptr);PostMessageW(h,WM_RESTORE_LAST_SESSION,0,0);return 0;}
     case WM_ACTIVATE:
         // An owned modal surface becomes the thread's active window while it
@@ -998,6 +1085,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
                          SWP_NOZORDER | SWP_NOACTIVATE);
         }
         g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);
+        RecreateMainFontsForDpi();
         Layout();
         InvalidateRect(h,nullptr,FALSE);
         return 0;
@@ -1009,7 +1097,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_LBUTTONDOWN:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(g_window_chrome.OnLeftButtonDown(h,point))return 0;break;}
     case WM_LBUTTONUP:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const auto action=g_window_chrome.OnLeftButtonUp(h,point);if(action.has_value()){if(*action)ExecuteTitleButton(h,*action);return 0;}break;}
     case WM_CAPTURECHANGED:g_window_chrome.OnCaptureChanged(h);break;
-    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);item->itemWidth=218;item->itemHeight=entry&&!entry->label[0]?10:38;return TRUE;}if(item->CtlID==ID_PROJECT_LIST){item->itemHeight=kProjectListItemHeight;return TRUE;}}break;
+    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);item->itemWidth=ScaleUi(218);item->itemHeight=entry&&!entry->label[0]?ScaleUi(10):ScaleUi(38);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){item->itemHeight=ScaleUi(kProjectListItemHeight);return TRUE;}}break;
     case WM_DRAWITEM:{auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){DrawContextMenuItem(item);return TRUE;}if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){DrawProjectItem(item);return TRUE;}}break;
     case WM_SIZE:
         if(w==SIZE_MINIMIZED){g_island.SetVisible(false);return 0;}
@@ -1028,8 +1116,8 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
                      RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
         return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshots.MarkDirtyMessageHandled();if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
-    case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
-    case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;info->ptMinTrackSize.x=900;info->ptMinTrackSize.y=600;return 0;}
+    case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);g_project_idle_pulse_angle=std::fmod(g_project_idle_pulse_angle+9.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
+    case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);info->ptMinTrackSize.x=metrics.Scale(900);info->ptMinTrackSize.y=metrics.Scale(600);return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;
     case WM_CTLCOLORSTATIC: {HDC dc=(HDC)w;HWND control=(HWND)l;const bool onPanel=control==g_sidebar_title||control==g_status;const bool detailValue=control==g_detail_folder||control==g_detail_command||control==g_detail_note;const bool detailLabel=control==g_detail_subtitle||control==g_detail_folder_label||control==g_detail_command_label||control==g_detail_note_label;const bool detail=control==g_detail_title||detailLabel||detailValue||control==g_detail_state;if(detail){const COLORREF detailSurface=g_light_theme?RGB(239,243,248):RGB(18,21,27);SetBkMode(dc,OPAQUE);SetBkColor(dc,detailValue?detailSurface:bg);SetTextColor(dc,control==g_detail_state?(g_light_theme?RGB(177,113,16):RGB(245,178,72)):(detailLabel?muted:fg));return (LRESULT)(detailValue?g_detail_surface_brush:g_bg_brush);}SetBkMode(dc,OPAQUE);SetTextColor(dc,fg);SetBkColor(dc,onPanel?panel:bg);return (LRESULT)(onPanel?g_list_brush:g_bg_brush);}
@@ -1046,7 +1134,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_CTLCOLORLISTBOX: {HDC dc=(HDC)w;SetTextColor(dc,fg);SetBkColor(dc,panel);return (LRESULT)(g_list_brush?g_list_brush:GetStockObject(NULL_BRUSH));}
     case WM_COMMAND:{
         const UINT id=LOWORD(w),notification=HIWORD(w);
-        if(id==ID_CLOSE){DestroyWindow(h);return 0;}
+        if(id==ID_CLOSE){SendMessageW(h,WM_CLOSE,0,0);return 0;}
         if(id==ID_MINIMIZE){ShowWindow(h,SW_MINIMIZE);return 0;}
         if(id==ID_MAXIMIZE){ShowWindow(h,IsZoomed(h)?SW_RESTORE:SW_MAXIMIZE);Layout();return 0;}
         // Root toolbar commands are blocked while an owned modal is active;
@@ -1090,6 +1178,23 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         }
         if(id==ID_GROUP_DEFAULT){ShowGroupDropdown();return 0;}
         if(id==ID_GROUP_ADD){CreateGroupFromHeader();Layout();return 0;}
+        return 0;
+    }
+    case WM_CLOSE: {
+        if(g_close_confirmation_open)return 0;
+        g_close_confirmation_open=true;
+        const bool hasRunningSession=std::any_of(
+            g_projects.begin(),g_projects.end(),[](const Project& project){
+                return g_island.HasSession(project.id);
+            });
+        const wchar_t* prompt=hasRunningSession
+            ?L"确定要关闭 AiCli 吗？\n\n当前正在运行的终端会话将同时结束。"
+            :L"确定要关闭 AiCli 吗？";
+        const int answer=MessageBoxW(
+            h,prompt,L"确认关闭",
+            MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2|MB_APPLMODAL);
+        g_close_confirmation_open=false;
+        if(answer==IDYES)DestroyWindow(h);
         return 0;
     }
     case WM_OPEN_SETTINGS:
@@ -1219,15 +1324,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         RECT r{};
         GetClientRect(h,&r);
         const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);
-        if(!g_font_git){
-            g_font_git=CreateFontW(
-                -12,0,0,0,400,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
-                OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,
-                DEFAULT_PITCH,L"Segoe UI");
-            if(g_status&&g_font_git)
-                SendMessageW(g_status,WM_SETFONT,
-                             reinterpret_cast<WPARAM>(g_font_git),TRUE);
-        }
+        if(!g_font_git)RecreateMainFontsForDpi();
         aicli::ui::PaintMainWindow(
             target_dc,r,ps.rcPaint,h,g_search,g_app_icon_large,g_font_medium,g_font_small,g_font_git,
             metrics,g_theme,g_window_chrome,g_footer_status);
@@ -1309,8 +1406,11 @@ int WINAPI wWinMain(HINSTANCE instance,
     constexpr DWORD window_style =
         WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX |
         WS_CLIPCHILDREN;
+    const UINT initial_dpi = std::max<UINT>(96, GetDpiForSystem());
     g_hwnd = CreateWindowExW(0, kClassName, L"\x200B", window_style,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 1100, 700,
+                             CW_USEDEFAULT, CW_USEDEFAULT,
+                             MulDiv(1100, initial_dpi, 96),
+                             MulDiv(700, initial_dpi, 96),
                              nullptr, nullptr, instance, nullptr);
     ApplyWindowChromeTheme();
     ShowWindow(g_hwnd, show_command);

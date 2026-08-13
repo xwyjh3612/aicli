@@ -26,7 +26,12 @@ COLORREF CompositorBorder(HWND window, COLORREF normal_border) noexcept {
 
 MARGINS CompositorMargins(HWND window) noexcept {
     const int rim = IsZoomed(window) ? 0 : 1;
-    return MARGINS{rim, rim, rim, rim};
+    // The complete top edge belongs to the client-rendered title bar.  A
+    // one-pixel DWM extension here can be composited as a bright glass strip
+    // above the dark title surface (the caption buttons happened to cover it
+    // with their own fill). Keep the side/bottom rim for resize and shadow,
+    // but never extend glass into the top row.
+    return MARGINS{rim, rim, 0, rim};
 }
 
 } // namespace
@@ -146,6 +151,9 @@ void WindowChrome::DrawButtons(HDC dc,
                                const ThemePalette& theme) const {
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    const auto metrics = LayoutMetrics::ForWindow(window);
+    const float scale = static_cast<float>(std::max(1, metrics.dpi)) / 96.0F;
+    const auto s = [scale](float value) { return value * scale; };
     for (const int id : {ids_.minimize, ids_.maximize, ids_.close}) {
         const RECT rect = ButtonRect(window, id);
         COLORREF fill = Background(theme);
@@ -172,30 +180,30 @@ void WindowChrome::DrawButtons(HDC dc,
         const COLORREF glyph = id == ids_.close && hover
             ? RGB(255, 255, 255)
             : Text(theme);
-        Gdiplus::Pen pen(SmoothColor(glyph), 1.25F);
+        Gdiplus::Pen pen(SmoothColor(glyph), std::max(1.0F, s(1.25F)));
         pen.SetStartCap(Gdiplus::LineCapSquare);
         pen.SetEndCap(Gdiplus::LineCapSquare);
         const float cx = (rect.left + rect.right) / 2.0F;
         const float cy = (rect.top + rect.bottom) / 2.0F;
         if (id == ids_.minimize) {
-            graphics.DrawLine(&pen, cx - 5.0F, cy + 1.0F,
-                              cx + 5.0F, cy + 1.0F);
+            graphics.DrawLine(&pen, cx - s(5.0F), cy + s(1.0F),
+                              cx + s(5.0F), cy + s(1.0F));
         } else if (id == ids_.close) {
-            graphics.DrawLine(&pen, cx - 4.0F, cy - 4.0F,
-                              cx + 4.0F, cy + 4.0F);
-            graphics.DrawLine(&pen, cx + 4.0F, cy - 4.0F,
-                              cx - 4.0F, cy + 4.0F);
+            graphics.DrawLine(&pen, cx - s(4.0F), cy - s(4.0F),
+                              cx + s(4.0F), cy + s(4.0F));
+            graphics.DrawLine(&pen, cx + s(4.0F), cy - s(4.0F),
+                              cx - s(4.0F), cy + s(4.0F));
         } else if (IsZoomed(window)) {
-            graphics.DrawRectangle(&pen, cx - 3.0F, cy - 4.0F,
-                                   8.0F, 8.0F);
+            graphics.DrawRectangle(&pen, cx - s(3.0F), cy - s(4.0F),
+                                   s(8.0F), s(8.0F));
             Gdiplus::SolidBrush cover(SmoothColor(fill));
-            graphics.FillRectangle(&cover, cx - 5.0F, cy - 2.0F,
-                                   8.0F, 8.0F);
-            graphics.DrawRectangle(&pen, cx - 5.0F, cy - 2.0F,
-                                   8.0F, 8.0F);
+            graphics.FillRectangle(&cover, cx - s(5.0F), cy - s(2.0F),
+                                   s(8.0F), s(8.0F));
+            graphics.DrawRectangle(&pen, cx - s(5.0F), cy - s(2.0F),
+                                   s(8.0F), s(8.0F));
         } else {
-            graphics.DrawRectangle(&pen, cx - 5.0F, cy - 4.5F,
-                                   10.0F, 9.0F);
+            graphics.DrawRectangle(&pen, cx - s(5.0F), cy - s(4.5F),
+                                   s(10.0F), s(9.0F));
         }
     }
 }

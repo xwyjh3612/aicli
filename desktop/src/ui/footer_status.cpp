@@ -34,12 +34,14 @@ void FooterStatusController::Detach() {
 
 void FooterStatusController::Layout(const RECT& client, int footer_height) {
     footer_height_ = std::max(1, footer_height);
+    const UINT dpi = owner_ && IsWindow(owner_) ? GetDpiForWindow(owner_) : 96;
+    const auto scale = [dpi](int value) { return MulDiv(value, dpi, 96); };
     const int footer_top = std::max(
         0, static_cast<int>(client.bottom) - footer_height_);
     telemetry_left_ = std::max(
-        14, static_cast<int>(client.right) - kTelemetryWidth + 8);
-    const int git_right = std::max(14, telemetry_left_ - 8);
-    const int git_left = std::max(14, git_right - 214);
+        scale(14), static_cast<int>(client.right) - scale(kTelemetryWidth) + scale(8));
+    const int git_right = std::max(scale(14), telemetry_left_ - scale(8));
+    const int git_left = std::max(scale(14), git_right - scale(214));
     const RECT next{git_left, footer_top, git_right, client.bottom};
     if (!EqualRect(&git_bounds_, &next)) {
         git_bounds_ = next;
@@ -277,26 +279,28 @@ void FooterStatusController::Draw(HDC dc,
                                   const ThemePalette& theme) const {
     HGDIOBJ previous_font = font ? SelectObject(dc, font) : nullptr;
     SetBkMode(dc, TRANSPARENT);
+    const UINT dpi = owner_ && IsWindow(owner_) ? GetDpiForWindow(owner_) : 96;
+    const auto scale = [dpi](int value) { return MulDiv(value, dpi, 96); };
 
     if (git_bounds_.right > git_bounds_.left) {
         if (git_font) SelectObject(dc, git_font);
         SetTextColor(dc, GitColor(theme));
         RECT git_rect = git_bounds_;
-        git_rect.left += 4;
-        git_rect.right -= 4;
+        git_rect.left += scale(4);
+        git_rect.right -= scale(4);
         if (repository_loading_) {
             RECT prefix = git_rect;
-            prefix.right = prefix.left + 24;
+            prefix.right = prefix.left + scale(24);
             constexpr wchar_t git_text[] = {wchar_t(0x67), wchar_t(0x69),
                                              wchar_t(0x74), wchar_t(0)};
             DrawTextW(dc, git_text, -1, &prefix,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-            const int center_x = prefix.right + 10;
+            const int center_x = prefix.right + scale(10);
             const int center_y = (git_rect.top + git_rect.bottom) / 2;
-            constexpr POINT points[8] = {
-                {0, -6}, {4, -4}, {6, 0}, {4, 4},
-                {0, 6}, {-4, 4}, {-6, 0}, {-4, -4}};
+            const POINT points[8] = {
+                {0, -scale(6)}, {scale(4), -scale(4)}, {scale(6), 0}, {scale(4), scale(4)},
+                {0, scale(6)}, {-scale(4), scale(4)}, {-scale(6), 0}, {-scale(4), -scale(4)}};
             const unsigned phase = repository_spinner_frame_ % 8;
             for (unsigned step = 0; step < 8; ++step) {
                 const POINT point = points[(phase + step) % 8];
@@ -309,16 +313,16 @@ void FooterStatusController::Draw(HDC dc,
                     (GetBValue(theme.panel) * (255u - strength) +
                      GetBValue(theme.accent) * strength) / 255u);
                 HBRUSH dot = CreateSolidBrush(color);
-                RECT dot_rect{center_x + point.x - 1,
-                              center_y + point.y - 1,
-                              center_x + point.x + 2,
-                              center_y + point.y + 2};
+                RECT dot_rect{center_x + point.x - scale(1),
+                              center_y + point.y - scale(1),
+                              center_x + point.x + scale(2),
+                              center_y + point.y + scale(2)};
                 FillRect(dc, &dot_rect, dot);
                 DeleteObject(dot);
             }
 
             RECT loading = git_rect;
-            loading.left = center_x + 14;
+            loading.left = center_x + scale(14);
             constexpr wchar_t loading_text[] = {
                 wchar_t(0x6B63), wchar_t(0x5728), wchar_t(0x8BFB),
                 wchar_t(0x53D6), wchar_t(0)};
@@ -347,11 +351,11 @@ void FooterStatusController::Draw(HDC dc,
         ? L"公网已配置"
         : L"公网未配置";
     RECT agent_rect{
-        telemetry_left_, telemetry_top, telemetry_left_ + 116, client.bottom};
+        telemetry_left_, telemetry_top, telemetry_left_ + scale(116), client.bottom};
     RECT memory_rect{
-        agent_rect.right, telemetry_top, agent_rect.right + 108, client.bottom};
+        agent_rect.right, telemetry_top, agent_rect.right + scale(108), client.bottom};
     RECT relay_rect{
-        memory_rect.right, telemetry_top, client.right - 10, client.bottom};
+        memory_rect.right, telemetry_top, client.right - scale(10), client.bottom};
     SetTextColor(dc, agent_online_
         ? RGB(83, 203, 146)
         : RGB(225, 101, 112));

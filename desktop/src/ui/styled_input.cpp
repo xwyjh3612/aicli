@@ -14,8 +14,11 @@ struct StyledInputState {
     std::wstring placeholder;
     COLORREF placeholder_color{RGB(126, 136, 151)};
     COLORREF focus_border_color{RGB(72, 137, 224)};
+    COLORREF background_color{RGB(32, 36, 43)};
+    COLORREF focus_background_color{RGB(43, 48, 57)};
     bool focus_border_only{};
     int radius{5};
+    int horizontal_margin{10};
 };
 
 StyledInputState* State(HWND control) {
@@ -47,7 +50,9 @@ void CenterText(HWND control) {
     const int height = client.bottom - client.top;
     const int text_height = std::min(height, std::max(1, static_cast<int>(metrics.tmHeight)));
     const int top = std::max(0, (height - text_height) / 2);
-    RECT format{10, top, std::max(11L, static_cast<LONG>(client.right - 10)),
+    const auto* state = State(control);
+    const int margin = state ? state->horizontal_margin : 10;
+    RECT format{margin, top, std::max<LONG>(margin + 1, client.right - margin),
                 std::min(height, top + text_height + 1)};
     SendMessageW(control, EM_SETRECTNP, 0, reinterpret_cast<LPARAM>(&format));
 }
@@ -64,7 +69,90 @@ void InvalidateParentFrame(HWND control) {
     MapWindowPoints(HWND_DESKTOP, parent,
                     reinterpret_cast<POINT*>(&frame), 2);
     InflateRect(&frame, 3, 3);
-    InvalidateRect(parent, &frame, FALSE);
+    RedrawWindow(parent, &frame, nullptr,
+                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+}
+
+void DrawPlaceholderAndFocusBorder(HWND control, HDC dc,
+                                   const StyledInputState& state) {
+    if (GetWindowTextLengthW(control) == 0 && !state.placeholder.empty()) {
+        RECT rect{};
+        GetClientRect(control, &rect);
+        rect.left += state.horizontal_margin;
+        rect.right -= state.horizontal_margin;
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, state.placeholder_color);
+        const auto font = reinterpret_cast<HFONT>(
+            SendMessageW(control, WM_GETFONT, 0, 0));
+        const auto old = font ? SelectObject(dc, font) : nullptr;
+        DrawTextW(dc, state.placeholder.c_str(), -1, &rect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        if (old) SelectObject(dc, old);
+    }
+
+    if (state.focus_border_only && GetFocus() == control) {
+        RECT rect{};
+        GetClientRect(control, &rect);
+        HPEN pen = CreatePen(PS_SOLID, 1, state.focus_border_color);
+        const auto old_pen = SelectObject(dc, pen);
+        const auto old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        RoundRect(dc, 0, 0, std::max(1L, rect.right),
+                  std::max(1L, rect.bottom), state.radius, state.radius);
+        SelectObject(dc, old_brush);
+        SelectObject(dc, old_pen);
+        DeleteObject(pen);
+    }
+}
+
+LRESULT PaintStyledInput(HWND control, const StyledInputState& state) {
+    PAINTSTRUCT paint{};
+    HDC target = BeginPaint(control, &paint);
+    if (!target) return 0;
+
+    RECT client{};
+    GetClientRect(control, &client);
+    const int width = std::max(1L, client.right - client.left);
+    const int height = std::max(1L, client.bottom - client.top);
+    HDC buffer = CreateCompatibleDC(target);
+    HBITMAP bitmap = buffer ? CreateCompatibleBitmap(target, width, height) : nullptr;
+    if (!buffer || !bitmap) {
+        if (bitmap) DeleteObject(bitmap);
+        if (buffer) DeleteDC(buffer);
+        EndPaint(control, &paint);
+
+        // Allocation failure is exceptionally rare for these small fields.
+        // Fall back to the native paint path and retain placeholder support.
+        const auto result = DefSubclassProc(control, WM_PAINT, 0, 0);
+        HDC dc = GetDC(control);
+        if (dc) {
+            DrawPlaceholderAndFocusBorder(control, dc, state);
+            ReleaseDC(control, dc);
+        }
+        return result;
+    }
+
+    const auto old_bitmap = SelectObject(buffer, bitmap);
+    const COLORREF background = GetFocus() == control
+        ? state.focus_background_color
+        : state.background_color;
+    HBRUSH background_brush = CreateSolidBrush(background);
+    FillRect(buffer, &client, background_brush);
+    DeleteObject(background_brush);
+
+    // Render the native EDIT (text, selection and IME state) into the same
+    // off-screen frame as our placeholder. This prevents the background-only
+    // frame that was briefly visible when focus moved between two empty
+    // fields.
+    DefSubclassProc(control, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(buffer),
+                    PRF_CLIENT);
+    DrawPlaceholderAndFocusBorder(control, buffer, state);
+    BitBlt(target, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
+
+    SelectObject(buffer, old_bitmap);
+    DeleteObject(bitmap);
+    DeleteDC(buffer);
+    EndPaint(control, &paint);
+    return 0;
 }
 
 LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPARAM lparam,
@@ -74,6 +162,22 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
         CenterText(control);
         ApplyRoundedRegion(control);
         break;
+    case WM_SHOWWINDOW: {
+        const auto result = DefSubclassProc(control, message, wparam, lparam);
+        if (wparam) {
+            // Settings pages create their fields while hidden, then reveal
+            // them when a navigation item is selected. Reapply the region
+            // after the native EDIT has become visible; otherwise its first
+            // presented frame can retain the stock square rectangle until a
+            // later focus message.
+            CenterText(control);
+            ApplyRoundedRegion(control);
+            InvalidateParentFrame(control);
+            RedrawWindow(control, nullptr, nullptr,
+                         RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        }
+        return result;
+    }
     case WM_SETTEXT:
         {
             const auto result = DefSubclassProc(control, message, wparam, lparam);
@@ -85,10 +189,11 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
     case WM_KILLFOCUS: {
         const auto result = DefSubclassProc(control, message, wparam, lparam);
         CenterText(control);
-        // A multiline EDIT only repaints its formatting rectangle when the
-        // background is not erased.  Erase this control (not its full modal
-        // parent) so the top and bottom bands use the focused field colour.
-        RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE);
+        // Paint the complete field synchronously without a separate erase
+        // frame. The old and new controls therefore each reach the compositor
+        // with their placeholder already present.
+        RedrawWindow(control, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
         ApplyRoundedRegion(control);
         InvalidateParentFrame(control);
         return result;
@@ -97,44 +202,16 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
     case WM_CHAR:
         if (wparam == VK_RETURN || wparam == L'\n') return 0;
         break;
-    case WM_PAINT: {
-        const auto result = DefSubclassProc(control, message, wparam, lparam);
-        const auto* state = State(control);
-        if (state && GetWindowTextLengthW(control) == 0 && !state->placeholder.empty()) {
-            HDC dc = GetDC(control);
-            if (dc) {
-                RECT rect{};
-                GetClientRect(control, &rect);
-                rect.left += 10;
-                rect.right -= 10;
-                SetBkMode(dc, TRANSPARENT);
-                SetTextColor(dc, state->placeholder_color);
-                const auto font = reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0));
-                const auto old = font ? SelectObject(dc, font) : nullptr;
-                DrawTextW(dc, state->placeholder.c_str(), -1, &rect,
-                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-                if (old) SelectObject(dc, old);
-                ReleaseDC(control, dc);
-            }
+    case WM_ERASEBKGND:
+        // WM_PAINT composes the entire field off-screen, including its
+        // background. Suppressing the independent erase is what removes the
+        // one-frame placeholder flash.
+        return 1;
+    case WM_PAINT:
+        if (const auto* state = State(control)) {
+            return PaintStyledInput(control, *state);
         }
-        if (state && state->focus_border_only && GetFocus() == control) {
-            HDC dc = GetDC(control);
-            if (dc) {
-                RECT rect{};
-                GetClientRect(control, &rect);
-                HPEN pen = CreatePen(PS_SOLID, 1, state->focus_border_color);
-                const auto old_pen = SelectObject(dc, pen);
-                const auto old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-                RoundRect(dc, 0, 0, std::max(1L, rect.right),
-                          std::max(1L, rect.bottom), state->radius, state->radius);
-                SelectObject(dc, old_brush);
-                SelectObject(dc, old_pen);
-                DeleteObject(pen);
-                ReleaseDC(control, dc);
-            }
-        }
-        return result;
-    }
+        break;
     case WM_NCDESTROY: {
         auto* state = State(control);
         RemovePropW(control, kStyledInputProperty);
@@ -158,9 +235,11 @@ HWND CreateStyledInput(HWND parent, int control_id, HFONT font,
                                    GetModuleHandleW(nullptr), nullptr);
     if (!control) return nullptr;
     SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-    SendMessageW(control, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-                 MAKELPARAM(10, 10));
     auto state = std::make_unique<StyledInputState>();
+    const UINT dpi = parent ? GetDpiForWindow(parent) : 96;
+    state->horizontal_margin = MulDiv(10, dpi ? dpi : 96, 96);
+    SendMessageW(control, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                 MAKELPARAM(state->horizontal_margin, state->horizontal_margin));
     state->placeholder = placeholder;
     SetPropW(control, kStyledInputProperty, state.release());
     SetWindowSubclass(control, StyledInputProc, kStyledInputSubclassId, 0);
@@ -194,7 +273,10 @@ void SetStyledInputTheme(HWND control, const ThemePalette& palette) {
     if (auto* state = State(control)) {
         state->placeholder_color = palette.muted;
         state->focus_border_color = palette.accent;
-        RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE);
+        state->background_color = palette.field;
+        state->focus_background_color = palette.field_focus;
+        RedrawWindow(control, nullptr, nullptr,
+                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
     }
 }
 
@@ -207,7 +289,18 @@ void SetStyledInputFocusBorderOnly(HWND control, bool enabled) {
 
 void LayoutStyledInput(HWND control, const RECT& outer, int inset, int radius) {
     if (!control) return;
-    if (auto* state = State(control)) state->radius = radius;
+    if (auto* state = State(control)) {
+        state->radius = radius;
+        HWND parent = GetParent(control);
+        const UINT dpi = parent ? GetDpiForWindow(parent) : 96;
+        const int margin = MulDiv(10, dpi ? dpi : 96, 96);
+        if (state->horizontal_margin != margin) {
+            state->horizontal_margin = margin;
+            SendMessageW(control, EM_SETMARGINS,
+                         EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                         MAKELPARAM(margin, margin));
+        }
+    }
     const int width = std::max(1L, outer.right - outer.left - inset * 2);
     const int height = std::max(1L, outer.bottom - outer.top - inset * 2);
     RECT current{};
@@ -226,6 +319,10 @@ void LayoutStyledInput(HWND control, const RECT& outer, int inset, int radius) {
     }
     ApplyRoundedRegion(control);
     if (!geometry_changed) return;
+    // Changing a rectangular child to a rounded region exposes its four
+    // corner pixels. Repaint the parent immediately so those pixels do not
+    // retain the old square EDIT background until the field receives focus.
+    InvalidateParentFrame(control);
     CenterText(control);
     RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE);
 }

@@ -2,6 +2,8 @@
 
 #include <windows.h>
 
+#include <algorithm>
+
 namespace aicli::ui {
 
 // Geometry is owned by the frame, not by individual paint functions.  The
@@ -16,12 +18,14 @@ struct LayoutMetrics {
     int modal_radius{14};
     int control_radius{9};
 
+    int Scale(int value) const noexcept {
+        return MulDiv(value, std::max(1, dpi), 96);
+    }
+
     static LayoutMetrics ForWindow(HWND window) {
         LayoutMetrics result;
         result.dpi = window ? static_cast<int>(GetDpiForWindow(window)) : 96;
-        const auto scale = [result](int value) {
-            return MulDiv(value, result.dpi, 96);
-        };
+        const auto scale = [result](int value) { return result.Scale(value); };
         result.title_bar_height = scale(40);
         result.footer_height = scale(30);
         result.sidebar_width = scale(286);

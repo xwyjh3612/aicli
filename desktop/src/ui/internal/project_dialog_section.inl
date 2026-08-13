@@ -14,29 +14,31 @@ std::wstring DefaultProjectCommand(const std::wstring& type){
 }
 void LayoutProjectDialog(HWND h){
     RECT client{}; GetClientRect(h,&client);
+    const int dpi=std::max(96,static_cast<int>(GetDpiForWindow(h)));
+    const auto S=[dpi](int value){return MulDiv(value,dpi,96);};
     const int availableWidth=static_cast<int>(client.right-client.left);
-    const int width=std::min(620,std::max(540,availableWidth-96));
-    const int height=550;
+    const int width=std::min(S(620),std::max(S(540),availableWidth-S(96)));
+    const int height=S(550);
     const int left=(client.right-width)/2, top=(client.bottom-height)/2;
     g_project_panel={left,top,left+width,top+height};
-    constexpr int padding=34;
-    g_d_name_rect={left+padding,top+107,left+width-padding,top+142};
-    g_d_type_rect={left+padding,top+181,left+width/2-12,top+216};
-    g_d_group_rect={left+width/2+12,top+181,left+width-padding,top+216};
-    g_d_folder_rect={left+padding,top+255,left+width-padding-122,top+290};
-    g_d_command_rect={left+padding,top+329,left+width-padding,top+364};
-    g_d_note_rect={left+padding,top+403,left+width-padding,top+438};
-    // Leave only the one-pixel parent outline visible. Wider insets exposed
-    // the modal background between the fill and border, especially the old
-    // four-pixel vertical gap around dropdown buttons.
-    auto placeEdit=[&](HWND control,RECT outer){if(!control)return;aicli::ui::LayoutStyledInput(control,outer,1,5);};
-    auto placeDropDown=[&](HWND control,RECT outer){if(!control)return;const int w=outer.right-outer.left-2,h=outer.bottom-outer.top-2;MoveWindow(control,outer.left+1,outer.top+1,w,h,TRUE);ApplyRoundedRegion(control,w,h,5);};
-    auto placeButton=[&](HWND control,RECT outer){if(!control)return;MoveWindow(control,outer.left,outer.top,outer.right-outer.left,outer.bottom-outer.top,TRUE);ApplyRoundedRegion(control,outer.right-outer.left,outer.bottom-outer.top,7);};
+    const int padding=S(34);
+    g_d_name_rect={left+padding,top+S(107),left+width-padding,top+S(142)};
+    g_d_type_rect={left+padding,top+S(181),left+width/2-S(12),top+S(216)};
+    g_d_group_rect={left+width/2+S(12),top+S(181),left+width-padding,top+S(216)};
+    g_d_folder_rect={left+padding,top+S(255),left+width-padding-S(122),top+S(290)};
+    g_d_command_rect={left+padding,top+S(329),left+width-padding,top+S(364)};
+    g_d_note_rect={left+padding,top+S(403),left+width-padding,top+S(438)};
+    // Text fields keep their parent-painted one-pixel outline. Dropdowns own
+    // both their fill and outline, so they occupy the complete field rectangle
+    // instead of exposing a strip of modal background around the child HWND.
+    auto placeEdit=[&](HWND control,RECT outer){if(!control)return;aicli::ui::LayoutStyledInput(control,outer,S(1),S(5));};
+    auto placeDropDown=[&](HWND control,RECT outer){if(!control)return;const int w=outer.right-outer.left,h=outer.bottom-outer.top;MoveWindow(control,outer.left,outer.top,w,h,TRUE);ApplyRoundedRegion(control,w,h,S(6));};
+    auto placeButton=[&](HWND control,RECT outer){if(!control)return;MoveWindow(control,outer.left,outer.top,outer.right-outer.left,outer.bottom-outer.top,TRUE);ApplyRoundedRegion(control,outer.right-outer.left,outer.bottom-outer.top,S(7));};
     placeEdit(g_d_name,g_d_name_rect);placeEdit(g_d_note,g_d_note_rect);placeDropDown(g_d_type,g_d_type_rect);placeDropDown(g_d_group,g_d_group_rect);placeEdit(g_d_folder,g_d_folder_rect);placeEdit(g_d_command,g_d_command_rect);
-    RECT browse{g_d_folder_rect.right+12,g_d_folder_rect.top,g_project_panel.right-padding,g_d_folder_rect.bottom}; placeButton(g_d_folder_browse,browse);
-    RECT save{left+padding,top+490,left+width/2-7,top+526}, cancel{left+width/2+7,top+490,left+width-padding,top+526};
-    HWND child=GetWindow(h,GW_CHILD); while(child){int id=GetDlgCtrlID(child);if(id==ID_D_OK){MoveWindow(child,save.left,save.top,save.right-save.left,save.bottom-save.top,TRUE);ApplyRoundedRegion(child,save.right-save.left,save.bottom-save.top,8);}if(id==ID_D_CANCEL){MoveWindow(child,cancel.left,cancel.top,cancel.right-cancel.left,cancel.bottom-cancel.top,TRUE);ApplyRoundedRegion(child,cancel.right-cancel.left,cancel.bottom-cancel.top,8);}child=GetWindow(child,GW_HWNDNEXT);}
-    aicli::ui::SetModalSurfaceRegion(h,g_project_panel,28);
+    RECT browse{g_d_folder_rect.right+S(12),g_d_folder_rect.top,g_project_panel.right-padding,g_d_folder_rect.bottom}; placeButton(g_d_folder_browse,browse);
+    RECT save{left+padding,top+S(490),left+width/2-S(7),top+S(526)}, cancel{left+width/2+S(7),top+S(490),left+width-padding,top+S(526)};
+    HWND child=GetWindow(h,GW_CHILD); while(child){int id=GetDlgCtrlID(child);if(id==ID_D_OK){MoveWindow(child,save.left,save.top,save.right-save.left,save.bottom-save.top,TRUE);ApplyRoundedRegion(child,save.right-save.left,save.bottom-save.top,S(8));}if(id==ID_D_CANCEL){MoveWindow(child,cancel.left,cancel.top,cancel.right-cancel.left,cancel.bottom-cancel.top,TRUE);ApplyRoundedRegion(child,cancel.right-cancel.left,cancel.bottom-cancel.top,S(8));}child=GetWindow(child,GW_HWNDNEXT);}
+    aicli::ui::SetModalSurfaceRegion(h,g_project_panel,S(28));
     InvalidateRect(h,nullptr,FALSE);
 }
 void InvalidateProjectControlFrame(HWND dialog, HWND control) {
@@ -64,31 +66,36 @@ void PaintProjectDialogSurface(HDC dc,RECT client){
     // Do not paint an opaque backdrop here; doing so would hide the live
     // terminal/workspace and defeat modal translucency.
     (void)client;
-    DrawSmoothRoundedRect(dc,g_project_panel,14,panel,border,1.0f);
+    const auto S=[](int value){return ScaleUi(value);};
+    DrawSmoothRoundedRect(dc,g_project_panel,ScaleUiF(14.0f),panel,border,ScaleUiF(1.0f));
     SetBkMode(dc,TRANSPARENT);
     SelectObject(dc,g_font_modal_title?g_font_modal_title:g_font_medium);
     SetTextColor(dc,fg);
-    RECT title{g_project_panel.left+34,g_project_panel.top+24,g_project_panel.right-34,g_project_panel.top+50};
+    RECT title{g_project_panel.left+S(34),g_project_panel.top+S(24),g_project_panel.right-S(34),g_project_panel.top+S(50)};
     DrawTextW(dc,g_project_dialog_edit?L"编辑项目":L"新建项目",-1,&title,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
     SelectObject(dc,g_font_modal_subtitle?g_font_modal_subtitle:g_font_small);SetTextColor(dc,muted);
-    RECT subtitle{g_project_panel.left+34,g_project_panel.top+53,g_project_panel.right-34,g_project_panel.top+75};
+    RECT subtitle{g_project_panel.left+S(34),g_project_panel.top+S(53),g_project_panel.right-S(34),g_project_panel.top+S(75)};
     DrawTextW(dc,L"配置项目信息与 AI CLI 启动环境",-1,&subtitle,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
     SetTextColor(dc,muted);
-    auto label=[&](const wchar_t* value,int y,int x=g_project_panel.left+34){
-        RECT rect{x,y,x+250,y+22};DrawTextW(dc,value,-1,&rect,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
+    auto label=[&](const wchar_t* value,int y,int x=-1){
+        if(x<0)x=g_project_panel.left+S(34);
+        RECT rect{x,y,x+S(250),y+S(22)};DrawTextW(dc,value,-1,&rect,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
     };
-    label(L"项目名称 / Tab 标题",g_project_panel.top+81);
-    label(L"项目类型",g_project_panel.top+155);
-    label(L"分组",g_project_panel.top+155,g_project_panel.left+(g_project_panel.right-g_project_panel.left)/2+12);
-    label(L"项目路径",g_project_panel.top+229);
-    label(L"启动命令",g_project_panel.top+303);
-    label(L"备注",g_project_panel.top+377);
+    label(L"项目名称 / Tab 标题",g_project_panel.top+S(81));
+    label(L"项目类型",g_project_panel.top+S(155));
+    label(L"分组",g_project_panel.top+S(155),g_project_panel.left+(g_project_panel.right-g_project_panel.left)/2+S(12));
+    label(L"项目路径",g_project_panel.top+S(229));
+    label(L"启动命令",g_project_panel.top+S(303));
+    label(L"备注",g_project_panel.top+S(377));
     auto outline=[&](RECT rect,HWND control){
         const bool active=GetFocus()==control;
-        DrawRoundedOutline(dc,rect,active?accent:border,6);
+        DrawRoundedOutline(dc,rect,active?accent:border,ScaleUi(6));
     };
-    outline(g_d_name_rect,g_d_name);outline(g_d_note_rect,g_d_note);outline(g_d_type_rect,g_d_type);
-    outline(g_d_group_rect,g_d_group);outline(g_d_folder_rect,g_d_folder);outline(g_d_command_rect,g_d_command);
+    outline(g_d_name_rect,g_d_name);outline(g_d_note_rect,g_d_note);
+    // Type/group dropdowns paint a single combined fill + outline in their
+    // owner-draw pass. Painting another outline underneath them caused the
+    // visible unfilled rim shown around these two controls.
+    outline(g_d_folder_rect,g_d_folder);outline(g_d_command_rect,g_d_command);
 }
 void DrawProjectDropdownItem(const DRAWITEMSTRUCT* item){
     const auto* entry=reinterpret_cast<const ProjectDropdownEntry*>(item->itemData);if(!entry)return;
@@ -96,8 +103,8 @@ void DrawProjectDropdownItem(const DRAWITEMSTRUCT* item){
     HBRUSH fill=CreateSolidBrush(hover?g_theme.selection:g_theme.list_surface);FillRect(item->hDC,&r,fill);DeleteObject(fill);
     SetBkMode(item->hDC,TRANSPARENT);SelectObject(item->hDC,g_font);
     SetTextColor(item->hDC,entry->selected?accent:fg);
-    RECT mark{r.left+10,r.top,r.left+34,r.bottom};DrawTextW(item->hDC,entry->selected?L"✓":L"",-1,&mark,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-    RECT textRect{r.left+38,r.top,r.right-12,r.bottom};DrawTextW(item->hDC,entry->label.c_str(),-1,&textRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+    RECT mark{r.left+ScaleUi(10),r.top,r.left+ScaleUi(34),r.bottom};DrawTextW(item->hDC,entry->selected?L"✓":L"",-1,&mark,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    RECT textRect{r.left+ScaleUi(38),r.top,r.right-ScaleUi(12),r.bottom};DrawTextW(item->hDC,entry->label.c_str(),-1,&textRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
 }
 void ShowProjectDropdown(HWND dialog,HWND anchor,bool projectType){
     std::vector<std::wstring> options;
@@ -111,7 +118,7 @@ void ShowProjectDropdown(HWND dialog,HWND anchor,bool projectType){
     HMENU menu=CreatePopupMenu();if(!menu)return;HBRUSH background=CreateSolidBrush(g_theme.list_surface);MENUINFO info{sizeof(info)};info.fMask=MIM_BACKGROUND|MIM_STYLE;info.hbrBack=background;info.dwStyle=MNS_NOCHECK;SetMenuInfo(menu,&info);
     constexpr UINT base=2400;for(size_t i=0;i<entries.size();++i)AppendMenuW(menu,MF_OWNERDRAW|MF_ENABLED,base+(UINT)i,reinterpret_cast<LPCWSTR>(&entries[i]));
     RECT anchorRect{};GetWindowRect(anchor,&anchorRect);g_project_dropdown_width=anchorRect.right-anchorRect.left;
-    SetFocus(anchor);const UINT selected=TrackPopupMenuEx(menu,TPM_RETURNCMD|TPM_NONOTIFY|TPM_LEFTALIGN|TPM_TOPALIGN|TPM_RIGHTBUTTON,anchorRect.left,anchorRect.bottom+2,dialog,nullptr);
+    SetFocus(anchor);const UINT selected=TrackPopupMenuEx(menu,TPM_RETURNCMD|TPM_NONOTIFY|TPM_LEFTALIGN|TPM_TOPALIGN|TPM_RIGHTBUTTON,anchorRect.left,anchorRect.bottom+ScaleUi(2),dialog,nullptr);
     if(selected>=base&&selected<base+entries.size()){
         const std::wstring value=entries[selected-base].label;
         wchar_t previousType[256]{}; GetWindowTextW(anchor, previousType, 256);
@@ -146,6 +153,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(g_project_dialog_edit){SetWindowTextW(g_d_type,g_project_draft.type.c_str());aicli::ui::SetStyledInputText(g_d_name,g_project_draft.name);aicli::ui::SetStyledInputText(g_d_note,g_project_draft.note);aicli::ui::SetStyledInputText(g_d_folder,g_project_draft.folder);aicli::ui::SetStyledInputText(g_d_command,g_project_draft.command);}else{aicli::ui::SetStyledInputText(g_d_command,DefaultProjectCommand(initialType));}
         LayoutProjectDialog(h);SetFocus(g_d_name);return 0; }
     case WM_SIZE: LayoutProjectDialog(h);return 0;
+    case WM_DPICHANGED:ApplyMainFontsToControls();LayoutProjectDialog(h);InvalidateRect(h,nullptr,FALSE);return 0;
     case WM_ERASEBKGND:return 1;
     case WM_PAINT:{PAINTSTRUCT ps;HDC dc=BeginPaint(h,&ps);RECT client{};GetClientRect(h,&client);PaintProjectDialogSurface(dc,client);EndPaint(h,&ps);return 0;}
     case WM_NCHITTEST:return HTCLIENT;
@@ -160,7 +168,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
     }
     case WM_CTLCOLOREDIT:{HDC dc=(HDC)w;HWND control=(HWND)l;const bool active=GetFocus()==control;const COLORREF color=active?g_theme.field_focus:g_theme.field;SetTextColor(dc,fg);SetBkColor(dc,color);return (LRESULT)(active?g_focus_brush:g_edit_brush);}
     case WM_CTLCOLORLISTBOX:{HDC dc=(HDC)w;SetTextColor(dc,fg);SetBkColor(dc,g_theme.list_surface);return (LRESULT)g_list_brush;}
-    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){item->itemWidth=std::max(160,g_project_dropdown_width-21);item->itemHeight=34;return TRUE;}}break;
+    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){item->itemWidth=std::max(ScaleUi(160),g_project_dropdown_width-ScaleUi(21));item->itemHeight=ScaleUi(34);return TRUE;}}break;
     case WM_DRAWITEM: {auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){DrawProjectDropdownItem(item);return TRUE;}if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}} break;
     case WM_COMMAND:
         if((HIWORD(w)==EN_SETFOCUS||HIWORD(w)==EN_KILLFOCUS||HIWORD(w)==BN_SETFOCUS||HIWORD(w)==BN_KILLFOCUS)&&

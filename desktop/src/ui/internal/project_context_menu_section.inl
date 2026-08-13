@@ -7,14 +7,14 @@ void DrawContextMenuItem(const DRAWITEMSTRUCT* item){
     const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);
     if(!entry)return;
     RECT r=item->rcItem;
-    if(!entry->label[0]){HBRUSH background=CreateSolidBrush(g_light_theme?RGB(250,251,253):RGB(34,36,40));FillRect(item->hDC,&r,background);DeleteObject(background);HPEN line=CreatePen(PS_SOLID,1,g_light_theme?RGB(218,223,231):RGB(57,60,67));auto old=(HPEN)SelectObject(item->hDC,line);const int y=(r.top+r.bottom)/2;MoveToEx(item->hDC,r.left+8,y,nullptr);LineTo(item->hDC,r.right-8,y);SelectObject(item->hDC,old);DeleteObject(line);return;}
+    if(!entry->label[0]){HBRUSH background=CreateSolidBrush(g_light_theme?RGB(250,251,253):RGB(34,36,40));FillRect(item->hDC,&r,background);DeleteObject(background);HPEN line=CreatePen(PS_SOLID,std::max(1,ScaleUi(1)),g_light_theme?RGB(218,223,231):RGB(57,60,67));auto old=(HPEN)SelectObject(item->hDC,line);const int y=(r.top+r.bottom)/2;MoveToEx(item->hDC,r.left+ScaleUi(8),y,nullptr);LineTo(item->hDC,r.right-ScaleUi(8),y);SelectObject(item->hDC,old);DeleteObject(line);return;}
     const bool selected=(item->itemState&ODS_SELECTED)!=0;
     const bool disabled=(item->itemState&ODS_DISABLED)!=0;
     HBRUSH fill=CreateSolidBrush(selected?(g_light_theme?RGB(226,237,251):RGB(55,62,73)):(g_light_theme?RGB(250,251,253):RGB(34,36,40)));FillRect(item->hDC,&r,fill);DeleteObject(fill);
     SetBkMode(item->hDC,TRANSPARENT);SetTextColor(item->hDC,disabled?(g_light_theme?RGB(153,160,170):RGB(111,116,126)):(g_light_theme?RGB(38,44,54):RGB(222,226,233)));
-    SelectObject(item->hDC,g_icon_font?g_icon_font:g_font);RECT icon{r.left+13,r.top+1,r.left+39,r.bottom-1};DrawTextW(item->hDC,entry->icon,-1,&icon,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-    SelectObject(item->hDC,g_font);RECT text{r.left+49,r.top+1,r.right-34,r.bottom-1};DrawTextW(item->hDC,entry->label,-1,&text,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
-    if(entry->submenu){SelectObject(item->hDC,g_font_small);RECT arrow{r.right-28,r.top+1,r.right-10,r.bottom-1};DrawTextW(item->hDC,L">",-1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);}
+    SelectObject(item->hDC,g_icon_font?g_icon_font:g_font);RECT icon{r.left+ScaleUi(13),r.top+ScaleUi(1),r.left+ScaleUi(39),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,entry->icon,-1,&icon,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    SelectObject(item->hDC,g_font);RECT text{r.left+ScaleUi(49),r.top+ScaleUi(1),r.right-ScaleUi(34),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,entry->label,-1,&text,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+    if(entry->submenu){SelectObject(item->hDC,g_font_small);RECT arrow{r.right-ScaleUi(28),r.top+ScaleUi(1),r.right-ScaleUi(10),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,L">",-1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);}
 }
 void ConfigureContextMenu(HMENU menu,HBRUSH background){MENUINFO info{sizeof(info)};info.fMask=MIM_BACKGROUND;info.hbrBack=background;SetMenuInfo(menu,&info);}
 void AppendContextEntry(HMENU menu,UINT flags,UINT_PTR id,const ContextMenuEntry& entry){AppendMenuW(menu,flags|MF_OWNERDRAW,id,reinterpret_cast<LPCWSTR>(&entry));}
