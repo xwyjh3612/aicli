@@ -54,8 +54,6 @@ public final class AicliClient {
     private static final String PHONE_PREFS = "device_identity";
     private static final String PHONE_NAME_KEY = "deviceName";
     private static final Object SEQUENCE_LOCK = new Object();
-    private static final long PREFERRED_ROUTE_INITIAL_DELAY_SECONDS = 1L;
-    private static final long PREFERRED_ROUTE_INTERVAL_SECONDS = 15L;
 
     public static final class Conversation {
         public final String id;
@@ -102,6 +100,7 @@ public final class AicliClient {
     public interface ActionCallback { void onSuccess(); void onError(String message); }
     public interface AttachmentCallback { void onSuccess(String path); void onError(String message); }
     public interface EventCallback {
+        default void onOpen() { }
         void onEvent(String eventJson);
         void onClosed();
         default String terminalSessionId() { return ""; }
@@ -161,7 +160,6 @@ public final class AicliClient {
     private volatile String eventsConversationId = "";
     private final AtomicLong eventsGeneration = new AtomicLong();
     private ScheduledFuture<?> reconnectTask;
-    private ScheduledFuture<?> preferredRouteRecoveryTask;
     private ScheduledFuture<?> routeStatusProbeTask;
     private volatile RouteStatusListener routeStatusListener;
     private volatile RouteHealth localRouteHealth = RouteHealth.UNAVAILABLE;
@@ -219,7 +217,6 @@ public final class AicliClient {
                 ? preferences.getString("computerId", "") : active.computerId;
         rebuildHttpClient();
         if (monitorRoutes) {
-            updatePreferredRouteProbe();
             updateRouteStatusProbe();
         }
     }
@@ -306,7 +303,6 @@ public final class AicliClient {
             preferences.edit().putString("baseUrl", baseUrl).apply();
         }
         if (monitorRoutes) {
-            updatePreferredRouteProbe();
             updateRouteStatusProbe();
         }
     }
@@ -314,7 +310,6 @@ public final class AicliClient {
     /** Stop network callbacks when the owning activity is discarded. */
     public void close() {
         clientClosed = true;
-        stopPreferredRouteProbe();
         stopRouteStatusProbe();
         closeEvents();
         executor.shutdownNow();
@@ -364,7 +359,6 @@ public final class AicliClient {
         rebuildHttpClient();
         if (monitorRoutes) {
             updateRouteStatusProbe();
-            if (persist) updatePreferredRouteProbe();
         }
     }
 
@@ -525,6 +519,8 @@ public final class AicliClient {
                                                  @NonNull Response response) {
                         if (generation != eventsGeneration.get()) return;
                         recordSuccessfulAddress(connectionAddress);
+                        EventCallback current = eventsCallback;
+                        if (current != null) current.onOpen();
                     }
                     @Override public void onMessage(@NonNull WebSocket socket, @NonNull String text) {
                         if (generation != eventsGeneration.get()) return;
@@ -560,7 +556,6 @@ public final class AicliClient {
 
     public void clearConnection() {
         closeEvents();
-        stopPreferredRouteProbe();
         stopRouteStatusProbe();
         localUrl = "";
         remoteUrl = "";
@@ -984,8 +979,9 @@ public final class AicliClient {
             baseUrl = address;
         }
         synchronized (authLock) { token = ""; tokenExpiresAt = 0L; }
+        markAddressConnecting(address);
+        notifyRouteStatus();
         if (monitorRoutes) {
-            updatePreferredRouteProbe();
             updateRouteStatusProbe();
         }
         if (reconnectEvents) reconnectEventsForAddressChange();
@@ -997,47 +993,6 @@ public final class AicliClient {
         String conversationId = eventsConversationId;
         if (callback == null || closed || clientClosed) return;
         connectEvents(conversationId, callback);
-    }
-
-    private void updatePreferredRouteProbe() {
-        String preferred = preferredRouteAddress();
-        if (clientClosed || preferred.isEmpty() || preferred.equals(baseUrl) ||
-                localUrl.equals(remoteUrl)) {
-            stopPreferredRouteProbe();
-            return;
-        }
-        synchronized (routeLock) {
-            if (preferredRouteRecoveryTask != null &&
-                    !preferredRouteRecoveryTask.isDone()) return;
-            try {
-                preferredRouteRecoveryTask = executor.scheduleWithFixedDelay(
-                        this::tryRecoverPreferredAddress,
-                        PREFERRED_ROUTE_INITIAL_DELAY_SECONDS,
-                        PREFERRED_ROUTE_INTERVAL_SECONDS,
-                        TimeUnit.SECONDS);
-            } catch (RuntimeException ignored) { }
-        }
-    }
-
-    private void stopPreferredRouteProbe() {
-        synchronized (routeLock) {
-            if (preferredRouteRecoveryTask != null) {
-                preferredRouteRecoveryTask.cancel(false);
-            }
-            preferredRouteRecoveryTask = null;
-        }
-    }
-
-    private void tryRecoverPreferredAddress() {
-        String preferred = preferredRouteAddress();
-        if (clientClosed || preferred.isEmpty() || preferred.equals(baseUrl)) {
-            stopPreferredRouteProbe();
-            return;
-        }
-        if (!probeAddress(preferred)) return;
-        if (switchCurrentAddress(preferred, true)) {
-            recordSuccessfulAddress(preferred);
-        }
     }
 
     private boolean probeAddress(String address) {
@@ -1093,29 +1048,150 @@ public final class AicliClient {
         if (clientClosed) return;
         String local = localUrl;
         String remote = remoteUrl;
+        String preferred = preferredRouteAddress();
+        String current = normalize(baseUrl);
+        String fallback = preferred.equals(local)
+                ? distinctAddress(remote, preferred)
+                : distinctAddress(local, preferred);
+        if (fallback.isEmpty()) {
+            fallback = preferred.equals(remote)
+                    ? distinctAddress(local, preferred)
+                    : distinctAddress(remote, preferred);
+        }
+
         if (local.isEmpty()) localRouteHealth = RouteHealth.UNAVAILABLE;
-        else if (localRouteHealth != RouteHealth.ONLINE) {
+        if (remote.isEmpty()) remoteRouteHealth = RouteHealth.UNAVAILABLE;
+
+        if (preferred.isEmpty()) {
+            probeOnlyCurrentAddress(current);
+            return;
+        }
+
+        if (current.equals(preferred)) {
+            // The preferred route is active. Probe only it; the backup route
+            // stays idle until the preferred route actually fails.
+            markAddressConnecting(preferred);
+            markAddressUnavailable(fallback);
+            notifyRouteStatus();
+            if (probeAddress(preferred)) {
+                markAddressHealth(preferred, RouteHealth.ONLINE);
+                notifyRouteStatus();
+                return;
+            }
+
+            markAddressHealth(preferred, RouteHealth.OFFLINE);
+            if (fallback.isEmpty()) {
+                notifyRouteStatus();
+                return;
+            }
+            markAddressConnecting(fallback);
+            notifyRouteStatus();
+            if (probeAddress(fallback)) {
+                markAddressHealth(fallback, RouteHealth.ONLINE);
+                if (switchCurrentAddress(fallback, true)) {
+                    recordSuccessfulAddress(fallback);
+                } else {
+                    notifyRouteStatus();
+                }
+            } else {
+                markAddressHealth(fallback, RouteHealth.OFFLINE);
+                notifyRouteStatus();
+            }
+            return;
+        }
+
+        // We are using the fallback route. Only in this state do we keep
+        // checking the preferred route, switching back immediately once it
+        // becomes available.
+        markAddressConnecting(preferred);
+        notifyRouteStatus();
+        if (probeAddress(preferred)) {
+            markAddressHealth(preferred, RouteHealth.ONLINE);
+            markAddressUnavailable(current);
+            if (switchCurrentAddress(preferred, true)) {
+                recordSuccessfulAddress(preferred);
+            } else {
+                notifyRouteStatus();
+            }
+            return;
+        }
+
+        markAddressHealth(preferred, RouteHealth.OFFLINE);
+        if (current.isEmpty()) {
+            notifyRouteStatus();
+            return;
+        }
+        if (addressHealth(current) == RouteHealth.ONLINE) {
+            // The active fallback is already carrying the authenticated HTTP
+            // and WebSocket traffic. Do not keep probing it as well; while on
+            // fallback, the periodic work is exclusively the preferred-route
+            // recovery check.
+            notifyRouteStatus();
+            return;
+        }
+        markAddressConnecting(current);
+        notifyRouteStatus();
+        if (probeAddress(current)) {
+            markAddressHealth(current, RouteHealth.ONLINE);
+            recordSuccessfulAddress(current);
+        } else {
+            markAddressHealth(current, RouteHealth.OFFLINE);
+            notifyRouteStatus();
+        }
+    }
+
+    private void probeOnlyCurrentAddress(String current) {
+        if (current.isEmpty()) {
+            notifyRouteStatus();
+            return;
+        }
+        markAddressConnecting(current);
+        notifyRouteStatus();
+        RouteHealth health = probeAddress(current)
+                ? RouteHealth.ONLINE : RouteHealth.OFFLINE;
+        markAddressHealth(current, health);
+        if (health == RouteHealth.ONLINE) recordSuccessfulAddress(current);
+        else notifyRouteStatus();
+    }
+
+    private void markAddressConnecting(String address) {
+        String normalized = normalize(address);
+        if (normalized.isEmpty()) return;
+        if (!localUrl.isEmpty() && normalized.equals(localUrl) &&
+                localRouteHealth != RouteHealth.ONLINE) {
             localRouteHealth = RouteHealth.CONNECTING;
         }
-        if (remote.isEmpty()) remoteRouteHealth = RouteHealth.UNAVAILABLE;
-        else if (remoteRouteHealth != RouteHealth.ONLINE) {
+        if (!remoteUrl.isEmpty() && normalized.equals(remoteUrl) &&
+                remoteRouteHealth != RouteHealth.ONLINE) {
             remoteRouteHealth = RouteHealth.CONNECTING;
         }
-        notifyRouteStatus();
+    }
 
-        RouteHealth nextLocal = local.isEmpty() ? RouteHealth.UNAVAILABLE
-                : probeAddress(local) ? RouteHealth.ONLINE : RouteHealth.OFFLINE;
-        RouteHealth nextRemote;
-        if (remote.isEmpty()) {
-            nextRemote = RouteHealth.UNAVAILABLE;
-        } else if (remote.equals(local)) {
-            nextRemote = nextLocal;
-        } else {
-            nextRemote = probeAddress(remote) ? RouteHealth.ONLINE : RouteHealth.OFFLINE;
+    private void markAddressUnavailable(String address) {
+        markAddressHealth(address, RouteHealth.UNAVAILABLE);
+    }
+
+    private void markAddressHealth(String address, RouteHealth health) {
+        String normalized = normalize(address);
+        if (normalized.isEmpty()) return;
+        if (!localUrl.isEmpty() && normalized.equals(localUrl)) {
+            localRouteHealth = health;
         }
-        localRouteHealth = nextLocal;
-        remoteRouteHealth = nextRemote;
-        notifyRouteStatus();
+        if (!remoteUrl.isEmpty() && normalized.equals(remoteUrl)) {
+            remoteRouteHealth = health;
+        }
+    }
+
+    private RouteHealth addressHealth(String address) {
+        String normalized = normalize(address);
+        if (normalized.isEmpty()) return RouteHealth.UNAVAILABLE;
+        if (!localUrl.isEmpty() && normalized.equals(localUrl)) {
+            return localRouteHealth;
+        }
+        if (!remoteUrl.isEmpty() && normalized.equals(remoteUrl)) {
+            return remoteRouteHealth;
+        }
+        return RouteHealth.UNAVAILABLE;
     }
 
     private void notifyRouteStatus() {
@@ -1148,7 +1224,6 @@ public final class AicliClient {
             preferences.edit().putString("baseUrl", address).apply();
         }
         if (monitorRoutes) {
-            updatePreferredRouteProbe();
             updateRouteStatusProbe();
         }
     }

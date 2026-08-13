@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <memory>
 
+#include "ui/drawing_utils.h"
+
 namespace aicli::ui {
 namespace {
 
@@ -18,8 +20,13 @@ struct StyledInputState {
     COLORREF focus_background_color{RGB(43, 48, 57)};
     bool focus_border_only{};
     bool legacy_painting{};
+    bool parent_frame{};
+    bool parent_frame_valid{};
     int radius{5};
     int horizontal_margin{10};
+    int parent_frame_content_inset{2};
+    int parent_frame_content_inset_px{};
+    RECT parent_frame_rect{};
 };
 
 StyledInputState* State(HWND control) {
@@ -52,7 +59,10 @@ void CenterText(HWND control) {
     const int text_height = std::min(height, std::max(1, static_cast<int>(metrics.tmHeight)));
     const int top = std::max(0, (height - text_height) / 2);
     const auto* state = State(control);
-    const int margin = state ? state->horizontal_margin : 10;
+    const int margin = state
+        ? std::max(1, state->horizontal_margin -
+                         state->parent_frame_content_inset_px)
+        : 10;
     RECT format{margin, top, std::max<LONG>(margin + 1, client.right - margin),
                 std::min(height, top + text_height + 1)};
     SendMessageW(control, EM_SETRECTNP, 0, reinterpret_cast<LPARAM>(&format));
@@ -91,7 +101,8 @@ void DrawPlaceholderAndFocusBorder(HWND control, HDC dc,
         if (old) SelectObject(dc, old);
     }
 
-    if (state.focus_border_only && GetFocus() == control) {
+    if (state.focus_border_only && !state.parent_frame &&
+        GetFocus() == control) {
         RECT rect{};
         GetClientRect(control, &rect);
         HPEN pen = CreatePen(PS_SOLID, 1, state.focus_border_color);
@@ -165,7 +176,12 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
             // presented frame can retain the stock square rectangle until a
             // later focus message.
             CenterText(control);
-            ApplyRoundedRegion(control);
+            if (const auto* state = State(control);
+                state && state->parent_frame) {
+                SetWindowRgn(control, nullptr, FALSE);
+            } else {
+                ApplyRoundedRegion(control);
+            }
             InvalidateParentFrame(control);
             RedrawWindow(control, nullptr, nullptr,
                          RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
@@ -194,7 +210,12 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
         // with their placeholder already present.
         RedrawWindow(control, nullptr, nullptr,
                      RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
-        ApplyRoundedRegion(control);
+        if (const auto* state = State(control);
+            state && state->parent_frame) {
+            SetWindowRgn(control, nullptr, FALSE);
+        } else {
+            ApplyRoundedRegion(control);
+        }
         InvalidateParentFrame(control);
         return result;
     }
@@ -286,6 +307,7 @@ void SetStyledInputTheme(HWND control, const ThemePalette& palette) {
         state->focus_background_color = palette.field_focus;
         RedrawWindow(control, nullptr, nullptr,
                      RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+        if (state->parent_frame) InvalidateParentFrame(control);
     }
 }
 
@@ -303,11 +325,26 @@ void SetStyledInputLegacyPainting(HWND control, bool enabled) {
     }
 }
 
+void SetStyledInputParentFrame(HWND control, bool enabled, int content_inset) {
+    if (auto* state = State(control)) {
+        state->parent_frame = enabled;
+        state->parent_frame_content_inset = std::max(0, content_inset);
+        state->parent_frame_content_inset_px = 0;
+        state->parent_frame_valid = false;
+        // The smaller inner EDIT is deliberately rectangular. The parent owns
+        // the stable rounded silhouette, while the native control keeps all
+        // caret, selection, clipboard and IME behavior.
+        if (enabled) SetWindowRgn(control, nullptr, TRUE);
+        InvalidateParentFrame(control);
+    }
+}
+
 void LayoutStyledInput(HWND control, const RECT& outer, int inset, int radius) {
     if (!control) return;
-    if (auto* state = State(control)) {
+    StyledInputState* state = State(control);
+    HWND parent = GetParent(control);
+    if (state) {
         state->radius = radius;
-        HWND parent = GetParent(control);
         const UINT dpi = parent ? GetDpiForWindow(parent) : 96;
         const int margin = MulDiv(10, dpi ? dpi : 96, 96);
         if (state->horizontal_margin != margin) {
@@ -316,31 +353,75 @@ void LayoutStyledInput(HWND control, const RECT& outer, int inset, int radius) {
                          EC_LEFTMARGIN | EC_RIGHTMARGIN,
                          MAKELPARAM(margin, margin));
         }
+        state->parent_frame_content_inset_px = state->parent_frame
+            ? MulDiv(state->parent_frame_content_inset,
+                     dpi ? dpi : 96, 96)
+            : 0;
     }
-    const int width = std::max(1L, outer.right - outer.left - inset * 2);
-    const int height = std::max(1L, outer.bottom - outer.top - inset * 2);
+    RECT visual{outer.left + inset, outer.top + inset,
+                outer.right - inset, outer.bottom - inset};
+    const int content_inset = state ? state->parent_frame_content_inset_px : 0;
+    RECT desired{visual.left + content_inset, visual.top + content_inset,
+                 visual.right - content_inset, visual.bottom - content_inset};
+    const int width = std::max(1L, desired.right - desired.left);
+    const int height = std::max(1L, desired.bottom - desired.top);
+    desired.right = desired.left + width;
+    desired.bottom = desired.top + height;
     RECT current{};
     GetWindowRect(control, &current);
     POINT points[2] = {{current.left, current.top}, {current.right, current.bottom}};
-    HWND parent = GetParent(control);
     if (parent) MapWindowPoints(HWND_DESKTOP, parent, points, 2);
-    const RECT desired{outer.left + inset, outer.top + inset,
-                       outer.left + inset + width, outer.top + inset + height};
     const RECT actual{points[0].x, points[0].y, points[1].x, points[1].y};
     const bool geometry_changed = !EqualRect(&actual, &desired);
+    const bool frame_changed = state && state->parent_frame &&
+        (!state->parent_frame_valid ||
+         !EqualRect(&state->parent_frame_rect, &visual));
+    if (frame_changed) {
+        if (state->parent_frame_valid && parent) {
+            RECT previous = state->parent_frame_rect;
+            InflateRect(&previous, 2, 2);
+            InvalidateRect(parent, &previous, FALSE);
+        }
+        state->parent_frame_rect = visual;
+        state->parent_frame_valid = true;
+    }
     if (geometry_changed) {
         SetWindowPos(control, nullptr, desired.left, desired.top, width, height,
                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
                          SWP_NOSENDCHANGING);
     }
-    ApplyRoundedRegion(control);
-    if (!geometry_changed) return;
+    if (state && state->parent_frame) {
+        SetWindowRgn(control, nullptr, FALSE);
+    } else {
+        ApplyRoundedRegion(control);
+    }
+    if (!geometry_changed && !frame_changed) return;
     // Changing a rectangular child to a rounded region exposes its four
     // corner pixels. Repaint the parent immediately so those pixels do not
     // retain the old square EDIT background until the field receives focus.
     InvalidateParentFrame(control);
     CenterText(control);
     RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_NOERASE);
+}
+
+void PaintStyledInputParentFrame(HWND control, HDC parent_dc) {
+    const auto* state = State(control);
+    if (!state || !state->parent_frame || !state->parent_frame_valid ||
+        !parent_dc) {
+        return;
+    }
+    const bool focused = GetFocus() == control;
+    const COLORREF fill = focused
+        ? state->focus_background_color
+        : state->background_color;
+    const COLORREF stroke = focused
+        ? state->focus_border_color
+        : fill;
+    // SetWindowRgn interprets the old radius as an ellipse diameter. Preserve
+    // that visual curvature when drawing the deterministic parent surface.
+    const float radius = std::max(1.0F, state->radius / 2.0F);
+    DrawSmoothRoundedRect(parent_dc, state->parent_frame_rect, radius,
+                          fill, stroke, focused ? 1.0F : 0.0F);
 }
 
 bool IsStyledInput(HWND control) {

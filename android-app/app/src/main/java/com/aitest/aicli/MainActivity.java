@@ -1069,6 +1069,22 @@ public final class MainActivity extends AppCompatActivity {
         final AicliClient requestClient = client;
         final long requestGeneration = serverGeneration;
         requestClient.connectEvents(conversationId, new AicliClient.EventCallback() {
+            @Override public void onOpen() {
+                runOnUiThread(() -> {
+                    if (client != requestClient || serverGeneration != requestGeneration ||
+                            !conversationId.equals(selectedConversationId)) return;
+                    terminalView.setVisibility(View.VISIBLE);
+                    terminalRenderer.restoreSelectedSession(conversationId);
+                    conversationAdapter.select(conversationId);
+                    updateProjectHeader(selectedConversation);
+                    hideEmptyState();
+                    updateProjectControls(selectedConversation);
+                    setConnectionStatus("实时连接在线");
+                    recoverMissedEvents();
+                    loadConversations();
+                });
+            }
+
             @Override public void onEvent(String eventJson) {
                 runOnUiThread(() -> {
                     if (client == requestClient && serverGeneration == requestGeneration) {
@@ -1234,7 +1250,10 @@ public final class MainActivity extends AppCompatActivity {
         }
         icon.setImageTintList(android.content.res.ColorStateList.valueOf(iconColor));
         icon.setContentDescription(name + "，" + state);
-        boolean current = activeRoute && health == AicliClient.RouteHealth.ONLINE;
+        // The route marker identifies the address currently selected by the
+        // client, including its connecting/failure state. Do not wait for a
+        // later health probe before showing which route is actually in use.
+        boolean current = activeRoute;
         currentRouteIcon.setVisibility(current ? View.VISIBLE : View.GONE);
         currentRouteIcon.setContentDescription(current ? name + "，当前连接" : null);
     }

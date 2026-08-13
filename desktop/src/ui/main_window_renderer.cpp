@@ -4,6 +4,7 @@
 
 #include "ui/drawing_utils.h"
 #include "ui/footer_status.h"
+#include "ui/styled_input.h"
 #include "ui/window_chrome.h"
 
 namespace aicli::ui {
@@ -49,6 +50,8 @@ void PaintMainWindow(HDC target_dc,
     FillRect(dc, &footer, panel_brush);
     DeleteObject(panel_brush);
 
+    PaintStyledInputParentFrame(search, dc);
+
     HPEN separator = CreatePen(PS_SOLID, 1, theme.border);
     auto previous_pen = static_cast<HPEN>(SelectObject(dc, separator));
     MoveToEx(dc, metrics.sidebar_width - 1, metrics.title_bar_height, nullptr);
@@ -65,8 +68,6 @@ void PaintMainWindow(HDC target_dc,
     LineTo(dc, metrics.sidebar_width - metrics.Scale(6), sidebar_divider_y);
     SelectObject(dc, previous_pen);
     DeleteObject(separator);
-
-    (void)search;
 
     if (app_icon) {
         DrawIconEx(dc, metrics.Scale(14), metrics.Scale(8), app_icon,

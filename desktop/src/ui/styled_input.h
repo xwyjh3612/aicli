@@ -16,7 +16,10 @@ void SetStyledInputText(HWND control, const std::wstring& value);
 void SetStyledInputTheme(HWND control, const ThemePalette& palette);
 void SetStyledInputFocusBorderOnly(HWND control, bool enabled = true);
 void SetStyledInputLegacyPainting(HWND control, bool enabled = true);
+void SetStyledInputParentFrame(HWND control, bool enabled = true,
+                               int content_inset = 2);
 void LayoutStyledInput(HWND control, const RECT& outer, int inset = 2, int radius = 5);
+void PaintStyledInputParentFrame(HWND control, HDC parent_dc);
 bool IsStyledInput(HWND control);
 
 }

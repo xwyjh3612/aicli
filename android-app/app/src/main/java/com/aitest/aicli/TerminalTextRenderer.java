@@ -63,6 +63,16 @@ final class TerminalTextRenderer {
         trimCache();
     }
 
+    synchronized void restoreSelectedSession(String projectId) {
+        if (projectId == null || projectId.isEmpty() ||
+                !projectId.equals(selectedProjectId)) return;
+        saveViewport();
+        SessionState state = sessions.get(projectId);
+        if (state == null) return;
+        view.setTerminal(state.terminal, state.scrollX, state.scrollY,
+                state.followBottom);
+    }
+
     synchronized void detach() {
         cancelSynchronizedRefresh();
         saveViewport();
