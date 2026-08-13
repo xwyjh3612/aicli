@@ -14,6 +14,12 @@
 namespace aicli {
 namespace {
 
+// Signed requests are created concurrently by the Android history, project
+// list and WebSocket paths. Their sequence allocation is ordered, but network
+// delivery (especially through FRP) is not. Keep a bounded reordering window
+// while request-id and per-device sequence uniqueness still reject replays.
+constexpr std::int64_t kSignedRequestReorderWindow = 256;
+
 struct StatementDeleter {
     void operator()(sqlite3_stmt* statement) const noexcept {
         if (statement) sqlite3_finalize(statement);
@@ -183,6 +189,8 @@ CREATE TABLE IF NOT EXISTS terminal_snapshots(
 );
 CREATE INDEX IF NOT EXISTS idx_events_project_id ON events(project_id, id);
 CREATE INDEX IF NOT EXISTS idx_device_requests_created ON device_requests(created_at);
+CREATE INDEX IF NOT EXISTS idx_device_requests_phone_sequence
+    ON device_requests(phone_id, sequence);
 CREATE TABLE IF NOT EXISTS settings(
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -724,10 +732,26 @@ bool DataStore::AcceptSignedRequest(const std::wstring& phone_id,
     if (!query) { Execute("ROLLBACK;"); return false; }
     BindText(query.get(), 1, phone_id);
     if (sqlite3_step(query.get()) != SQLITE_ROW ||
-        sqlite3_column_int(query.get(), 0) == 0 ||
-        sequence <= sqlite3_column_int64(query.get(), 1)) {
+        sqlite3_column_int(query.get(), 0) == 0) {
         Execute("ROLLBACK;");
-        if (error) *error = L"设备已撤销或请求序列已使用";
+        if (error) *error = L"设备已撤销";
+        return false;
+    }
+    const auto last_sequence = sqlite3_column_int64(query.get(), 1);
+    if (sequence <= last_sequence &&
+        last_sequence - sequence >= kSignedRequestReorderWindow) {
+        Execute("ROLLBACK;");
+        if (error) *error = L"请求序列超出允许窗口";
+        return false;
+    }
+    auto replay = Prepare(db_,
+        "SELECT 1 FROM device_requests WHERE phone_id=? AND sequence=? LIMIT 1;");
+    if (!replay) { Execute("ROLLBACK;"); return false; }
+    BindText(replay.get(), 1, phone_id);
+    sqlite3_bind_int64(replay.get(), 2, sequence);
+    if (sqlite3_step(replay.get()) == SQLITE_ROW) {
+        Execute("ROLLBACK;");
+        if (error) *error = L"请求序列已使用";
         return false;
     }
     auto insert = Prepare(db_, "INSERT INTO device_requests(request_id,phone_id,sequence,created_at) VALUES(?,?,?,?);");
@@ -738,10 +762,11 @@ bool DataStore::AcceptSignedRequest(const std::wstring& phone_id,
     sqlite3_bind_int64(insert.get(), 4, now);
     if (sqlite3_step(insert.get()) != SQLITE_DONE) {
         Execute("ROLLBACK;");
-        if (error) *error = L"重复请求";
+        if (error) *error = L"请求已处理";
         return false;
     }
-    auto update = Prepare(db_, "UPDATE devices SET last_sequence=?,last_seen=? WHERE phone_id=?;");
+    auto update = Prepare(db_,
+        "UPDATE devices SET last_sequence=MAX(last_sequence,?),last_seen=? WHERE phone_id=?;");
     if (!update) { Execute("ROLLBACK;"); return false; }
     sqlite3_bind_int64(update.get(), 1, sequence);
     sqlite3_bind_int64(update.get(), 2, now);
@@ -750,9 +775,17 @@ bool DataStore::AcceptSignedRequest(const std::wstring& phone_id,
         Execute("ROLLBACK;");
         return false;
     }
-    auto cleanup = Prepare(db_, "DELETE FROM device_requests WHERE created_at<?;");
+    // Keep every sequence still inside the acceptance window even when the
+    // phone has been idle for days. Older rows can be removed because their
+    // sequence is rejected by the window before request-id lookup.
+    auto cleanup = Prepare(db_,
+        "DELETE FROM device_requests "
+        "WHERE created_at<? AND sequence <= ("
+        "SELECT last_sequence-? FROM devices "
+        "WHERE devices.phone_id=device_requests.phone_id);");
     if (cleanup) {
         sqlite3_bind_int64(cleanup.get(), 1, now - 86400);
+        sqlite3_bind_int64(cleanup.get(), 2, kSignedRequestReorderWindow);
         sqlite3_step(cleanup.get());
     }
     return Execute("COMMIT;", error);

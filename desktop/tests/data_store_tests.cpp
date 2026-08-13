@@ -214,9 +214,24 @@ int wmain(int argc, wchar_t** argv) {
         error.clear();
         ok &= Check(!store.AcceptSignedRequest(device.phone_id, L"request-1", 1, Now(), &error),
                     L"duplicate request and sequence are rejected");
+        error.clear();
+        ok &= Check(store.AcceptSignedRequest(device.phone_id, L"request-3", 3, Now(), &error),
+                    (L"accept newer concurrent request: " + error).c_str());
+        error.clear();
+        ok &= Check(store.AcceptSignedRequest(device.phone_id, L"request-2", 2, Now(), &error),
+                    (L"accept signed request delivered out of order: " + error).c_str());
+        error.clear();
+        ok &= Check(!store.AcceptSignedRequest(device.phone_id, L"request-2-copy", 2, Now(), &error),
+                    L"duplicate sequence is rejected inside reorder window");
+        error.clear();
+        ok &= Check(store.AcceptSignedRequest(device.phone_id, L"request-300", 300, Now(), &error),
+                    (L"advance signed request window: " + error).c_str());
+        error.clear();
+        ok &= Check(!store.AcceptSignedRequest(device.phone_id, L"request-4", 4, Now(), &error),
+                    L"request outside reorder window is rejected");
         ok &= Check(store.RevokeDevice(device.phone_id), L"device can be revoked");
         error.clear();
-        ok &= Check(!store.AcceptSignedRequest(device.phone_id, L"request-2", 2, Now(), &error),
+        ok &= Check(!store.AcceptSignedRequest(device.phone_id, L"request-301", 301, Now(), &error),
                     L"revoked device cannot submit signed requests");
 
         const auto event_id = store.AppendEvent(project.id, L"terminal.output", "{\"text\":\"ok\"}");

@@ -690,6 +690,18 @@ public final class AicliClient {
                         status = response.code();
                         response.close();
                     }
+                    // Older desktop builds required signed requests to arrive
+                    // in exact sequence order. Concurrent history/WebSocket
+                    // requests can arrive reversed through a relay, so retry
+                    // only that explicit pre-action rejection with a fresh
+                    // request id and sequence. Other 403 responses remain
+                    // visible and are never weakened into a generic retry.
+                    if (status == 403 && isRetryableSequenceRejection(text)) {
+                        response = executeSigned(method, path, body, attemptedAddress);
+                        text = response.body() == null ? "{}" : response.body().string();
+                        status = response.code();
+                        response.close();
+                    }
                     if (status < 200 || status >= 300) {
                         callback.onError("电脑返回 HTTP " + status + errorText(text));
                         return;
@@ -723,6 +735,13 @@ public final class AicliClient {
                     if (status == 401) {
                         synchronized (authLock) { token = ""; tokenExpiresAt = 0L; }
                         ensureAuthenticated();
+                        response = executeSignedBinary(
+                                method, path, body, contentType, attemptedAddress);
+                        text = response.body() == null ? "{}" : response.body().string();
+                        status = response.code();
+                        response.close();
+                    }
+                    if (status == 403 && isRetryableSequenceRejection(text)) {
                         response = executeSignedBinary(
                                 method, path, body, contentType, attemptedAddress);
                         text = response.body() == null ? "{}" : response.body().string();
@@ -1350,6 +1369,15 @@ public final class AicliClient {
     private static String stringValue(JsonObject object, String name) { return object.has(name) && !object.get(name).isJsonNull() ? object.get(name).getAsString() : ""; }
     private static JsonObject parseObject(String body) { JsonElement element = JsonParser.parseString(body == null || body.isEmpty() ? "{}" : body); return element.isJsonObject() ? element.getAsJsonObject() : new JsonObject(); }
     private static String errorText(String body) { try { return "：" + stringValue(parseObject(body), "error"); } catch (Exception ignored) { return ""; } }
+    private static boolean isRetryableSequenceRejection(String body) {
+        try {
+            String error = stringValue(parseObject(body), "error");
+            return error.contains("请求序列已使用") ||
+                    error.contains("请求序列超出允许窗口");
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
     private static String messageOf(Exception exception) { return exception.getMessage() == null ? "连接失败" : exception.getMessage(); }
 
     private static final class ActionPayload { final String action; ActionPayload(String action) { this.action = action; } }
