@@ -1,5 +1,6 @@
 #include "features/git_repository.h"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -212,6 +213,49 @@ int ParseInteger(std::string_view value) {
     return result;
 }
 
+std::string FirstOutputLine(std::string_view output) {
+    const auto line_end = output.find_first_of("\r\n");
+    std::string line(output.substr(0, line_end));
+    while (!line.empty() &&
+           (line.back() == '\r' || line.back() == '\n' ||
+            line.back() == ' ' || line.back() == '\t')) {
+        line.pop_back();
+    }
+    return line;
+}
+
+std::wstring ParseRemoteUrl(std::string_view output) {
+    const std::string line = FirstOutputLine(output);
+    if (line.empty()) return {};
+    const auto separator = line.find('\t');
+    if (separator == std::string::npos) return {};
+    const auto suffix = line.rfind(" (fetch)");
+    const size_t end = suffix == std::string::npos ? line.size() : suffix;
+    if (separator + 1 >= end) return {};
+    return aicli::text::WideText(
+        std::string_view(line).substr(separator + 1, end - separator - 1));
+}
+
+std::wstring ParseLastCommit(std::string_view output) {
+    const std::string line = FirstOutputLine(output);
+    if (line.empty()) return {};
+    const auto first = line.find('\t');
+    const auto second = first == std::string::npos
+        ? std::string::npos
+        : line.find('\t', first + 1);
+    if (first == std::string::npos || second == std::string::npos) {
+        return aicli::text::WideText(line);
+    }
+    std::wstring hash = aicli::text::WideText(
+        std::string_view(line).substr(0, first));
+    std::wstring time = aicli::text::WideText(
+        std::string_view(line).substr(first + 1, second - first - 1));
+    std::replace(time.begin(), time.end(), L'T', L' ');
+    const std::wstring subject = aicli::text::WideText(
+        std::string_view(line).substr(second + 1));
+    return hash + L" · " + time + L" · " + subject;
+}
+
 void ParsePorcelainV2(std::string_view output, RepositoryStatus& status) {
     std::istringstream lines{std::string(output)};
     std::string line;
@@ -291,9 +335,20 @@ RepositoryStatus InspectRepository(std::wstring_view project_folder) {
         return status;
     }
     ParsePorcelainV2(porcelain.text, status);
-    const auto remotes = RunGit(folder, L"remote");
+    const auto remotes = RunGit(folder, L"remote -v");
     status.has_remote = remotes.started && remotes.exit_code == 0 &&
-                        !remotes.text.empty();
+                         !remotes.text.empty();
+    if (status.has_remote) status.remote_url = ParseRemoteUrl(remotes.text);
+    if (status.state == RepositoryState::HasCommits) {
+        const auto commit = RunGit(
+            folder,
+            L"-c i18n.logOutputEncoding=UTF-8 log -1 "
+            L"--date=format-local:%Y-%m-%dT%H:%M "
+            L"--pretty=format:%h%x09%ad%x09%s");
+        if (commit.started && commit.exit_code == 0) {
+            status.last_commit = ParseLastCommit(commit.text);
+        }
+    }
     status.merging = HasOperationMarker(git_directory, common, L"MERGE_HEAD");
     status.rebasing = HasOperationMarker(git_directory, common, L"rebase-merge") ||
                        HasOperationMarker(git_directory, common, L"rebase-apply");

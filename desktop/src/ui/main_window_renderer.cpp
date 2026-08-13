@@ -66,11 +66,6 @@ void PaintMainWindow(HDC target_dc,
     SelectObject(dc, previous_pen);
     DeleteObject(separator);
 
-    // The EDIT already owns the exact requested field surface and changes its
-    // fill on focus. Do not paint a second, larger outline/underline behind it;
-    // that old fixed geometry became visibly offset after the sidebar was
-    // tightened to six pixels. The native terminal also fills its complete
-    // work area now, so it no longer needs a surrounding decorative frame.
     (void)search;
 
     if (app_icon) {
@@ -86,6 +81,23 @@ void PaintMainWindow(HDC target_dc,
 
     footer_status.Draw(
         dc, client, metrics.footer_height, small_font, git_font, theme);
+
+    // DWM glass changes shade as activation changes, so the dark theme owns
+    // its one-pixel outline in client space. This keeps every edge exactly
+    // #12151B while retaining the compositor's shadow and resize behavior.
+    if (theme.mode == ThemeMode::Dark && !IsZoomed(window) &&
+        client.right > 1 && client.bottom > 1) {
+        const COLORREF frame = RGB(18, 21, 27);
+        HPEN frame_pen = CreatePen(PS_SOLID, 1, frame);
+        const auto old_pen = static_cast<HPEN>(SelectObject(dc, frame_pen));
+        MoveToEx(dc, 0, 0, nullptr);
+        LineTo(dc, client.right - 1, 0);
+        LineTo(dc, client.right - 1, client.bottom - 1);
+        LineTo(dc, 0, client.bottom - 1);
+        LineTo(dc, 0, 0);
+        SelectObject(dc, old_pen);
+        DeleteObject(frame_pen);
+    }
 }
 
 } // namespace aicli::ui

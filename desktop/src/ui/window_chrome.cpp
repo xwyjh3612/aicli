@@ -19,19 +19,22 @@ namespace {
 // outline. A maximized custom-frame window must not retain that outline: it
 // otherwise remains visible as a one-pixel strip at the monitor edge.
 constexpr COLORREF kDwmColorNone = static_cast<COLORREF>(0xFFFFFFFEu);
+constexpr COLORREF kDwmColorDefault = static_cast<COLORREF>(0xFFFFFFFFu);
+
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
 
 COLORREF CompositorBorder(HWND window, COLORREF normal_border) noexcept {
     return IsZoomed(window) ? kDwmColorNone : normal_border;
 }
 
 MARGINS CompositorMargins(HWND window) noexcept {
-    const int rim = IsZoomed(window) ? 0 : 1;
-    // The complete top edge belongs to the client-rendered title bar.  A
-    // one-pixel DWM extension here can be composited as a bright glass strip
-    // above the dark title surface (the caption buttons happened to cover it
-    // with their own fill). Keep the side/bottom rim for resize and shadow,
-    // but never extend glass into the top row.
-    return MARGINS{rim, rim, 0, rim};
+    (void)window;
+    // Never turn the client edge into DWM glass. Even with an explicit dark
+    // border color, that one-pixel glass rim is activation-tinted by the
+    // compositor. The client renderer owns the exact dark outline instead.
+    return MARGINS{};
 }
 
 } // namespace
@@ -64,9 +67,18 @@ void WindowChrome::ApplyTheme(HWND window,
     BOOL dark = light ? FALSE : TRUE;
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
                           &dark, sizeof(dark));
-    const COLORREF compositor_border = CompositorBorder(window, border_color);
+    const COLORREF compositor_border = light
+        ? CompositorBorder(window, border_color)
+        : kDwmColorNone;
     DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
                           &compositor_border, sizeof(compositor_border));
+    // Although the title bar is client-rendered, DWM still owns the thin
+    // rounded top rim. Pin its dark caption color to the same frame color so
+    // activation changes cannot reveal the system accent/light rim. Restore
+    // the system default when switching back to the light theme.
+    const COLORREF caption_color = light ? kDwmColorDefault : border_color;
+    DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR,
+                          &caption_color, sizeof(caption_color));
     SetWindowPos(window, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                      SWP_FRAMECHANGED);
@@ -93,9 +105,12 @@ void WindowChrome::ExtendFrame(HWND window) const {
 }
 
 void WindowChrome::UpdateSizeState(HWND window,
+                                   bool light,
                                    COLORREF border_color) const {
     if (!window) return;
-    const COLORREF compositor_border = CompositorBorder(window, border_color);
+    const COLORREF compositor_border = light
+        ? CompositorBorder(window, border_color)
+        : kDwmColorNone;
     DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
                           &compositor_border, sizeof(compositor_border));
     const MARGINS compositor_rim = CompositorMargins(window);

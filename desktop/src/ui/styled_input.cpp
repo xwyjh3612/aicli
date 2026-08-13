@@ -17,6 +17,7 @@ struct StyledInputState {
     COLORREF background_color{RGB(32, 36, 43)};
     COLORREF focus_background_color{RGB(43, 48, 57)};
     bool focus_border_only{};
+    bool legacy_painting{};
     int radius{5};
     int horizontal_margin{10};
 };
@@ -96,8 +97,16 @@ void DrawPlaceholderAndFocusBorder(HWND control, HDC dc,
         HPEN pen = CreatePen(PS_SOLID, 1, state.focus_border_color);
         const auto old_pen = SelectObject(dc, pen);
         const auto old_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
-        RoundRect(dc, 0, 0, std::max(1L, rect.right),
-                  std::max(1L, rect.bottom), state.radius, state.radius);
+        if (state.legacy_painting) {
+            RoundRect(dc, 0, 0, std::max(1L, rect.right),
+                      std::max(1L, rect.bottom), state.radius, state.radius);
+        } else {
+            InflateRect(&rect, -1, -1);
+            RoundRect(dc, rect.left, rect.top,
+                      std::max(rect.left + 1, rect.right),
+                      std::max(rect.top + 1, rect.bottom),
+                      state.radius, state.radius);
+        }
         SelectObject(dc, old_brush);
         SelectObject(dc, old_pen);
         DeleteObject(pen);
@@ -105,23 +114,7 @@ void DrawPlaceholderAndFocusBorder(HWND control, HDC dc,
 }
 
 LRESULT PaintStyledInput(HWND control, const StyledInputState& state) {
-    PAINTSTRUCT paint{};
-    HDC target = BeginPaint(control, &paint);
-    if (!target) return 0;
-
-    RECT client{};
-    GetClientRect(control, &client);
-    const int width = std::max(1L, client.right - client.left);
-    const int height = std::max(1L, client.bottom - client.top);
-    HDC buffer = CreateCompatibleDC(target);
-    HBITMAP bitmap = buffer ? CreateCompatibleBitmap(target, width, height) : nullptr;
-    if (!buffer || !bitmap) {
-        if (bitmap) DeleteObject(bitmap);
-        if (buffer) DeleteDC(buffer);
-        EndPaint(control, &paint);
-
-        // Allocation failure is exceptionally rare for these small fields.
-        // Fall back to the native paint path and retain placeholder support.
+    if (state.legacy_painting) {
         const auto result = DefSubclassProc(control, WM_PAINT, 0, 0);
         HDC dc = GetDC(control);
         if (dc) {
@@ -130,29 +123,31 @@ LRESULT PaintStyledInput(HWND control, const StyledInputState& state) {
         }
         return result;
     }
-
-    const auto old_bitmap = SelectObject(buffer, bitmap);
+    // Paint one complete field-colour surface first, then let the native EDIT
+    // draw its text, selection, caret and IME state on top. WM_PRINTCLIENT did
+    // not request WM_CTLCOLOREDIT on every Windows build, leaving its text
+    // formatting rectangle in the system beige colour while only the top and
+    // bottom bands used our theme.
+    RECT client{};
+    GetClientRect(control, &client);
     const COLORREF background = GetFocus() == control
         ? state.focus_background_color
         : state.background_color;
-    HBRUSH background_brush = CreateSolidBrush(background);
-    FillRect(buffer, &client, background_brush);
-    DeleteObject(background_brush);
+    HDC background_dc = GetDC(control);
+    if (background_dc) {
+        HBRUSH background_brush = CreateSolidBrush(background);
+        FillRect(background_dc, &client, background_brush);
+        DeleteObject(background_brush);
+        ReleaseDC(control, background_dc);
+    }
 
-    // Render the native EDIT (text, selection and IME state) into the same
-    // off-screen frame as our placeholder. This prevents the background-only
-    // frame that was briefly visible when focus moved between two empty
-    // fields.
-    DefSubclassProc(control, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(buffer),
-                    PRF_CLIENT);
-    DrawPlaceholderAndFocusBorder(control, buffer, state);
-    BitBlt(target, 0, 0, width, height, buffer, 0, 0, SRCCOPY);
-
-    SelectObject(buffer, old_bitmap);
-    DeleteObject(bitmap);
-    DeleteDC(buffer);
-    EndPaint(control, &paint);
-    return 0;
+    const auto result = DefSubclassProc(control, WM_PAINT, 0, 0);
+    HDC overlay_dc = GetDC(control);
+    if (overlay_dc) {
+        DrawPlaceholderAndFocusBorder(control, overlay_dc, state);
+        ReleaseDC(control, overlay_dc);
+    }
+    return result;
 }
 
 LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPARAM lparam,
@@ -160,7 +155,6 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
     switch (message) {
     case WM_SIZE:
         CenterText(control);
-        ApplyRoundedRegion(control);
         break;
     case WM_SHOWWINDOW: {
         const auto result = DefSubclassProc(control, message, wparam, lparam);
@@ -189,6 +183,12 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
     case WM_KILLFOCUS: {
         const auto result = DefSubclassProc(control, message, wparam, lparam);
         CenterText(control);
+        if (const auto* state = State(control); state && state->legacy_painting) {
+            RedrawWindow(control, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE);
+            ApplyRoundedRegion(control);
+            InvalidateParentFrame(control);
+            return result;
+        }
         // Paint the complete field synchronously without a separate erase
         // frame. The old and new controls therefore each reach the compositor
         // with their placeholder already present.
@@ -203,9 +203,18 @@ LRESULT CALLBACK StyledInputProc(HWND control, UINT message, WPARAM wparam, LPAR
         if (wparam == VK_RETURN || wparam == L'\n') return 0;
         break;
     case WM_ERASEBKGND:
-        // WM_PAINT composes the entire field off-screen, including its
-        // background. Suppressing the independent erase is what removes the
-        // one-frame placeholder flash.
+        if (const auto* state = State(control)) {
+            if (state->legacy_painting)
+                return DefSubclassProc(control, message, wparam, lparam);
+            RECT client{};
+            GetClientRect(control, &client);
+            const COLORREF background = GetFocus() == control
+                ? state->focus_background_color
+                : state->background_color;
+            HBRUSH brush = CreateSolidBrush(background);
+            FillRect(reinterpret_cast<HDC>(wparam), &client, brush);
+            DeleteObject(brush);
+        }
         return 1;
     case WM_PAINT:
         if (const auto* state = State(control)) {
@@ -283,6 +292,13 @@ void SetStyledInputTheme(HWND control, const ThemePalette& palette) {
 void SetStyledInputFocusBorderOnly(HWND control, bool enabled) {
     if (auto* state = State(control)) {
         state->focus_border_only = enabled;
+        InvalidateRect(control, nullptr, FALSE);
+    }
+}
+
+void SetStyledInputLegacyPainting(HWND control, bool enabled) {
+    if (auto* state = State(control)) {
+        state->legacy_painting = enabled;
         InvalidateRect(control, nullptr, FALSE);
     }
 }

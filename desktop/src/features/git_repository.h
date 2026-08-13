@@ -19,6 +19,8 @@ struct RepositoryStatus {
     std::wstring root;
     std::wstring branch;
     std::wstring upstream;
+    std::wstring remote_url;
+    std::wstring last_commit;
     std::wstring last_push;
     std::wstring last_pull;
     int staged_count{};

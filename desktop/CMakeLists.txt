@@ -177,6 +177,7 @@ target_link_libraries(aicli PRIVATE
     winsqlite3
     ws2_32
     advapi32
+    userenv
     crypt32
     psapi
     "F:/deps/aicli/Microsoft.Windows.Console.ConPTY.1.24.260710001/package/runtimes/win-x64/lib/uap10.0/conpty.lib"

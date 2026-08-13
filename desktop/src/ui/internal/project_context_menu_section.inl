@@ -24,16 +24,21 @@ void MoveSelectedProjectToDefaultGroup(){MoveSelectedProjectToGroup(L"默认分�
 void ShowGroupDropdown(){
     g_groups=g_store.LoadGroups();g_projects=g_store.LoadProjects();if(g_groups.empty())return;
     HMENU menu=CreatePopupMenu();if(!menu)return;HBRUSH brush=CreateSolidBrush(g_light_theme?RGB(250,251,253):RGB(34,36,40));ConfigureContextMenu(menu,brush);
-    std::vector<std::wstring> labels;labels.reserve(g_groups.size()+1);
+    std::vector<std::wstring> labels;labels.reserve(g_groups.size()+2);
     labels.push_back(std::wstring(kAllGroupsName)+L" ("+std::to_wstring(g_projects.size())+L")");
+    const auto started_count=std::count_if(g_projects.begin(),g_projects.end(),[](const Project& project){return g_island.HasSession(project.id);});
+    labels.push_back(std::wstring(kStartedProjectsName)+L" ("+std::to_wstring(started_count)+L")");
     for(const auto& group:g_groups){const auto count=std::count_if(g_projects.begin(),g_projects.end(),[&](const Project& project){const std::wstring value=project.group.empty()?L"默认分组":project.group;return value==group.name;});labels.push_back(group.name+L" ("+std::to_wstring(count)+L")");}
     std::vector<ContextMenuEntry> entries;entries.reserve(labels.size());
     entries.push_back({g_group_name==kAllGroupsName?L"\xE73E":L"\xE8B7",labels[0].c_str(),false});
     AppendContextEntry(menu,MF_ENABLED,ID_GROUP_SELECT_BASE,entries.back());
-    for(size_t i=0;i<g_groups.size();++i){entries.push_back({g_groups[i].name==g_group_name?L"\xE73E":L"\xE8B7",labels[i+1].c_str(),false});AppendContextEntry(menu,MF_ENABLED,ID_GROUP_SELECT_BASE+1+static_cast<UINT>(i),entries.back());}
+    entries.push_back({g_group_name==kStartedProjectsName?L"\xE73E":L"\xE8B7",labels[1].c_str(),false});
+    AppendContextEntry(menu,MF_ENABLED,ID_GROUP_SELECT_BASE+1,entries.back());
+    for(size_t i=0;i<g_groups.size();++i){entries.push_back({g_groups[i].name==g_group_name?L"\xE73E":L"\xE8B7",labels[i+2].c_str(),false});AppendContextEntry(menu,MF_ENABLED,ID_GROUP_SELECT_BASE+2+static_cast<UINT>(i),entries.back());}
     RECT button{};GetWindowRect(g_group,&button);const UINT command=TrackPopupMenuEx(menu,TPM_RETURNCMD|TPM_LEFTALIGN|TPM_TOPALIGN|TPM_NONOTIFY,button.left,button.bottom,g_hwnd,nullptr);DestroyMenu(menu);DeleteObject(brush);
     if(command==ID_GROUP_SELECT_BASE){g_group_name=kAllGroupsName;g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();RefreshProjectDetails();Layout();}
-    else if(command>ID_GROUP_SELECT_BASE&&command<=ID_GROUP_SELECT_BASE+g_groups.size()){g_group_name=g_groups[command-ID_GROUP_SELECT_BASE-1].name;g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();RefreshProjectDetails();Layout();}
+    else if(command==ID_GROUP_SELECT_BASE+1){g_group_name=kStartedProjectsName;g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();RefreshProjectDetails();Layout();}
+    else if(command>=ID_GROUP_SELECT_BASE+2&&command<ID_GROUP_SELECT_BASE+2+g_groups.size()){g_group_name=g_groups[command-ID_GROUP_SELECT_BASE-2].name;g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();RefreshProjectDetails();Layout();}
 }
 void CreateGroupFromHeader(){
     std::wstring name;if(!aicli::ui::ShowGroupNameDialog(g_hwnd,L"添加分组",L"创建后会立即切换到这个分组。",L"",g_light_theme,name))return;std::wstring error;if(!g_store.AddGroup(name,&error)){MessageBoxW(g_hwnd,error.c_str(),L"添加分组",MB_OK|MB_ICONWARNING);return;}g_groups=g_store.LoadGroups();g_group_name=name;g_store.SetSetting(L"last_group",name);RefreshProjectList();RefreshProjectDetails();Layout();SetText(g_status,L"已创建分组 "+name);

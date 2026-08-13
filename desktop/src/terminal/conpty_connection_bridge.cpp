@@ -2,10 +2,12 @@
 
 #include <conpty.h>
 #include <objbase.h>
+#include <userenv.h>
 #include <winternl.h>
 #include <algorithm>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace aicli::terminal {
@@ -193,6 +195,84 @@ struct EnvironmentNameLess {
     }
 };
 
+using EnvironmentVariables =
+    std::map<std::wstring, std::wstring, EnvironmentNameLess>;
+
+void ReadEnvironmentBlock(const wchar_t* block,
+                          EnvironmentVariables& variables) {
+    if (!block) return;
+    for (const wchar_t* current = block; *current;
+         current += wcslen(current) + 1) {
+        std::wstring entry{current};
+        const size_t separator = entry[0] == L'='
+            ? entry.find(L'=', 1)
+            : entry.find(L'=');
+        if (separator != std::wstring::npos) {
+            variables[entry.substr(0, separator)] = entry.substr(separator + 1);
+        }
+    }
+}
+
+std::wstring MergePathValues(std::wstring_view fresh,
+                             std::wstring_view inherited) {
+    std::vector<std::wstring> entries;
+    std::set<std::wstring, EnvironmentNameLess> seen;
+    const auto append = [&](std::wstring_view value) {
+        size_t start = 0;
+        while (start <= value.size()) {
+            const size_t end = value.find(L';', start);
+            std::wstring entry{value.substr(
+                start, end == std::wstring_view::npos
+                    ? value.size() - start : end - start)};
+            const auto first = entry.find_first_not_of(L" \t");
+            const auto last = entry.find_last_not_of(L" \t");
+            if (first != std::wstring::npos) {
+                entry = entry.substr(first, last - first + 1);
+                if (seen.insert(entry).second) entries.push_back(std::move(entry));
+            }
+            if (end == std::wstring_view::npos) break;
+            start = end + 1;
+        }
+    };
+    // Prefer the environment Windows currently builds for this user. Append
+    // process-only entries afterwards so developer/tool launchers keep their
+    // temporary PATH additions without masking current NVM/system paths.
+    append(fresh);
+    append(inherited);
+
+    std::wstring result;
+    for (const auto& entry : entries) {
+        if (!result.empty()) result.push_back(L';');
+        result += entry;
+    }
+    return result;
+}
+
+void MergeFreshUserEnvironment(EnvironmentVariables& variables) {
+    const auto inherited_path = variables.find(L"Path");
+    const std::wstring inherited = inherited_path == variables.end()
+        ? std::wstring{} : inherited_path->second;
+
+    HANDLE raw_token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE,
+                          &raw_token)) {
+        return;
+    }
+    UniqueHandle token{raw_token};
+    void* block = nullptr;
+    if (!CreateEnvironmentBlock(&block, token.get(), FALSE) || !block) return;
+
+    EnvironmentVariables fresh;
+    ReadEnvironmentBlock(static_cast<const wchar_t*>(block), fresh);
+    DestroyEnvironmentBlock(block);
+    for (const auto& [name, value] : fresh) variables[name] = value;
+
+    const auto fresh_path = fresh.find(L"Path");
+    variables[L"Path"] = MergePathValues(
+        fresh_path == fresh.end() ? std::wstring_view{} : fresh_path->second,
+        inherited);
+}
+
 std::wstring GuidString(bool include_braces) {
     GUID guid{};
     if (FAILED(CoCreateGuid(&guid))) return {};
@@ -206,17 +286,12 @@ std::wstring GuidString(bool include_braces) {
 }
 
 std::vector<wchar_t> BuildTerminalEnvironment() {
-    std::map<std::wstring, std::wstring, EnvironmentNameLess> variables;
+    EnvironmentVariables variables;
     if (wchar_t* block = GetEnvironmentStringsW()) {
-        for (const wchar_t* current = block; *current; current += wcslen(current) + 1) {
-            std::wstring entry{current};
-            const size_t separator = entry[0] == L'=' ? entry.find(L'=', 1) : entry.find(L'=');
-            if (separator != std::wstring::npos) {
-                variables[entry.substr(0, separator)] = entry.substr(separator + 1);
-            }
-        }
+        ReadEnvironmentBlock(block, variables);
         FreeEnvironmentStringsW(block);
     }
+    MergeFreshUserEnvironment(variables);
 
     variables[L"WT_SESSION"] = GuidString(false);
     variables[L"WT_PROFILE_ID"] = GuidString(true);

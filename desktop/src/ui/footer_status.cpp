@@ -1,10 +1,17 @@
 #include "ui/footer_status.h"
 
-#include <commctrl.h>
+#include <dwmapi.h>
 
 #include <algorithm>
+#include <sstream>
+
+#include "ui/drawing_utils.h"
 
 namespace {
+
+constexpr UINT_PTR kGitHoverTimerId = 0xA1C31;
+constexpr UINT kGitHoverDelayMs = 350;
+constexpr wchar_t kGitHoverCardClass[] = L"AiCliGitHoverCard";
 
 void AppendPart(std::wstring& text, std::wstring part) {
     if (part.empty()) return;
@@ -27,9 +34,66 @@ void FooterStatusController::Attach(HWND owner) {
 }
 
 void FooterStatusController::Detach() {
-    if (tooltip_ && IsWindow(tooltip_)) DestroyWindow(tooltip_);
-    tooltip_ = nullptr;
+    if (owner_ && IsWindow(owner_)) KillTimer(owner_, kGitHoverTimerId);
+    if (hover_card_ && IsWindow(hover_card_)) DestroyWindow(hover_card_);
+    hover_card_ = nullptr;
+    if (hover_font_) DeleteObject(hover_font_);
+    if (hover_title_font_) DeleteObject(hover_title_font_);
+    hover_font_ = nullptr;
+    hover_title_font_ = nullptr;
+    hover_font_dpi_ = 0;
+    git_hovered_ = false;
+    hover_card_visible_ = false;
     owner_ = nullptr;
+}
+
+bool FooterStatusController::OnMouseMove(
+    POINT client_point,
+    const ThemePalette& theme) {
+    if (!owner_ || !IsWindow(owner_)) return false;
+    const bool inside = PtInRect(&git_bounds_, client_point) != FALSE;
+    if (!inside) {
+        if (git_hovered_ || hover_card_visible_) HideHoverCard();
+        return false;
+    }
+
+    hover_theme_ = theme;
+    if (!git_hovered_) {
+        git_hovered_ = true;
+        // Anchor the card once when the pointer first enters the Git label.
+        // Repositioning and invalidating the popup for every WM_MOUSEMOVE made
+        // its text visibly flicker while the pointer was still inside the
+        // same small footer region.
+        hover_screen_point_ = client_point;
+        ClientToScreen(owner_, &hover_screen_point_);
+        SetTimer(owner_, kGitHoverTimerId, kGitHoverDelayMs, nullptr);
+        TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, owner_, 0};
+        TrackMouseEvent(&tracking);
+    }
+    return true;
+}
+
+void FooterStatusController::OnMouseLeave() {
+    HideHoverCard();
+}
+
+bool FooterStatusController::HandleTimer(UINT_PTR timer_id) {
+    if (timer_id != kGitHoverTimerId) return false;
+    if (owner_ && IsWindow(owner_)) KillTimer(owner_, kGitHoverTimerId);
+    if (!git_hovered_) return true;
+
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    POINT client = cursor;
+    ScreenToClient(owner_, &client);
+    if (!PtInRect(&git_bounds_, client)) {
+        HideHoverCard();
+        return true;
+    }
+    // Keep the original entry point as the stable card anchor. The cursor may
+    // move anywhere inside the Git label without moving or repainting it.
+    ShowHoverCard();
+    return true;
 }
 
 void FooterStatusController::Layout(const RECT& client, int footer_height) {
@@ -40,8 +104,10 @@ void FooterStatusController::Layout(const RECT& client, int footer_height) {
         0, static_cast<int>(client.bottom) - footer_height_);
     telemetry_left_ = std::max(
         scale(14), static_cast<int>(client.right) - scale(kTelemetryWidth) + scale(8));
-    const int git_right = std::max(scale(14), telemetry_left_ - scale(8));
-    const int git_left = std::max(scale(14), git_right - scale(214));
+    const int git_left = scale(14);
+    const int git_right = std::max(
+        git_left, std::min(telemetry_left_ - scale(12),
+                           git_left + scale(300)));
     const RECT next{git_left, footer_top, git_right, client.bottom};
     if (!EqualRect(&git_bounds_, &next)) {
         git_bounds_ = next;
@@ -212,7 +278,13 @@ void FooterStatusController::UpdateTooltip() {
     const std::wstring branch = repository_.branch.empty()
         ? L"未识别"
         : repository_.branch;
-    tooltip_text_ = L"git\n目录：" + root + L"\n分支：" + branch +
+    const std::wstring remote = repository_.remote_url.empty()
+        ? L"未配置"
+        : repository_.remote_url;
+    const std::wstring commit = repository_.last_commit.empty()
+        ? L"暂无提交"
+        : repository_.last_commit;
+    tooltip_text_ = L"目录：" + root + L"\n分支：" + branch +
                     L"\n状态：" + GitStateText() +
                     L"\n已暂存：" + std::to_wstring(repository_.staged_count) +
                     L"\n已修改：" + std::to_wstring(repository_.modified_count) +
@@ -221,37 +293,190 @@ void FooterStatusController::UpdateTooltip() {
                     L"\n领先/落后：↑" +
                     std::to_wstring(repository_.ahead_count) + L" ↓" +
                     std::to_wstring(repository_.behind_count) +
+                    L"\n远程：" + remote +
+                    L"\n最近提交：" + commit +
                     L"\n最后推送：" + push + L"\n最后拉取：" + pull;
-    if (!tooltip_) {
-        tooltip_ = CreateWindowExW(
-            WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
-            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
-            CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-            owner_, nullptr, GetModuleHandleW(nullptr), nullptr);
-        if (!tooltip_) return;
-        SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0,
-                     static_cast<LPARAM>(420));
-        TOOLINFOW tool{sizeof(tool)};
-        tool.uFlags = TTF_IDISHWND;
-        tool.hwnd = owner_;
-        tool.uId = reinterpret_cast<UINT_PTR>(owner_);
-        tool.rect = git_bounds_;
-        tool.lpszText = const_cast<LPWSTR>(tooltip_text_.c_str());
-        SendMessageW(tooltip_, TTM_ADDTOOLW, 0,
-                     reinterpret_cast<LPARAM>(&tool));
+    if (hover_card_visible_ && hover_card_ && IsWindow(hover_card_)) {
+        InvalidateRect(hover_card_, nullptr, FALSE);
+    }
+}
+
+void FooterStatusController::EnsureHoverCard() {
+    if (hover_card_ && IsWindow(hover_card_)) return;
+    WNDCLASSEXW window_class{sizeof(window_class)};
+    window_class.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
+    window_class.lpfnWndProc = HoverCardProc;
+    window_class.hInstance = GetModuleHandleW(nullptr);
+    window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    window_class.lpszClassName = kGitHoverCardClass;
+    if (!RegisterClassExW(&window_class) &&
+        GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return;
     }
+    hover_card_ = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+        kGitHoverCardClass, L"", WS_POPUP,
+        0, 0, 1, 1, owner_, nullptr, GetModuleHandleW(nullptr), this);
+    if (!hover_card_) return;
+    BOOL dark = hover_theme_.light() ? FALSE : TRUE;
+    DwmSetWindowAttribute(hover_card_, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                          &dark, sizeof(dark));
+    DWM_WINDOW_CORNER_PREFERENCE corners = DWMWCP_ROUND;
+    DwmSetWindowAttribute(hover_card_, DWMWA_WINDOW_CORNER_PREFERENCE,
+                          &corners, sizeof(corners));
+}
 
-    TOOLINFOW tool{sizeof(tool)};
-    tool.uFlags = TTF_IDISHWND;
-    tool.hwnd = owner_;
-    tool.uId = reinterpret_cast<UINT_PTR>(owner_);
-    tool.rect = git_bounds_;
-    tool.lpszText = const_cast<LPWSTR>(tooltip_text_.c_str());
-    SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0,
-                 reinterpret_cast<LPARAM>(&tool));
-    SendMessageW(tooltip_, TTM_NEWTOOLRECTW, 0,
-                 reinterpret_cast<LPARAM>(&tool));
+void FooterStatusController::RecreateHoverCardFonts() {
+    const int dpi = owner_ && IsWindow(owner_)
+        ? static_cast<int>(GetDpiForWindow(owner_))
+        : 96;
+    if (dpi == hover_font_dpi_ && hover_font_ && hover_title_font_) return;
+    if (hover_font_) DeleteObject(hover_font_);
+    if (hover_title_font_) DeleteObject(hover_title_font_);
+    hover_font_ = CreateFontW(
+        -MulDiv(12, dpi, 96), 0, 0, 0, FW_NORMAL,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    hover_title_font_ = CreateFontW(
+        -MulDiv(14, dpi, 96), 0, 0, 0, FW_SEMIBOLD,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    hover_font_dpi_ = dpi;
+}
+
+void FooterStatusController::PositionHoverCard() {
+    if (!hover_card_ || !IsWindow(hover_card_)) return;
+    RecreateHoverCardFonts();
+    const UINT dpi = owner_ && IsWindow(owner_) ? GetDpiForWindow(owner_) : 96;
+    const auto scale = [dpi](int value) { return MulDiv(value, dpi, 96); };
+    const int width = scale(470);
+    const int height = scale(286);
+    const int gap = scale(14);
+    HMONITOR monitor = MonitorFromPoint(hover_screen_point_, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{sizeof(info)};
+    GetMonitorInfoW(monitor, &info);
+    int x = hover_screen_point_.x + gap;
+    int y = hover_screen_point_.y - height - gap;
+    if (x + width > info.rcWork.right) x = hover_screen_point_.x - width - gap;
+    if (y < info.rcWork.top) y = hover_screen_point_.y + gap;
+    x = std::clamp(x, static_cast<int>(info.rcWork.left),
+                   std::max(static_cast<int>(info.rcWork.left),
+                            static_cast<int>(info.rcWork.right) - width));
+    y = std::clamp(y, static_cast<int>(info.rcWork.top),
+                   std::max(static_cast<int>(info.rcWork.top),
+                            static_cast<int>(info.rcWork.bottom) - height));
+    ApplyRoundedRegion(hover_card_, width, height, scale(12));
+    SetWindowPos(hover_card_, HWND_TOPMOST, x, y, width, height,
+                 SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+                     (hover_card_visible_ ? SWP_SHOWWINDOW : 0));
+}
+
+void FooterStatusController::ShowHoverCard() {
+    EnsureHoverCard();
+    if (!hover_card_) return;
+    hover_card_visible_ = true;
+    PositionHoverCard();
+    ShowWindow(hover_card_, SW_SHOWNOACTIVATE);
+    RedrawWindow(hover_card_, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+}
+
+void FooterStatusController::HideHoverCard() {
+    if (owner_ && IsWindow(owner_)) KillTimer(owner_, kGitHoverTimerId);
+    git_hovered_ = false;
+    hover_card_visible_ = false;
+    if (hover_card_ && IsWindow(hover_card_)) ShowWindow(hover_card_, SW_HIDE);
+}
+
+void FooterStatusController::PaintHoverCard(HDC target) const {
+    if (!hover_card_ || !target) return;
+    RECT client{};
+    GetClientRect(hover_card_, &client);
+    const UINT dpi = owner_ && IsWindow(owner_) ? GetDpiForWindow(owner_) : 96;
+    const auto scale = [dpi](int value) { return MulDiv(value, dpi, 96); };
+    DrawSmoothRoundedRect(target, client, static_cast<float>(scale(11)),
+                          hover_theme_.surface, hover_theme_.border,
+                          std::max(1.0f, static_cast<float>(dpi) / 96.0f));
+    SetBkMode(target, TRANSPARENT);
+
+    const int left = scale(18);
+    const int right = client.right - scale(18);
+    RECT title{left + scale(15), scale(13), right, scale(39)};
+    HGDIOBJ previous_font = hover_title_font_
+        ? SelectObject(target, hover_title_font_)
+        : nullptr;
+    SetTextColor(target, hover_theme_.text);
+    DrawTextW(target, L"Git 仓库信息", -1, &title,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    HBRUSH status_brush = CreateSolidBrush(GitColor(hover_theme_));
+    RECT status_dot{left, scale(21), left + scale(7), scale(28)};
+    FillRect(target, &status_dot, status_brush);
+    DeleteObject(status_brush);
+
+    if (hover_font_) SelectObject(target, hover_font_);
+    std::wistringstream lines(tooltip_text_);
+    std::wstring line;
+    int y = scale(47);
+    const int row_height = scale(20);
+    const int label_width = scale(76);
+    while (std::getline(lines, line) && y + row_height <= client.bottom - scale(10)) {
+        const auto separator = line.find(L'：');
+        RECT row{left, y, right, y + row_height};
+        if (separator == std::wstring::npos) {
+            SetTextColor(target, hover_theme_.text);
+            DrawTextW(target, line.c_str(), -1, &row,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        } else {
+            const std::wstring label = line.substr(0, separator + 1);
+            const std::wstring value = line.substr(separator + 1);
+            RECT label_rect = row;
+            label_rect.right = std::min(row.right, row.left + label_width);
+            SetTextColor(target, hover_theme_.muted);
+            DrawTextW(target, label.c_str(), -1, &label_rect,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            RECT value_rect = row;
+            value_rect.left = label_rect.right;
+            SetTextColor(target, hover_theme_.text);
+            DrawTextW(target, value.c_str(), -1, &value_rect,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        y += row_height;
+    }
+    if (previous_font) SelectObject(target, previous_font);
+}
+
+LRESULT CALLBACK FooterStatusController::HoverCardProc(
+    HWND window,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam) {
+    auto* self = reinterpret_cast<FooterStatusController*>(
+        GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
+        self = static_cast<FooterStatusController*>(create->lpCreateParams);
+        SetWindowLongPtrW(window, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(self));
+    }
+    switch (message) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_NCHITTEST:
+        return HTTRANSPARENT;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT paint{};
+        HDC dc = BeginPaint(window, &paint);
+        if (self) self->PaintHoverCard(dc);
+        EndPaint(window, &paint);
+        return 0;
+    }
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+        break;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
 }
 
 void FooterStatusController::InvalidateFooter(bool immediate) const {

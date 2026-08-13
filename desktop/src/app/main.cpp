@@ -97,6 +97,7 @@ constexpr int ID_CLOSE = 3011;
 constexpr int ID_MAXIMIZE = 3012;
 constexpr wchar_t kClassName[] = L"AicliDesktopWindow";
 constexpr wchar_t kAllGroupsName[] = L"全部";
+constexpr wchar_t kStartedProjectsName[] = L"已启动";
 constexpr UINT_PTR kXamlIslandSubclassId = 0xA1C11;
 constexpr UINT_PTR kTerminalSnapshotTimerId = 2;
 constexpr UINT_PTR kProjectSpinnerTimerId = 3;
@@ -271,7 +272,8 @@ bool ApplyStoredTheme(){
 COLORREF TitleBarBackground(){return g_window_chrome.Background(g_theme);}
 COLORREF TitleBarText(){return g_window_chrome.Text(g_theme);}
 void ApplyWindowChromeTheme(bool repaint=true){
-    g_window_chrome.ApplyTheme(g_hwnd,g_light_theme,border,repaint);
+    const COLORREF frame_border = g_light_theme ? border : RGB(18,21,27);
+    g_window_chrome.ApplyTheme(g_hwnd,g_light_theme,frame_border,repaint);
 }
 void ApplyLiveTheme(bool flush_workspace=true){
     const bool changed=ApplyStoredTheme();
@@ -614,7 +616,7 @@ bool InitializePersistentState() {
     if(g_store.GetSetting(L"seeded_projects",L"0")!=L"1")
         g_store.SetSetting(L"seeded_projects",L"1");
     g_group_name=g_store.GetSetting(L"last_group",L"默认分组");
-    if(g_group_name!=kAllGroupsName&&std::none_of(g_groups.begin(),g_groups.end(),[&](const ProjectGroup& group){return group.name==g_group_name;}))g_group_name=L"默认分组";
+    if(g_group_name!=kAllGroupsName&&g_group_name!=kStartedProjectsName&&std::none_of(g_groups.begin(),g_groups.end(),[&](const ProjectGroup& group){return group.name==g_group_name;}))g_group_name=L"默认分组";
     g_last_project_id=g_store.GetSetting(L"last_project_id");
     g_startup_project_id=g_last_project_id;
     ApplyStoredTheme();
@@ -622,7 +624,7 @@ bool InitializePersistentState() {
 }
 void UpdateGroupButton(){
     if(!g_group)return;
-    const auto count=g_group_name==kAllGroupsName?g_projects.size():std::count_if(g_projects.begin(),g_projects.end(),[](const Project& project){const std::wstring group=project.group.empty()?L"默认分组":project.group;return group==g_group_name;});
+    const auto count=g_group_name==kAllGroupsName?g_projects.size():std::count_if(g_projects.begin(),g_projects.end(),[](const Project& project){if(g_group_name==kStartedProjectsName)return g_island.HasSession(project.id);const std::wstring group=project.group.empty()?L"默认分组":project.group;return group==g_group_name;});
     SetText(g_group,g_group_name+L" ("+std::to_wstring(count)+L")  ▾");
 }
 void RefreshProjectList(){
@@ -635,7 +637,8 @@ void RefreshProjectList(){
     for(size_t i=0;i<g_projects.size();++i){
         const auto& project=g_projects[i];
         const std::wstring group=project.group.empty()?L"默认分组":project.group;
-        if(g_group_name!=kAllGroupsName&&group!=g_group_name)continue;
+        if(g_group_name==kStartedProjectsName){if(!g_island.HasSession(project.id))continue;}
+        else if(g_group_name!=kAllGroupsName&&group!=g_group_name)continue;
         if(!query.empty()&&project.name.find(query)==std::wstring::npos&&
            project.note.find(query)==std::wstring::npos&&
            project.folder.find(query)==std::wstring::npos&&
@@ -693,22 +696,24 @@ void Layout(){
     }
 
     const int sidebarInset=S(6);
-    const int searchHeight=S(35);
-    const int titleTopGap=S(6);
+    // Restore the search field geometry from before it was reduced to a
+    // 35px outer box: 38px outer height with 2px inset = 34px control height.
+    const int searchHeight=S(38);
     const int titleHeight=S(28);
     const int titleBottomGap=S(10);
     const int addButtonSize=S(28);
     const int searchTop=top+S(6);
     const int searchBottom=searchTop+searchHeight;
-    RECT search_rect{sidebarInset,searchTop,left-sidebarInset,searchBottom};
+    RECT search_rect{sidebarInset+S(2),searchTop+S(2),
+                     left-sidebarInset-S(2),searchBottom+S(2)};
     aicli::ui::LayoutStyledInput(g_search,search_rect,S(2),S(9));
-    const int titleTop=searchBottom+titleTopGap;
+    // Keep every control below the search field at its current position.
+    const int titleTop=top+S(49);
     MoveMainChild(g_sidebar_title,S(9),titleTop,S(200),titleHeight);
     MoveMainChild(g_new_project,left-sidebarInset-addButtonSize,titleTop,addButtonSize,addButtonSize);
     SetWindowPos(g_new_project,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
     const int footer_top=r.bottom-bottom;
     g_footer_status.Layout(r,bottom);
-    const int git_left=g_footer_status.git_bounds().left;
     const int listTop=titleTop+titleHeight+titleBottomGap;
     MoveMainChild(g_list,sidebarInset,listTop,left-sidebarInset*2,
                   std::max(S(80),footer_top-listTop-sidebarInset));
@@ -730,7 +735,6 @@ void Layout(){
         // focus from the native terminal or trigger a TUI repaint when the
         // selected session has not actually changed.
         g_island.Activate(selectedProject.id,false);
-        SetText(g_status,L"原生终端已连接    |    "+selectedProject.type);
     }
     const bool showingTerminal=selectedRunning;
     const bool showingNative=showingTerminal&&g_island.Active();
@@ -790,8 +794,9 @@ void Layout(){
     // The central surface is always the real Windows Terminal control.  Do
     // not create a second EDIT-based command line or a text-output fallback:
     // keyboard focus, shortcuts, selection and scrolling must stay native.
-    MoveMainChild(g_status,S(14),r.bottom-bottom+S(6),
-                  std::max(S(160),git_left-S(22)),S(20));
+    const int statusLeft=g_footer_status.git_bounds().right+S(12);
+    MoveMainChild(g_status,statusLeft,r.bottom-bottom+S(6),
+                  std::max(0,g_footer_status.telemetry_left()-statusLeft-S(8)),S(20));
     if(g_island.Window()){
         if(showingNative)g_island.Resize(terminal);
         // Modal windows are now separate owned popups.  Keep the real
@@ -865,14 +870,14 @@ bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const s
            [project_id](std::uint32_t rows,std::uint32_t columns){
                g_terminal_streams.PublishResize(project_id,rows,columns);
            })){
-        SetText(g_status,L"原生终端已连接    |    "+sessionAgent);
+        SetText(g_status,L"");
         Layout();
         return true;
     }
     const std::wstring error=g_island.LastError().empty()?L"无法创建原生终端控件":g_island.LastError();
     g_terminal_streams.RemoveSession(project_id);
     SetText(g_detail_state,L"状态: 启动失败");
-    SetText(g_status,L"原生终端启动失败: "+error);
+    SetText(g_status,L"终端启动失败: "+error);
     Layout(); return false;
 }
 void StartSession(bool restart=false){
@@ -893,7 +898,7 @@ void StartSession(bool restart=false){
     }
 }
 int ProjectIndexById(const std::wstring& project_id){for(size_t i=0;i<g_projects.size();++i)if(g_projects[i].id==project_id)return static_cast<int>(i);return -1;}
-bool SelectProjectById(const std::wstring& project_id){const int index=ProjectIndexById(project_id);if(index<0)return false;if(g_group_name!=kAllGroupsName){g_group_name=g_projects[index].group.empty()?L"默认分组":g_projects[index].group;SetText(g_group,g_group_name);g_store.SetSetting(L"last_group",g_group_name);}RefreshProjectList();for(size_t row=0;row<g_visible_project_indices.size();++row)if(g_visible_project_indices[row]==index){SendMessageW(g_list,LB_SETCURSEL,row,0);RefreshProjectDetails(true);Layout();return true;}return false;}
+bool SelectProjectById(const std::wstring& project_id){const int index=ProjectIndexById(project_id);if(index<0)return false;const bool visible_in_filter=g_group_name==kAllGroupsName||(g_group_name==kStartedProjectsName?g_island.HasSession(project_id):(g_projects[index].group.empty()?L"默认分组":g_projects[index].group)==g_group_name);if(!visible_in_filter){g_group_name=g_projects[index].group.empty()?L"默认分组":g_projects[index].group;SetText(g_group,g_group_name);g_store.SetSetting(L"last_group",g_group_name);}RefreshProjectList();for(size_t row=0;row<g_visible_project_indices.size();++row)if(g_visible_project_indices[row]==index){SendMessageW(g_list,LB_SETCURSEL,row,0);RefreshProjectDetails(true);Layout();return true;}return false;}
 void RefreshConversationsCache(){g_conversation_bridge.RefreshConversations(g_projects);}
 std::string ConversationsJson(){return g_conversation_bridge.ConversationsJson();}
 std::string EventsJson(const std::wstring& project_id,std::int64_t after){return g_conversation_bridge.EventsJson(project_id,after);}
@@ -996,7 +1001,7 @@ void ReloadPersistentModels() {
         g_store.AddGroup(L"默认分组");
         g_groups = g_store.LoadGroups();
     }
-    if (g_group_name != kAllGroupsName && std::none_of(g_groups.begin(), g_groups.end(), [&](const ProjectGroup& value) {
+    if (g_group_name != kAllGroupsName && g_group_name != kStartedProjectsName && std::none_of(g_groups.begin(), g_groups.end(), [&](const ProjectGroup& value) {
             return value.name == g_group_name;
         })) {
         g_group_name = L"默认分组";
@@ -1063,7 +1068,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     switch(m){
     case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY);g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);RecreateMainFontsForDpi();
         g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
-        g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputFocusBorderOnly(g_search);
+        g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputTheme(g_search,g_theme);aicli::ui::SetStyledInputFocusBorderOnly(g_search);aicli::ui::SetStyledInputLegacyPainting(g_search,true);
         g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SendMessageW(g_list,LB_SETITEMHEIGHT,0,ScaleUi(kProjectListItemHeight));g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
         auto detailStatic=[&](const wchar_t* text){return CreateWindowW(L"STATIC",text,WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);};
         g_detail_title=detailStatic(L"选择一个项目");
@@ -1083,7 +1088,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         for(HWND b:{g_start_project,g_edit_project,g_open_project_folder})EnableButtonHover(b);
         g_detail_tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         if(g_detail_tooltip){for(auto entry:{std::pair<HWND,const wchar_t*>{g_edit_project,L"编辑项目"},{g_open_project_folder,L"打开项目文件夹"}}){TOOLINFOW tool{sizeof(tool)};tool.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tool.hwnd=h;tool.uId=reinterpret_cast<UINT_PTR>(entry.first);tool.lpszText=const_cast<LPWSTR>(entry.second);SendMessageW(g_detail_tooltip,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&tool));}}
-        g_status=CreateWindowW(L"STATIC",L"就绪    |    选择项目后查看启动信息",WS_CHILD|WS_VISIBLE,0,0,0,0,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);ApplyMainFontsToControls();
+        g_status=CreateWindowW(L"STATIC",L"",WS_CHILD|WS_VISIBLE,0,0,0,0,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);ApplyMainFontsToControls();
         g_island.Attach(h,RECT{250,60,500,400});g_island.SetTheme(g_light_theme);RefreshProjectDetails();ExtendCustomTitleBar(h);SetWindowPos(h,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);Layout();ConfigureRemoteAgent();UpdateHeaderTelemetry();SetTimer(h,1,2000,nullptr);PostMessageW(h,WM_RESTORE_LAST_SESSION,0,0);return 0;}
     case WM_ACTIVATE:
         // An owned modal surface becomes the thread's active window while it
@@ -1117,8 +1122,8 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     }
     case WM_NCCALCSIZE:if(w){auto* params=(NCCALCSIZE_PARAMS*)l;if(IsZoomed(h)){HMONITOR monitor=MonitorFromRect(&params->rgrc[0],MONITOR_DEFAULTTONEAREST);MONITORINFO info{sizeof(info)};if(GetMonitorInfoW(monitor,&info))params->rgrc[0]=info.rcWork;}return 0;}break;
     case WM_NCHITTEST:return HitTestCustomFrame(h,l);
-    case WM_MOUSEMOVE:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(g_window_chrome.OnMouseMove(h,point))return 0;break;}
-    case WM_MOUSELEAVE:g_window_chrome.OnMouseLeave(h);return 0;
+    case WM_MOUSEMOVE:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const bool over_git=g_footer_status.OnMouseMove(point,g_theme);const bool over_chrome=g_window_chrome.OnMouseMove(h,point);if(over_git||over_chrome)return 0;break;}
+    case WM_MOUSELEAVE:g_footer_status.OnMouseLeave();g_window_chrome.OnMouseLeave(h);return 0;
     case WM_LBUTTONDOWN:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(g_window_chrome.OnLeftButtonDown(h,point))return 0;break;}
     case WM_LBUTTONUP:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const auto action=g_window_chrome.OnLeftButtonUp(h,point);if(action.has_value()){if(*action)ExecuteTitleButton(h,*action);return 0;}break;}
     case WM_CAPTURECHANGED:g_window_chrome.OnCaptureChanged(h);break;
@@ -1129,7 +1134,8 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         // Remove the compositor rim while maximized, then restore it with the
         // normal shadow/border as soon as the window returns to a floating
         // size. This keeps the client surface flush with every monitor edge.
-        g_window_chrome.UpdateSizeState(h,border);
+        g_window_chrome.UpdateSizeState(
+            h,g_light_theme,g_light_theme?border:RGB(18,21,27));
         if(aicli::ui::HasActiveModal(h))ResizeModalHosts(h);
         Layout();
         // Moving the footer's child status HWND does not reliably invalidate
@@ -1141,7 +1147,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
                      RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
         return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshots.MarkDirtyMessageHandled();if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
-    case WM_TIMER:if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);g_project_idle_pulse_angle=std::fmod(g_project_idle_pulse_angle+9.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
+    case WM_TIMER:if(g_footer_status.HandleTimer(w))return 0;if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);g_project_idle_pulse_angle=std::fmod(g_project_idle_pulse_angle+9.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);info->ptMinTrackSize.x=metrics.Scale(900);info->ptMinTrackSize.y=metrics.Scale(600);return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;

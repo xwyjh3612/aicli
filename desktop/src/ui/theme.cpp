@@ -54,7 +54,9 @@ ThemePalette MakeThemePalette(ThemeMode mode) {
         palette.titlebar = RGB(18, 21, 27);
         palette.titlebar_text = RGB(238, 241, 247);
         palette.titlebar_muted = RGB(139, 148, 162);
-        palette.titlebar_inactive = RGB(61, 64, 70);
+        // Keep the inactive custom chrome flush with the dark frame. Windows
+        // otherwise exposes a noticeably lighter strip around the title bar.
+        palette.titlebar_inactive = RGB(18, 21, 27);
         palette.titlebar_inactive_text = RGB(214, 217, 223);
         palette.titlebar_hover = RGB(37, 42, 51);
         palette.titlebar_pressed = RGB(48, 56, 68);

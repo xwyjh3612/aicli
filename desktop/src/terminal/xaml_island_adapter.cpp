@@ -323,7 +323,7 @@ public:
         std::wstring stage = L"prepare";
         auto set_stage = [&](const wchar_t* value) {
             stage = value;
-            if (status) SetWindowTextW(status, (L"正在初始化原生终端: " + stage).c_str());
+            if (status) SetWindowTextW(status, (L"正在初始化终端: " + stage).c_str());
         };
         try {
             using namespace winrt::Microsoft::Terminal;

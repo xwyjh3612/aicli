@@ -141,7 +141,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
         g_d_name=aicli::ui::CreateStyledInput(h,ID_D_NAME,g_font,L"输入项目名称");
         g_d_note=aicli::ui::CreateStyledInput(h,ID_D_NOTE,g_font,L"输入项目备注（可选）");
         g_d_type=MakeDialogControl(L"BUTTON",initialType.c_str(),BS_NOTIFY|WS_TABSTOP,ID_D_TYPE,h,0,0,1,1);
-        const std::wstring initialGroup=g_project_draft.group.empty()?(g_group_name==kAllGroupsName?L"默认分组":g_group_name):g_project_draft.group;
+        const std::wstring initialGroup=g_project_draft.group.empty()?((g_group_name==kAllGroupsName||g_group_name==kStartedProjectsName)?L"默认分组":g_group_name):g_project_draft.group;
         g_d_group=MakeDialogControl(L"BUTTON",initialGroup.c_str(),BS_NOTIFY|WS_TABSTOP,ID_D_GROUP,h,0,0,1,1);
         g_d_folder=aicli::ui::CreateStyledInput(h,ID_D_FOLDER,g_font,L"输入或选择项目文件夹");
         g_d_folder_browse=MakeDialogControl(L"BUTTON",L"选择文件夹",BS_PUSHBUTTON|WS_TABSTOP,ID_D_BROWSE,h,0,0,1,1);

@@ -61,7 +61,13 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingD
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; Do not create AiCli directly from Setup's launch chain. NVM for Windows
+; commonly exposes node.exe through a cross-drive symbolic link, and the
+; first packaged-classic process created immediately after sparse package
+; registration may not resolve that link even though its PATH is correct.
+; Forward the launch request to the user's existing Explorer process so this
+; is identical to opening the desktop/Start-menu shortcut.
+Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; Description: "启动 {#MyAppName}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\uninstall-package.ps1"" -IdentityName ""{#MyPackageIdentity}"""; Flags: runhidden waituntilterminated; RunOnceId: "UnregisterAiCliPackage"

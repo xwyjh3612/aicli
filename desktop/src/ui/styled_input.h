@@ -15,6 +15,7 @@ std::wstring GetStyledInputText(HWND control);
 void SetStyledInputText(HWND control, const std::wstring& value);
 void SetStyledInputTheme(HWND control, const ThemePalette& palette);
 void SetStyledInputFocusBorderOnly(HWND control, bool enabled = true);
+void SetStyledInputLegacyPainting(HWND control, bool enabled = true);
 void LayoutStyledInput(HWND control, const RECT& outer, int inset = 2, int radius = 5);
 bool IsStyledInput(HWND control);
 
