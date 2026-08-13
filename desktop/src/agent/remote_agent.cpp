@@ -287,6 +287,10 @@ bool RemoteAgent::Start(DataStore* store, const AgentConfig& config, std::wstrin
         "enable_directory_listing", "no",
         "request_timeout_ms", "15000",
         "keep_alive_timeout_ms", "30",
+        // OkHttp on Android sends a WebSocket PING every 20 seconds.  Let
+        // CivetWeb answer it with the matching PONG so idle WSS connections
+        // remain healthy through FRP and other reverse TCP tunnels.
+        "enable_websocket_ping_pong", "yes",
         nullptr
     };
     mg_callbacks callbacks{};

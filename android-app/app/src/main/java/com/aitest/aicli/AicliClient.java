@@ -21,8 +21,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -137,8 +139,10 @@ public final class AicliClient {
     private final Gson gson = new Gson();
     private final DeviceKeyManager keyManager = new DeviceKeyManager();
     private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(3);
+    private final ExecutorService routeProbeExecutor = Executors.newFixedThreadPool(2);
     private final Object authLock = new Object();
     private final Object routeLock = new Object();
+    private final Object routeRecoveryLock = new Object();
     private final SharedPreferences preferences;
     private final SharedPreferences identityPreferences;
     private final ComputerConnectionStore connectionStore;
@@ -313,6 +317,7 @@ public final class AicliClient {
         stopRouteStatusProbe();
         closeEvents();
         executor.shutdownNow();
+        routeProbeExecutor.shutdownNow();
     }
 
     public void configurePinnedConnection(String value, String fingerprint, String computer) {
@@ -532,12 +537,12 @@ public final class AicliClient {
                     }
                     @Override public void onFailure(@NonNull WebSocket socket, @NonNull Throwable error, Response response) {
                         if (generation != eventsGeneration.get()) return;
-                        switchAfterFailure(connectionAddress, false);
+                        recoverRoutesAfterFailure(connectionAddress, false);
                         scheduleReconnect(generation, conversationId, callback);
                     }
                 });
             } catch (Exception exception) {
-                switchAfterFailure(attemptedAddress, false);
+                recoverRoutesAfterFailure(attemptedAddress, false);
                 scheduleReconnect(generation, conversationId, callback);
             }
         });
@@ -673,14 +678,14 @@ public final class AicliClient {
             for (int connectionAttempt = 0; connectionAttempt < 2; connectionAttempt++) {
                 String attemptedAddress = baseUrl;
                 try {
-                    Response response = executeSigned(method, path, body);
+                    Response response = executeSigned(method, path, body, attemptedAddress);
                     String text = response.body() == null ? "{}" : response.body().string();
                     int status = response.code();
                     response.close();
                     if (status == 401) {
                         synchronized (authLock) { token = ""; tokenExpiresAt = 0L; }
                         ensureAuthenticated();
-                        response = executeSigned(method, path, body);
+                        response = executeSigned(method, path, body, attemptedAddress);
                         text = response.body() == null ? "{}" : response.body().string();
                         status = response.code();
                         response.close();
@@ -695,7 +700,7 @@ public final class AicliClient {
                 } catch (Exception exception) {
                     lastFailure = exception;
                     if (connectionAttempt == 0 &&
-                            switchAfterFailure(attemptedAddress, true)) continue;
+                            recoverRoutesAfterFailure(attemptedAddress, true)) continue;
                     break;
                 }
             }
@@ -710,14 +715,16 @@ public final class AicliClient {
             for (int connectionAttempt = 0; connectionAttempt < 2; connectionAttempt++) {
                 String attemptedAddress = baseUrl;
                 try {
-                    Response response = executeSignedBinary(method, path, body, contentType);
+                    Response response = executeSignedBinary(
+                            method, path, body, contentType, attemptedAddress);
                     String text = response.body() == null ? "{}" : response.body().string();
                     int status = response.code();
                     response.close();
                     if (status == 401) {
                         synchronized (authLock) { token = ""; tokenExpiresAt = 0L; }
                         ensureAuthenticated();
-                        response = executeSignedBinary(method, path, body, contentType);
+                        response = executeSignedBinary(
+                                method, path, body, contentType, attemptedAddress);
                         text = response.body() == null ? "{}" : response.body().string();
                         status = response.code();
                         response.close();
@@ -731,7 +738,8 @@ public final class AicliClient {
                     return;
                 } catch (Exception exception) {
                     lastFailure = exception;
-                    if (connectionAttempt == 0 && switchAfterFailure(attemptedAddress, true)) continue;
+                    if (connectionAttempt == 0 &&
+                            recoverRoutesAfterFailure(attemptedAddress, true)) continue;
                     break;
                 }
             }
@@ -739,19 +747,20 @@ public final class AicliClient {
         });
     }
 
-    private Response executeSigned(String method, String path, String body) throws Exception {
+    private Response executeSigned(String method, String path, String body,
+                                   String address) throws Exception {
         if (!transportError.isEmpty()) throw new IOException(transportError);
         ensureAuthenticated();
         return http.newCall(signedBuilder(method, path, body, true)
-                .url(baseUrl + path).build()).execute();
+                .url(normalize(address) + path).build()).execute();
     }
 
     private Response executeSignedBinary(String method, String path, byte[] body,
-                                         String contentType) throws Exception {
+                                         String contentType, String address) throws Exception {
         if (!transportError.isEmpty()) throw new IOException(transportError);
         ensureAuthenticated();
         return http.newCall(signedBinaryBuilder(method, path, body, contentType, true)
-                .url(baseUrl + path).build()).execute();
+                .url(normalize(address) + path).build()).execute();
     }
 
     private Request.Builder signedBuilder(String method, String path, String body, boolean includeToken)
@@ -949,26 +958,59 @@ public final class AicliClient {
         }
     }
 
-    private boolean switchAfterFailure(String failedAddress, boolean reconnectEvents) {
-        String failed = normalize(failedAddress);
-        String alternate;
-        synchronized (routeLock) {
-            if (!failed.equals(baseUrl)) return !baseUrl.isEmpty();
-            if (!localUrl.isEmpty() && failed.equals(localUrl)) {
-                localRouteHealth = RouteHealth.OFFLINE;
-            }
-            if (!remoteUrl.isEmpty() && failed.equals(remoteUrl)) {
-                remoteRouteHealth = RouteHealth.OFFLINE;
-            }
+    /**
+     * Recovers an unavailable active route without ever selecting an untested
+     * address. The failed route is retried while the other configured route is
+     * probed at the same time. If both recover, the configured preferred route
+     * wins; otherwise the first usable route becomes active.
+     */
+    private boolean recoverRoutesAfterFailure(String failedAddress,
+                                              boolean reconnectEvents) {
+        synchronized (routeRecoveryLock) {
+            if (clientClosed) return false;
+            String failed = normalize(failedAddress);
+            String current = normalize(baseUrl);
+            if (current.isEmpty()) return false;
+
+            // A different recovery operation already selected a healthy route.
+            if (!failed.isEmpty() && !failed.equals(current)) return true;
+
+            String preferred = preferredRouteAddress();
+            String other = alternateRouteAddress(current);
+            markAddressHealth(current, RouteHealth.OFFLINE);
+            markAddressConnecting(current);
+            if (!other.isEmpty()) markAddressConnecting(other);
             notifyRouteStatus();
-            if (failed.equals(localUrl)) {
-                alternate = distinctAddress(remoteUrl, failed);
-            } else {
-                alternate = distinctAddress(localUrl, failed);
-                if (alternate.isEmpty()) alternate = distinctAddress(remoteUrl, failed);
+
+            RouteProbeResult result = probeRoutesConcurrently(current, other);
+            markAddressHealth(current,
+                    result.currentOnline ? RouteHealth.ONLINE : RouteHealth.OFFLINE);
+            if (!other.isEmpty()) {
+                markAddressHealth(other,
+                        result.otherOnline ? RouteHealth.ONLINE : RouteHealth.OFFLINE);
             }
+
+            String selected = "";
+            if (!preferred.isEmpty() && preferred.equals(current) && result.currentOnline) {
+                selected = current;
+            } else if (!preferred.isEmpty() && preferred.equals(other) && result.otherOnline) {
+                selected = other;
+            } else if (result.currentOnline) {
+                selected = current;
+            } else if (result.otherOnline) {
+                selected = other;
+            }
+
+            if (selected.isEmpty()) {
+                notifyRouteStatus();
+                return false;
+            }
+            if (!selected.equals(current)) {
+                switchCurrentAddress(selected, reconnectEvents);
+            }
+            recordSuccessfulAddress(selected);
+            return true;
         }
-        return switchCurrentAddress(alternate, reconnectEvents);
     }
 
     private boolean switchCurrentAddress(String value, boolean reconnectEvents) {
@@ -1018,6 +1060,35 @@ public final class AicliClient {
         }
     }
 
+    private RouteProbeResult probeRoutesConcurrently(String current, String other) {
+        Future<Boolean> currentProbe = null;
+        Future<Boolean> otherProbe = null;
+        try {
+            currentProbe = routeProbeExecutor.submit(() -> probeAddress(current));
+            if (!other.isEmpty()) {
+                otherProbe = routeProbeExecutor.submit(() -> probeAddress(other));
+            }
+            boolean currentOnline = awaitProbe(currentProbe);
+            boolean otherOnline = otherProbe != null && awaitProbe(otherProbe);
+            return new RouteProbeResult(currentOnline, otherOnline);
+        } catch (RuntimeException ignored) {
+            return new RouteProbeResult(false, false);
+        } finally {
+            if (currentProbe != null && !currentProbe.isDone()) currentProbe.cancel(true);
+            if (otherProbe != null && !otherProbe.isDone()) otherProbe.cancel(true);
+        }
+    }
+
+    private static boolean awaitProbe(Future<Boolean> probe) {
+        if (probe == null) return false;
+        try {
+            return Boolean.TRUE.equals(probe.get(5, TimeUnit.SECONDS));
+        } catch (Exception ignored) {
+            probe.cancel(true);
+            return false;
+        }
+    }
+
     private void updateRouteStatusProbe() {
         if (clientClosed) return;
         synchronized (routeLock) {
@@ -1046,97 +1117,72 @@ public final class AicliClient {
 
     private void probeConfiguredRoutes() {
         if (clientClosed) return;
-        String local = localUrl;
-        String remote = remoteUrl;
-        String preferred = preferredRouteAddress();
-        String current = normalize(baseUrl);
-        String fallback = preferred.equals(local)
-                ? distinctAddress(remote, preferred)
-                : distinctAddress(local, preferred);
-        if (fallback.isEmpty()) {
-            fallback = preferred.equals(remote)
-                    ? distinctAddress(local, preferred)
-                    : distinctAddress(remote, preferred);
-        }
+        synchronized (routeRecoveryLock) {
+            String local = localUrl;
+            String remote = remoteUrl;
+            String preferred = preferredRouteAddress();
+            String current = normalize(baseUrl);
+            String fallback = alternateRouteAddress(preferred);
 
-        if (local.isEmpty()) localRouteHealth = RouteHealth.UNAVAILABLE;
-        if (remote.isEmpty()) remoteRouteHealth = RouteHealth.UNAVAILABLE;
+            if (local.isEmpty()) localRouteHealth = RouteHealth.UNAVAILABLE;
+            if (remote.isEmpty()) remoteRouteHealth = RouteHealth.UNAVAILABLE;
 
-        if (preferred.isEmpty()) {
-            probeOnlyCurrentAddress(current);
-            return;
-        }
+            if (preferred.isEmpty()) {
+                probeOnlyCurrentAddress(current);
+                return;
+            }
 
-        if (current.equals(preferred)) {
-            // The preferred route is active. Probe only it; the backup route
-            // stays idle until the preferred route actually fails.
+            if (current.equals(preferred)) {
+                // While the preferred route is healthy the backup remains
+                // completely idle. Only after a failed preferred probe do we
+                // retry it and test the backup concurrently.
+                markAddressConnecting(preferred);
+                markAddressUnavailable(fallback);
+                notifyRouteStatus();
+                if (probeAddress(preferred)) {
+                    markAddressHealth(preferred, RouteHealth.ONLINE);
+                    notifyRouteStatus();
+                    return;
+                }
+                recoverRoutesAfterFailure(preferred, true);
+                return;
+            }
+
+            // The fallback route is active. Keep it untouched and only probe
+            // the configured preferred route. Switch after the preferred
+            // health check succeeds, never merely because its address exists.
             markAddressConnecting(preferred);
-            markAddressUnavailable(fallback);
             notifyRouteStatus();
             if (probeAddress(preferred)) {
                 markAddressHealth(preferred, RouteHealth.ONLINE);
-                notifyRouteStatus();
+                if (switchCurrentAddress(preferred, true)) {
+                    recordSuccessfulAddress(preferred);
+                } else {
+                    notifyRouteStatus();
+                }
                 return;
             }
 
             markAddressHealth(preferred, RouteHealth.OFFLINE);
-            if (fallback.isEmpty()) {
+            if (current.isEmpty()) {
                 notifyRouteStatus();
                 return;
             }
-            markAddressConnecting(fallback);
-            notifyRouteStatus();
-            if (probeAddress(fallback)) {
-                markAddressHealth(fallback, RouteHealth.ONLINE);
-                if (switchCurrentAddress(fallback, true)) {
-                    recordSuccessfulAddress(fallback);
-                } else {
-                    notifyRouteStatus();
-                }
-            } else {
-                markAddressHealth(fallback, RouteHealth.OFFLINE);
+            if (addressHealth(current) == RouteHealth.ONLINE) {
                 notifyRouteStatus();
+                return;
             }
-            return;
-        }
 
-        // We are using the fallback route. Only in this state do we keep
-        // checking the preferred route, switching back immediately once it
-        // becomes available.
-        markAddressConnecting(preferred);
-        notifyRouteStatus();
-        if (probeAddress(preferred)) {
-            markAddressHealth(preferred, RouteHealth.ONLINE);
-            markAddressUnavailable(current);
-            if (switchCurrentAddress(preferred, true)) {
-                recordSuccessfulAddress(preferred);
+            // This is normally reached only during startup before a live
+            // WebSocket has confirmed the saved fallback route.
+            markAddressConnecting(current);
+            notifyRouteStatus();
+            if (probeAddress(current)) {
+                markAddressHealth(current, RouteHealth.ONLINE);
+                recordSuccessfulAddress(current);
             } else {
-                notifyRouteStatus();
+                recoverRoutesAfterFailure(current, true);
             }
-            return;
-        }
-
-        markAddressHealth(preferred, RouteHealth.OFFLINE);
-        if (current.isEmpty()) {
-            notifyRouteStatus();
-            return;
-        }
-        if (addressHealth(current) == RouteHealth.ONLINE) {
-            // The active fallback is already carrying the authenticated HTTP
-            // and WebSocket traffic. Do not keep probing it as well; while on
-            // fallback, the periodic work is exclusively the preferred-route
-            // recovery check.
-            notifyRouteStatus();
-            return;
-        }
-        markAddressConnecting(current);
-        notifyRouteStatus();
-        if (probeAddress(current)) {
-            markAddressHealth(current, RouteHealth.ONLINE);
-            recordSuccessfulAddress(current);
-        } else {
-            markAddressHealth(current, RouteHealth.OFFLINE);
-            notifyRouteStatus();
         }
     }
 
@@ -1208,6 +1254,15 @@ public final class AicliClient {
                 localUrl, remoteUrl, routePreference);
     }
 
+    private String alternateRouteAddress(String route) {
+        String normalized = normalize(route);
+        String local = normalize(localUrl);
+        String remote = normalize(remoteUrl);
+        if (!local.isEmpty() && !local.equals(normalized)) return local;
+        if (!remote.isEmpty() && !remote.equals(normalized)) return remote;
+        return "";
+    }
+
     private void recordSuccessfulAddress(String value) {
         String address = normalize(value);
         if (address.isEmpty() || !address.equals(baseUrl)) return;
@@ -1245,6 +1300,16 @@ public final class AicliClient {
     private static String distinctAddress(String candidate, String current) {
         String normalized = normalize(candidate);
         return normalized.isEmpty() || normalized.equals(normalize(current)) ? "" : normalized;
+    }
+
+    private static final class RouteProbeResult {
+        final boolean currentOnline;
+        final boolean otherOnline;
+
+        RouteProbeResult(boolean currentOnline, boolean otherOnline) {
+            this.currentOnline = currentOnline;
+            this.otherOnline = otherOnline;
+        }
     }
 
     private long nextSequence() {

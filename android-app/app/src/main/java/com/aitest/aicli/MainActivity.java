@@ -1347,8 +1347,7 @@ public final class MainActivity extends AppCompatActivity {
     private String activeComputerName() {
         ComputerConnectionStore.Computer active = connectionStore.active();
         if (active == null) return "电脑";
-        return active.name == null || active.name.trim().isEmpty()
-                ? active.displayName() : active.name.trim();
+        return active.displayName();
     }
 
     private void updateComputerTitle() {
