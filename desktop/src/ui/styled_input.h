@@ -11,6 +11,8 @@ HWND CreateStyledInput(HWND parent, int control_id, HFONT font,
                        const std::wstring& placeholder = L"",
                        bool read_only = false, bool tab_stop = true);
 void SetStyledInputPlaceholder(HWND control, const std::wstring& placeholder);
+void SetStyledInputLeadingIcon(HWND control, const std::wstring& icon,
+                               int slot_width = 22);
 std::wstring GetStyledInputText(HWND control);
 void SetStyledInputText(HWND control, const std::wstring& value);
 void SetStyledInputTheme(HWND control, const ThemePalette& palette);

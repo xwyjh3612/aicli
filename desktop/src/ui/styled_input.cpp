@@ -14,6 +14,7 @@ constexpr wchar_t kStyledInputProperty[] = L"Aicli.StyledInput";
 
 struct StyledInputState {
     std::wstring placeholder;
+    std::wstring leading_icon;
     COLORREF placeholder_color{RGB(126, 136, 151)};
     COLORREF focus_border_color{RGB(72, 137, 224)};
     COLORREF background_color{RGB(32, 36, 43)};
@@ -24,13 +25,35 @@ struct StyledInputState {
     bool parent_frame_valid{};
     int radius{5};
     int horizontal_margin{10};
+    int right_margin{10};
+    int leading_icon_slot{22};
+    int leading_icon_slot_px{};
+    HFONT leading_icon_font{};
+    UINT leading_icon_font_dpi{};
     int parent_frame_content_inset{2};
     int parent_frame_content_inset_px{};
     RECT parent_frame_rect{};
+
+    ~StyledInputState() {
+        if (leading_icon_font) DeleteObject(leading_icon_font);
+    }
 };
 
 StyledInputState* State(HWND control) {
     return reinterpret_cast<StyledInputState*>(GetPropW(control, kStyledInputProperty));
+}
+
+HFONT LeadingIconFont(HWND control, StyledInputState& state) {
+    const UINT dpi = std::max<UINT>(96, GetDpiForWindow(control));
+    if (state.leading_icon_font && state.leading_icon_font_dpi == dpi)
+        return state.leading_icon_font;
+    if (state.leading_icon_font) DeleteObject(state.leading_icon_font);
+    state.leading_icon_font = CreateFontW(
+        -MulDiv(13, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe MDL2 Assets");
+    state.leading_icon_font_dpi = dpi;
+    return state.leading_icon_font;
 }
 
 void ApplyRoundedRegion(HWND control) {
@@ -59,11 +82,16 @@ void CenterText(HWND control) {
     const int text_height = std::min(height, std::max(1, static_cast<int>(metrics.tmHeight)));
     const int top = std::max(0, (height - text_height) / 2);
     const auto* state = State(control);
-    const int margin = state
+    const int left_margin = state
         ? std::max(1, state->horizontal_margin -
-                         state->parent_frame_content_inset_px)
+                          state->parent_frame_content_inset_px)
         : 10;
-    RECT format{margin, top, std::max<LONG>(margin + 1, client.right - margin),
+    const int right_margin = state
+        ? std::max(1, state->right_margin -
+                          state->parent_frame_content_inset_px)
+        : 10;
+    RECT format{left_margin, top,
+                std::max<LONG>(left_margin + 1, client.right - right_margin),
                 std::min(height, top + text_height + 1)};
     SendMessageW(control, EM_SETRECTNP, 0, reinterpret_cast<LPARAM>(&format));
 }
@@ -76,9 +104,14 @@ void InvalidateParentFrame(HWND control) {
     HWND parent = GetParent(control);
     if (!parent) return;
     RECT frame{};
-    GetWindowRect(control, &frame);
-    MapWindowPoints(HWND_DESKTOP, parent,
-                    reinterpret_cast<POINT*>(&frame), 2);
+    const auto* state = State(control);
+    if (state && state->parent_frame && state->parent_frame_valid) {
+        frame = state->parent_frame_rect;
+    } else {
+        GetWindowRect(control, &frame);
+        MapWindowPoints(HWND_DESKTOP, parent,
+                        reinterpret_cast<POINT*>(&frame), 2);
+    }
     InflateRect(&frame, 3, 3);
     RedrawWindow(parent, &frame, nullptr,
                  RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
@@ -86,11 +119,34 @@ void InvalidateParentFrame(HWND control) {
 
 void DrawPlaceholderAndFocusBorder(HWND control, HDC dc,
                                    const StyledInputState& state) {
+    if (!state.leading_icon.empty() && !state.parent_frame) {
+        RECT icon_rect{};
+        GetClientRect(control, &icon_rect);
+        const UINT dpi = std::max<UINT>(96, GetDpiForWindow(control));
+        const int inset = state.parent_frame_content_inset_px;
+        icon_rect.left = std::max(0, state.right_margin - inset);
+        icon_rect.right = std::max<LONG>(
+            icon_rect.left + 1,
+            state.horizontal_margin - inset - MulDiv(
+                3, dpi, 96));
+        OffsetRect(&icon_rect, 0, MulDiv(2, dpi, 96));
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, state.placeholder_color);
+        auto& mutable_state = const_cast<StyledInputState&>(state);
+        const HFONT icon_font = LeadingIconFont(control, mutable_state);
+        const auto previous = icon_font ? SelectObject(dc, icon_font) : nullptr;
+        DrawTextW(dc, state.leading_icon.c_str(), -1, &icon_rect,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (previous) SelectObject(dc, previous);
+    }
     if (GetWindowTextLengthW(control) == 0 && !state.placeholder.empty()) {
         RECT rect{};
         GetClientRect(control, &rect);
-        rect.left += state.horizontal_margin;
-        rect.right -= state.horizontal_margin;
+        rect.left += state.leading_icon.empty()
+            ? state.horizontal_margin
+            : std::max(1, state.horizontal_margin -
+                              state.parent_frame_content_inset_px);
+        rect.right -= state.right_margin;
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, state.placeholder_color);
         const auto font = reinterpret_cast<HFONT>(
@@ -268,8 +324,9 @@ HWND CreateStyledInput(HWND parent, int control_id, HFONT font,
     auto state = std::make_unique<StyledInputState>();
     const UINT dpi = parent ? GetDpiForWindow(parent) : 96;
     state->horizontal_margin = MulDiv(10, dpi ? dpi : 96, 96);
+    state->right_margin = state->horizontal_margin;
     SendMessageW(control, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
-                 MAKELPARAM(state->horizontal_margin, state->horizontal_margin));
+                  MAKELPARAM(state->horizontal_margin, state->right_margin));
     state->placeholder = placeholder;
     SetPropW(control, kStyledInputProperty, state.release());
     SetWindowSubclass(control, StyledInputProc, kStyledInputSubclassId, 0);
@@ -280,6 +337,16 @@ HWND CreateStyledInput(HWND parent, int control_id, HFONT font,
 void SetStyledInputPlaceholder(HWND control, const std::wstring& placeholder) {
     if (auto* state = State(control)) {
         state->placeholder = placeholder;
+        InvalidateRect(control, nullptr, FALSE);
+    }
+}
+
+void SetStyledInputLeadingIcon(HWND control, const std::wstring& icon,
+                               int slot_width) {
+    if (auto* state = State(control)) {
+        state->leading_icon = icon;
+        state->leading_icon_slot = std::max(0, slot_width);
+        CenterText(control);
         InvalidateRect(control, nullptr, FALSE);
     }
 }
@@ -346,22 +413,33 @@ void LayoutStyledInput(HWND control, const RECT& outer, int inset, int radius) {
     if (state) {
         state->radius = radius;
         const UINT dpi = parent ? GetDpiForWindow(parent) : 96;
-        const int margin = MulDiv(10, dpi ? dpi : 96, 96);
-        if (state->horizontal_margin != margin) {
-            state->horizontal_margin = margin;
-            SendMessageW(control, EM_SETMARGINS,
-                         EC_LEFTMARGIN | EC_RIGHTMARGIN,
-                         MAKELPARAM(margin, margin));
-        }
         state->parent_frame_content_inset_px = state->parent_frame
             ? MulDiv(state->parent_frame_content_inset,
                      dpi ? dpi : 96, 96)
             : 0;
+        const int base_margin = MulDiv(10, dpi ? dpi : 96, 96);
+        state->leading_icon_slot_px = state->leading_icon.empty()
+            ? 0
+            : MulDiv(state->leading_icon_slot, dpi ? dpi : 96, 96);
+        const int icon_slot = state->parent_frame ? 0 : state->leading_icon_slot_px;
+        const int left_margin = base_margin + icon_slot;
+        if (state->horizontal_margin != left_margin ||
+            state->right_margin != base_margin) {
+            state->horizontal_margin = left_margin;
+            state->right_margin = base_margin;
+            SendMessageW(control, EM_SETMARGINS,
+                         EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                         MAKELPARAM(left_margin, base_margin));
+        }
     }
     RECT visual{outer.left + inset, outer.top + inset,
                 outer.right - inset, outer.bottom - inset};
     const int content_inset = state ? state->parent_frame_content_inset_px : 0;
-    RECT desired{visual.left + content_inset, visual.top + content_inset,
+    const int leading_slot = state && state->parent_frame
+        ? state->leading_icon_slot_px
+        : 0;
+    RECT desired{visual.left + content_inset + leading_slot,
+                 visual.top + content_inset,
                  visual.right - content_inset, visual.bottom - content_inset};
     const int width = std::max(1L, desired.right - desired.left);
     const int height = std::max(1L, desired.bottom - desired.top);
@@ -422,6 +500,27 @@ void PaintStyledInputParentFrame(HWND control, HDC parent_dc) {
     const float radius = std::max(1.0F, state->radius / 2.0F);
     DrawSmoothRoundedRect(parent_dc, state->parent_frame_rect, radius,
                           fill, stroke, focused ? 1.0F : 0.0F);
+    if (!state->leading_icon.empty() && state->leading_icon_slot_px > 0) {
+        const UINT dpi = std::max<UINT>(96, GetDpiForWindow(control));
+        RECT icon_rect{
+            state->parent_frame_rect.left + state->parent_frame_content_inset_px,
+            state->parent_frame_rect.top,
+            state->parent_frame_rect.left + state->parent_frame_content_inset_px +
+                state->leading_icon_slot_px,
+            state->parent_frame_rect.bottom};
+        OffsetRect(&icon_rect, MulDiv(4, dpi, 96), 0);
+        OffsetRect(&icon_rect, 0, MulDiv(2, dpi, 96));
+        SetBkMode(parent_dc, TRANSPARENT);
+        SetTextColor(parent_dc, state->placeholder_color);
+        auto& mutable_state = const_cast<StyledInputState&>(*state);
+        const HFONT icon_font = LeadingIconFont(control, mutable_state);
+        const auto previous = icon_font
+            ? SelectObject(parent_dc, icon_font)
+            : nullptr;
+        DrawTextW(parent_dc, state->leading_icon.c_str(), -1, &icon_rect,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (previous) SelectObject(parent_dc, previous);
+    }
 }
 
 bool IsStyledInput(HWND control) {
