@@ -117,7 +117,7 @@ bool DesktopController::InitializePersistentState(std::wstring* error) {
     }
     projects_ = store_.LoadProjects();
     for (auto& project : projects_) {
-        if (project.status == L"running") {
+        if (project.status == L"running" || project.status == L"paused") {
             project.status = L"created";
             store_.UpdateProjectStatus(project.id, project.status);
         }

@@ -1,4 +1,5 @@
 #include "agent/remote_agent.h"
+#include "agent/terminal_wire_codec.h"
 #include "core/text_utils.h"
 
 #include <civetweb.h>
@@ -28,6 +29,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstring>
+#include <deque>
 
 namespace aicli::agent {
 namespace {
@@ -35,6 +37,9 @@ namespace {
 using json = nlohmann::json;
 constexpr std::size_t kMaximumWireMessageBytes = 1024 * 1024;
 constexpr std::size_t kMaximumAttachmentBytes = 6 * 1024 * 1024;
+constexpr std::size_t kPackedBatchTargetBytes = 512 * 1024;
+constexpr std::size_t kMaximumQueuedTerminalBytes = 8 * 1024 * 1024;
+constexpr auto kPackedBatchDelay = std::chrono::milliseconds(20);
 
 std::int64_t Now() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -239,14 +244,18 @@ void SetCertificatePermissions(const std::wstring& path) {
 }
 
 struct RemoteAgent::WsClient {
-    mg_connection* connection{};
+    std::atomic<mg_connection*> connection{};
     std::wstring phone_id;
     std::wstring project_id;
     std::wstring terminal_session_id;
     std::uint64_t after_sequence{};
     std::atomic_bool closed{false};
     std::atomic_bool ready{false};
+    bool packed_terminal{};
     std::mutex write_mutex;
+    std::mutex pending_mutex;
+    std::deque<std::string> pending_events;
+    std::size_t pending_bytes{};
     std::shared_ptr<WsClient>* connection_handle{};
 };
 
@@ -303,6 +312,14 @@ bool RemoteAgent::Start(DataStore* store, const AgentConfig& config, std::wstrin
     mg_set_websocket_handler(context_, "/api/events", &RemoteAgent::HandleWsConnect,
                              &RemoteAgent::HandleWsReady, &RemoteAgent::HandleWsData,
                              &RemoteAgent::HandleWsClose, this);
+    try {
+        StartWebSocketSender();
+    } catch (...) {
+        mg_stop(context_);
+        context_ = nullptr;
+        if (error) *error = L"实时终端压缩线程启动失败";
+        return false;
+    }
     online_ = true;
     NotifyStatus(true, L"HTTPS/WSS Agent 在线");
     return true;
@@ -320,7 +337,9 @@ void RemoteAgent::Stop() {
         input_leases_.clear();
         for (const auto& client : websocket_clients_) if (client) client->closed = true;
     }
+    RequestWebSocketSenderStop();
     if (context) mg_stop(context);
+    JoinWebSocketSender();
     {
         std::scoped_lock lock(mutex_);
         for (const auto& client : websocket_clients_) {
@@ -398,15 +417,190 @@ bool RemoteAgent::ConfirmPairing(const std::wstring& pairing_id, bool approve, s
 
 bool RemoteAgent::RevokeDevice(const std::wstring& phone_id) {
     const bool result=store_&&store_->RevokeDevice(phone_id);
-    if(result){std::vector<std::shared_ptr<WsClient>> revoked;{std::scoped_lock l(mutex_);for(auto it=tokens_.begin();it!=tokens_.end();){if(it->second.phone_id==phone_id)it=tokens_.erase(it);else ++it;}for(auto it=input_leases_.begin();it!=input_leases_.end();){if(it->second.phone_id==phone_id)it=input_leases_.erase(it);else ++it;}for(auto& client:websocket_clients_)if(client&&client->phone_id==phone_id){client->closed=true;revoked.push_back(client);}}for(const auto& client:revoked){std::scoped_lock write(client->write_mutex);if(client->connection){const char reason[]="device revoked";mg_websocket_write(client->connection,MG_WEBSOCKET_OPCODE_CONNECTION_CLOSE,reason,sizeof(reason)-1);}}}
+    if(result){std::vector<std::shared_ptr<WsClient>> revoked;{std::scoped_lock l(mutex_);for(auto it=tokens_.begin();it!=tokens_.end();){if(it->second.phone_id==phone_id)it=tokens_.erase(it);else ++it;}for(auto it=input_leases_.begin();it!=input_leases_.end();){if(it->second.phone_id==phone_id)it=input_leases_.erase(it);else ++it;}for(auto& client:websocket_clients_)if(client&&client->phone_id==phone_id){client->closed=true;revoked.push_back(client);}}for(const auto& client:revoked){std::scoped_lock write(client->write_mutex);if(auto* connection=client->connection.load()){const char reason[]="device revoked";mg_websocket_write(connection,MG_WEBSOCKET_OPCODE_CONNECTION_CLOSE,reason,sizeof(reason)-1);}}}
     return result;
+}
+
+void RemoteAgent::StartWebSocketSender() {
+    std::scoped_lock lock(websocket_sender_mutex_);
+    websocket_sender_stop_ = false;
+    websocket_sender_wakeup_ = false;
+    websocket_sender_thread_ = std::thread([this] { WebSocketSenderLoop(); });
+}
+
+void RemoteAgent::RequestWebSocketSenderStop() {
+    {
+        std::scoped_lock lock(websocket_sender_mutex_);
+        websocket_sender_stop_ = true;
+        websocket_sender_wakeup_ = true;
+    }
+    websocket_sender_cv_.notify_all();
+}
+
+void RemoteAgent::JoinWebSocketSender() {
+    if (websocket_sender_thread_.joinable() &&
+        websocket_sender_thread_.get_id() != std::this_thread::get_id()) {
+        websocket_sender_thread_.join();
+    }
+}
+
+void RemoteAgent::WebSocketSenderLoop() {
+    for (;;) {
+        std::unique_lock sender_lock(websocket_sender_mutex_);
+        websocket_sender_cv_.wait(sender_lock, [this] {
+            return websocket_sender_stop_ || websocket_sender_wakeup_;
+        });
+        if (websocket_sender_stop_) return;
+        websocket_sender_wakeup_ = false;
+        if (websocket_sender_cv_.wait_for(
+                sender_lock, kPackedBatchDelay,
+                [this] { return websocket_sender_stop_; })) {
+            return;
+        }
+        // Consume notifications received during the short batching window.
+        // Anything queued after this point raises a new wakeup.
+        websocket_sender_wakeup_ = false;
+        sender_lock.unlock();
+
+        std::vector<std::shared_ptr<WsClient>> clients;
+        {
+            std::scoped_lock lock(mutex_);
+            clients = websocket_clients_;
+        }
+        for (const auto& client : clients) FlushPackedClient(client);
+
+        std::scoped_lock lock(mutex_);
+        websocket_clients_.erase(
+            std::remove_if(websocket_clients_.begin(), websocket_clients_.end(),
+                           [](const auto& client) {
+                               return !client || client->closed.load();
+                           }),
+            websocket_clients_.end());
+    }
+}
+
+void RemoteAgent::QueuePackedEvent(const std::shared_ptr<WsClient>& client,
+                                   const std::string& event_json) {
+    if (!client || client->closed) return;
+    bool overflow = false;
+    {
+        std::scoped_lock lock(client->pending_mutex);
+        const std::size_t added = event_json.size() + 4;
+        if (added > kMaximumQueuedTerminalBytes ||
+            client->pending_bytes > kMaximumQueuedTerminalBytes - added) {
+            overflow = true;
+        } else {
+            client->pending_events.push_back(event_json);
+            client->pending_bytes += added;
+        }
+    }
+    if (overflow) {
+        client->closed = true;
+        std::scoped_lock write(client->write_mutex);
+        if (auto* connection = client->connection.load()) {
+            constexpr char reason[] = "terminal queue overflow";
+            mg_websocket_write(connection,
+                               MG_WEBSOCKET_OPCODE_CONNECTION_CLOSE,
+                               reason, sizeof(reason) - 1);
+        }
+        return;
+    }
+    {
+        std::scoped_lock lock(websocket_sender_mutex_);
+        websocket_sender_wakeup_ = true;
+    }
+    websocket_sender_cv_.notify_one();
+}
+
+void RemoteAgent::FlushPackedClient(const std::shared_ptr<WsClient>& client) {
+    if (!client || client->closed || !client->ready || !client->packed_terminal) {
+        return;
+    }
+
+    // Bound one pass so a continuously repainting terminal cannot starve a
+    // second connected phone. Remaining data schedules another immediate pass.
+    for (int batch_index = 0; batch_index < 4; ++batch_index) {
+        std::vector<std::string> events;
+        {
+            std::scoped_lock lock(client->pending_mutex);
+            std::size_t bytes = 0;
+            while (!client->pending_events.empty()) {
+                const auto& next = client->pending_events.front();
+                const std::size_t added = next.size() + 4;
+                if (!events.empty() && bytes + added > kPackedBatchTargetBytes) {
+                    break;
+                }
+                bytes += added;
+                events.push_back(std::move(client->pending_events.front()));
+                client->pending_events.pop_front();
+                client->pending_bytes -= added;
+            }
+        }
+        if (events.empty()) return;
+
+        const auto packet = wire::PackTerminalEvents(events);
+        std::scoped_lock write(client->write_mutex);
+        auto* connection = client->connection.load();
+        if (client->closed || !client->ready || !connection) return;
+
+        bool sent = false;
+        if (!packet.empty() && packet.size() <= kMaximumWireMessageBytes) {
+            sent = mg_websocket_write(
+                       connection, MG_WEBSOCKET_OPCODE_BINARY,
+                       reinterpret_cast<const char*>(packet.data()),
+                       packet.size()) > 0;
+        } else {
+            // A packet can only exceed the cap when one legacy JSON event is
+            // already near 1 MB. Text fallback retains the old behavior.
+            sent = true;
+            for (const auto& event : events) {
+                if (event.size() > kMaximumWireMessageBytes ||
+                    mg_websocket_write(connection,
+                                       MG_WEBSOCKET_OPCODE_TEXT,
+                                       event.data(), event.size()) <= 0) {
+                    sent = false;
+                    break;
+                }
+            }
+        }
+        if (!sent) {
+            client->closed = true;
+            return;
+        }
+    }
+
+    bool pending = false;
+    {
+        std::scoped_lock lock(client->pending_mutex);
+        pending = !client->pending_events.empty();
+    }
+    if (pending) {
+        {
+            std::scoped_lock lock(websocket_sender_mutex_);
+            websocket_sender_wakeup_ = true;
+        }
+        websocket_sender_cv_.notify_one();
+    }
 }
 
 void RemoteAgent::BroadcastEvent(const std::wstring& project_id, const std::string& event_json) {
     if (event_json.size() > kMaximumWireMessageBytes) return;
     std::vector<std::shared_ptr<WsClient>> clients;
     {std::scoped_lock l(mutex_);clients=websocket_clients_;}
-    for(const auto& client:clients){if(!client||client->closed||!client->ready||(!client->project_id.empty()&&client->project_id!=project_id))continue;std::scoped_lock write(client->write_mutex);if(client->closed||!client->ready||!client->connection)continue;if(mg_websocket_write(client->connection,MG_WEBSOCKET_OPCODE_TEXT,event_json.data(),event_json.size())<=0)client->closed=true;}
+    const bool terminal_event = wire::IsTerminalStreamEvent(event_json);
+    for(const auto& client:clients){
+        if(!client||client->closed||!client->ready||
+           (!client->project_id.empty()&&client->project_id!=project_id))continue;
+        if (terminal_event && client->packed_terminal) {
+            QueuePackedEvent(client, event_json);
+            continue;
+        }
+        std::scoped_lock write(client->write_mutex);
+        auto* connection = client->connection.load();
+        if(client->closed||!client->ready||!connection)continue;
+        if(mg_websocket_write(connection,MG_WEBSOCKET_OPCODE_TEXT,
+                              event_json.data(),event_json.size())<=0)client->closed=true;
+    }
     std::scoped_lock l(mutex_);websocket_clients_.erase(std::remove_if(websocket_clients_.begin(),websocket_clients_.end(),[](const auto& c){return !c||c->closed.load();}),websocket_clients_.end());
 }
 
@@ -599,14 +793,42 @@ int RemoteAgent::OnHttp(struct mg_connection* connection) {
 }
 
 int RemoteAgent::OnWsConnect(const struct mg_connection* connection) {
-    const auto* info=mg_get_request_info(connection);if(!info)return 1;std::wstring phone,error;if(!AuthenticateRequest(connection,"GET",info->local_uri?info->local_uri:"",{},phone,&error))return 1;auto client=std::make_shared<WsClient>();client->phone_id=phone;client->project_id=Wide(QueryValue(info,"conversationId"));client->terminal_session_id=Wide(QueryValue(info,"terminalSessionId"));std::int64_t after=0;if(ParseInt64(QueryValue(info,"afterSequence"),after)&&after>0)client->after_sequence=static_cast<std::uint64_t>(after);client->connection=const_cast<mg_connection*>(connection);auto* handle=new(std::nothrow) std::shared_ptr<WsClient>(client);if(!handle)return 1;client->connection_handle=handle;mg_set_user_connection_data(connection,handle);{std::scoped_lock l(mutex_);websocket_clients_.push_back(client);}return 0;
+    const auto* info = mg_get_request_info(connection);
+    if (!info) return 1;
+    std::wstring phone;
+    std::wstring error;
+    if (!AuthenticateRequest(connection, "GET",
+                             info->local_uri ? info->local_uri : "", {},
+                             phone, &error)) {
+        return 1;
+    }
+    auto client = std::make_shared<WsClient>();
+    client->phone_id = phone;
+    client->project_id = Wide(QueryValue(info, "conversationId"));
+    client->terminal_session_id = Wide(QueryValue(info, "terminalSessionId"));
+    client->packed_terminal =
+        QueryValue(info, "terminalTransport") == wire::kPackedTerminalTransport;
+    std::int64_t after = 0;
+    if (ParseInt64(QueryValue(info, "afterSequence"), after) && after > 0) {
+        client->after_sequence = static_cast<std::uint64_t>(after);
+    }
+    client->connection = const_cast<mg_connection*>(connection);
+    auto* handle = new(std::nothrow) std::shared_ptr<WsClient>(client);
+    if (!handle) return 1;
+    client->connection_handle = handle;
+    mg_set_user_connection_data(connection, handle);
+    {
+        std::scoped_lock lock(mutex_);
+        websocket_clients_.push_back(client);
+    }
+    return 0;
 }
 
 void RemoteAgent::OnWsReady(struct mg_connection* connection){
     auto* handle=static_cast<std::shared_ptr<WsClient>*>(mg_get_user_connection_data(connection));if(!handle||!*handle)return;const auto client=*handle;
     TerminalReplayCallback replay_callback;{std::scoped_lock l(mutex_);replay_callback=terminal_replay_callback_;}
-    const std::string hello=JsonString(json{{"type","hello"},{"computerId",Utf8(computer_id_)},{"computerName",Utf8(config_.computer_name)},{"certificateSha256",Utf8(certificate_fingerprint_)},{"terminalProtocol",2}});
-    auto send=[&](const std::string& value){if(value.size()>kMaximumWireMessageBytes||client->closed||!client->connection)return false;if(mg_websocket_write(connection,MG_WEBSOCKET_OPCODE_TEXT,value.data(),value.size())<=0){client->closed=true;return false;}return true;};
+    const std::string hello=JsonString(json{{"type","hello"},{"computerId",Utf8(computer_id_)},{"computerName",Utf8(config_.computer_name)},{"certificateSha256",Utf8(certificate_fingerprint_)},{"terminalProtocol",2},{"terminalTransport",client->packed_terminal?std::string(wire::kPackedTerminalTransport):"json-v2"}});
+    auto send=[&](const std::string& value){if(value.size()>kMaximumWireMessageBytes||client->closed||!client->connection.load())return false;if(mg_websocket_write(connection,MG_WEBSOCKET_OPCODE_TEXT,value.data(),value.size())<=0){client->closed=true;return false;}return true;};
     std::scoped_lock write(client->write_mutex);
     if(!send(hello))return;
     TerminalReplayBatch first;

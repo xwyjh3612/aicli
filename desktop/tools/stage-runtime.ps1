@@ -123,8 +123,14 @@ function Export-PackageLogoAssets {
                 "Square44x44Logo.targetsize-$size.png"
             $unplated = Join-Path $DestinationDirectory `
                 "Square44x44Logo.targetsize-$($size)_altform-unplated.png"
+            $lightUnplated = Join-Path $DestinationDirectory `
+                "Square44x44Logo.targetsize-$($size)_altform-lightunplated.png"
             Export-ScaledLogo -Source $sourceImage -Size $size -Destination $plated
             Copy-Item -LiteralPath $plated -Destination $unplated -Force
+            # Windows requests lightunplated on light taskbars and in several
+            # shell surfaces such as Task Manager. Without it, Explorer can
+            # fall back to the plated asset and add the #0078d7 accent square.
+            Copy-Item -LiteralPath $plated -Destination $lightUnplated -Force
         }
     } finally {
         $sourceImage.Dispose()

@@ -305,10 +305,13 @@ terminal.resize // terminalSessionId、递增 sequence、rows、columns
 ```
 
 - 协议版本为 `terminalProtocol: 2`。手机首次打开一个运行中的会话时，不再重放最多 12MB 的原始 ConPTY 历史；电脑读取 TermControl 最终渲染画面，只发送最后 200 个逻辑行作为首屏；
+- Android 建立 WSS 时主动声明 `terminalTransport=packed-lz4-v1`。支持该能力的电脑把约 20ms 内按顺序产生的 `terminal.*` JSON 事件无损合并到一个二进制 WebSocket 包，并对重复的 ANSI/VT 重绘内容执行 LZ4 压缩；解包后交给现有事件处理器的每条 JSON 和原协议逐字节一致，不丢弃中间帧、不降低刷新率，也不改变颜色、光标、Working 动画或 TUI 键盘行为；
+- 二进制传输采用显式能力协商。旧版电脑忽略参数并继续发送 JSON 文本帧；电脑只对主动声明能力的手机发送压缩包；Android 若收到损坏或不支持的二进制包，停止应用该包并自动以原 JSON 传输重新连接，不猜测或部分渲染终端数据；
+- 单个压缩批次的目标未压缩大小为 512KB，最大解包安全上限为 4MB，待发送终端队列上限为 8MB。网络严重阻塞超过上限时关闭该 WSS，由现有 `terminalSessionId + sequence` 断线补发恢复，禁止静默丢帧；
 - `terminal.bootstrap` 对应一个确定的 VT sequence，首屏之后只补发该 sequence 之后的新 `terminal.data`/`terminal.resize`，Working 动画和 TUI 中间重绘不会作为历史再次刷屏；
 - 手机上滑到顶部时，通过签名 HTTPS 接口按历史 token 每次读取更早的 200 行；历史 token 固定首次连接时看到的画面，因此分页期间的新输出不会造成行偏移或重复；
 - 手机终端最多保留 1000 个逻辑行。分页插入旧内容后保持当前视口位置，实时输出仍使用完整 ANSI/VT 颜色；首次 200 行是 TermControl 展平后的最终文字画面，新产生的实时内容继续保留终端颜色和 TUI 行为；
-- HTTP 请求/响应和单条 WebSocket 文本消息均设置 1MB 安全上限；桌面端会主动拆分较大的 ConPTY 输出块，避免单帧越界；
+- HTTP 请求/响应、单条 WebSocket 文本消息和单个压缩后二进制消息均设置 1MB 安全上限；桌面端会主动拆分较大的 ConPTY 输出块和压缩批次，避免单帧越界；
 - Android 对每个项目保存 `terminalSessionId` 和最后已应用 `sequence`；只接受同一会话且严格连续的下一条事件；
 - 发现序号间隙时，手机重新建立 WSS，并把当前 session 和 sequence 发给电脑，请求只补发缺少的尾部数据；重复或旧序号直接忽略，因此补发不会造成内容重复；
 - 手机发送聊天成功后，在 220ms 和 900ms 各执行一次带当前 sequence 的轻量 WSS 重连，覆盖“最后一帧丢失后没有下一帧触发 gap 检测”的情况；该机制适用于 Claude、Codex 和自定义 CLI；

@@ -96,6 +96,10 @@ void PaintMainWindow(HDC target_dc,
         LineTo(dc, client.right - 1, client.bottom - 1);
         LineTo(dc, 0, client.bottom - 1);
         LineTo(dc, 0, 0);
+        // GDI LineTo excludes the final endpoint on some DPI/rounded-corner
+        // combinations. Explicitly own the extreme top-right client pixel so
+        // DWM cannot expose a one-pixel white speck beside the close button.
+        SetPixelV(dc, client.right - 1, 0, frame);
         SelectObject(dc, old_pen);
         DeleteObject(frame_pen);
     }

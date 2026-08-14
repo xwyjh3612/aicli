@@ -606,7 +606,7 @@ bool InitializePersistentState() {
     }
     g_projects=g_store.LoadProjects();
     for(auto& project:g_projects){
-        if(project.status==L"running"){
+        if(project.status==L"running"||project.status==L"paused"){
             project.status=L"created";
             g_store.UpdateProjectStatus(project.id,project.status);
         }

@@ -24,6 +24,7 @@
 
 # Local diagnostics and crash output
 /desktop/tools/cdb-*.txt
+/local-screenshots/
 *.log
 *.dmp
 *.trace

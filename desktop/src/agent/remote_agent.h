@@ -6,6 +6,7 @@
 
 #include <windows.h>
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -156,6 +158,13 @@ private:
     std::string LocalAddress() const;
     void NotifyPairing(const PendingPairing& pairing);
     void NotifyStatus(bool online, const std::wstring& message);
+    void StartWebSocketSender();
+    void RequestWebSocketSenderStop();
+    void JoinWebSocketSender();
+    void WebSocketSenderLoop();
+    void QueuePackedEvent(const std::shared_ptr<WsClient>& client,
+                          const std::string& event_json);
+    void FlushPackedClient(const std::shared_ptr<WsClient>& client);
 
     mutable std::recursive_mutex mutex_;
     DataStore* store_{};
@@ -170,6 +179,11 @@ private:
     std::unordered_map<std::wstring, AuthChallenge> auth_challenges_;
     std::unordered_map<std::wstring, InputLease> input_leases_;
     std::vector<std::shared_ptr<WsClient>> websocket_clients_;
+    std::mutex websocket_sender_mutex_;
+    std::condition_variable websocket_sender_cv_;
+    std::thread websocket_sender_thread_;
+    bool websocket_sender_stop_{true};
+    bool websocket_sender_wakeup_{};
     PairingInfo last_pairing_;
     PairingCallback pairing_callback_;
     InputCallback input_callback_;

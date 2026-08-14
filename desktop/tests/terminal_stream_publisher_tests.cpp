@@ -1,9 +1,12 @@
 #include "agent/terminal_stream_publisher.h"
+#include "agent/terminal_wire_codec.h"
 
 #include <nlohmann/json.hpp>
 
 #include <iostream>
+#include <random>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -80,6 +83,67 @@ int main() {
         const auto data = nlohmann::json::parse(resumed.events.front());
         ok &= Check(data.value("sequence", 0ULL) == 2,
                     "incremental replay preserves terminal sequence numbers");
+    }
+
+    std::vector<std::string> wire_events;
+    for (int frame = 0; frame < 80; ++frame) {
+        wire_events.push_back(
+            R"({"conversationId":"terminal-stream-test","event_type":"terminal.data","payload":{"encoding":"utf8","data":"\u001b[2K\r\u001b[32mWorking...\u001b[0m"},"sequence":)" +
+            std::to_string(frame + 1) +
+            R"(,"terminalSessionId":"session-test","type":"terminal.data"})");
+    }
+    const auto packed = aicli::agent::wire::PackTerminalEvents(wire_events);
+    std::vector<std::string> unpacked;
+    ok &= Check(!packed.empty(), "packed terminal batch is produced");
+    ok &= Check(aicli::agent::wire::UnpackTerminalEvents(packed, unpacked),
+                "packed terminal batch can be decoded");
+    ok &= Check(unpacked == wire_events,
+                "packed terminal batch preserves every JSON event exactly");
+    std::size_t original_wire_bytes = 0;
+    for (const auto& event : wire_events) original_wire_bytes += event.size();
+    ok &= Check(packed.size() * 4 < original_wire_bytes,
+                "repeated TUI repaints compress to less than one quarter");
+    if (!packed.empty()) {
+        std::cout << "TUI fixture bytes: " << original_wire_bytes
+                  << " -> " << packed.size() << '\n';
+    }
+    if (!packed.empty()) {
+        auto damaged = packed;
+        damaged[0] = 'X';
+        ok &= Check(!aicli::agent::wire::UnpackTerminalEvents(damaged, unpacked),
+                    "invalid terminal packet is rejected");
+        damaged = packed;
+        damaged.resize(damaged.size() / 2);
+        ok &= Check(!aicli::agent::wire::UnpackTerminalEvents(damaged, unpacked),
+                    "truncated terminal packet is rejected");
+    }
+
+    std::mt19937 random{0x41c11u};
+    for (int round = 0; round < 160 && ok; ++round) {
+        std::vector<std::string> generated;
+        const int count = 1 + static_cast<int>(random() % 12);
+        for (int event_index = 0; event_index < count; ++event_index) {
+            const std::size_t length = 1 + random() % 4096;
+            std::string value;
+            value.reserve(length + 32);
+            while (value.size() < length) {
+                if ((random() & 3u) == 0) {
+                    value.append("\\u001b[2K\\rWorking...");
+                } else {
+                    value.push_back(static_cast<char>(' ' + random() % 95));
+                }
+            }
+            value.resize(length);
+            generated.push_back(std::move(value));
+        }
+        const auto random_packet =
+            aicli::agent::wire::PackTerminalEvents(generated);
+        std::vector<std::string> random_decoded;
+        ok &= Check(!random_packet.empty() &&
+                        aicli::agent::wire::UnpackTerminalEvents(
+                            random_packet, random_decoded) &&
+                        random_decoded == generated,
+                    "mixed terminal payload round-trip is lossless");
     }
 
     if (ok) std::cout << "AI CLI terminal stream tests passed.\n";

@@ -49,6 +49,18 @@ constexpr UINT kScrollbarHoverTimerMs = 80;
 
 namespace {
 
+#if defined(AICLI_QT_UI_BUILD)
+constexpr std::uint8_t kDarkTerminalRed = 0x0c;
+constexpr std::uint8_t kDarkTerminalGreen = 0x0c;
+constexpr std::uint8_t kDarkTerminalBlue = 0x0c;
+#else
+// The native Win32 shell uses a slightly blue-black terminal canvas. Keep
+// this build-specific so the Qt appearance remains unchanged.
+constexpr std::uint8_t kDarkTerminalRed = 0x0c;
+constexpr std::uint8_t kDarkTerminalGreen = 0x0e;
+constexpr std::uint8_t kDarkTerminalBlue = 0x12;
+#endif
+
 // Match Windows Terminal's paste filtering rules: normalize all line endings
 // to CR and remove C0/C1 control characters except tab and line endings. This
 // also prevents remote text from prematurely terminating bracketed paste.
@@ -279,8 +291,15 @@ public:
             grid_=winrt::Windows::UI::Xaml::Controls::Grid();
             const auto background = light_theme_
                 ? winrt::Windows::UI::Color{0xff, 0xf7, 0xf8, 0xfa}
-                : winrt::Windows::UI::Color{0xff, 0x0c, 0x0c, 0x0c};
+                : winrt::Windows::UI::Color{
+                      0xff, kDarkTerminalRed,
+                      kDarkTerminalGreen, kDarkTerminalBlue};
             grid_.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(background));
+#if !defined(AICLI_QT_UI_BUILD)
+            grid_.RequestedTheme(
+                light_theme_ ? winrt::Windows::UI::Xaml::ElementTheme::Light
+                             : winrt::Windows::UI::Xaml::ElementTheme::Dark);
+#endif
             try {
                 application_.as<winrt::Windows::UI::Xaml::Application>()
                     .Resources().MergedDictionaries().Append(
@@ -530,8 +549,15 @@ public:
             if (grid_) {
                 const auto background = light
                     ? winrt::Windows::UI::Color{0xff, 0xf7, 0xf8, 0xfa}
-                    : winrt::Windows::UI::Color{0xff, 0x0c, 0x0c, 0x0c};
+                    : winrt::Windows::UI::Color{
+                          0xff, kDarkTerminalRed,
+                          kDarkTerminalGreen, kDarkTerminalBlue};
                 grid_.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(background));
+#if !defined(AICLI_QT_UI_BUILD)
+                grid_.RequestedTheme(
+                    light ? winrt::Windows::UI::Xaml::ElementTheme::Light
+                          : winrt::Windows::UI::Xaml::ElementTheme::Dark);
+#endif
             }
             for (auto& [_, session] : sessions_) {
                 if (!session->control || !session->control_settings) continue;
@@ -542,6 +568,8 @@ public:
                 session->control.UpdateControlSettings(
                     session->control_settings, session->unfocused_settings);
                 session->control.UpdateLayout();
+                if (session->native_scrollbar)
+                    ApplyNativeScrollbarTheme(session->native_scrollbar, light);
             }
             if (grid_) grid_.UpdateLayout();
             // Qt can complete the host layout after UpdateControlSettings.
@@ -985,13 +1013,16 @@ private:
         scheme.Foreground(light ? TerminalColor{0x24, 0x2a, 0x33, 0xff}
                                 : TerminalColor{0xcc, 0xcc, 0xcc, 0xff});
         scheme.Background(light ? TerminalColor{0xf7, 0xf8, 0xfa, 0xff}
-                                : TerminalColor{0x0c, 0x0c, 0x0c, 0xff});
+                                : TerminalColor{kDarkTerminalRed,
+                                                kDarkTerminalGreen,
+                                                kDarkTerminalBlue, 0xff});
         scheme.CursorColor(light ? TerminalColor{0x1c, 0x22, 0x2b, 0xff}
                                  : TerminalColor{0xff, 0xff, 0xff, 0xff});
         scheme.SelectionBackground(light ? TerminalColor{0xbf, 0xd8, 0xf4, 0xff}
                                          : TerminalColor{0x26, 0x4f, 0x78, 0xff});
         std::array<TerminalColor, 16> campbell{
-            TerminalColor{0x0c, 0x0c, 0x0c, 0xff},
+            TerminalColor{kDarkTerminalRed, kDarkTerminalGreen,
+                          kDarkTerminalBlue, 0xff},
             TerminalColor{0xc5, 0x0f, 0x1f, 0xff},
             TerminalColor{0x13, 0xa1, 0x0e, 0xff},
             TerminalColor{0xc1, 0x9c, 0x00, 0xff},
@@ -1070,6 +1101,60 @@ private:
         }
     }
 
+    static void ApplyNativeScrollbarTheme(
+        const winrt::Windows::UI::Xaml::Controls::Primitives::ScrollBar& scrollbar,
+        bool light) noexcept {
+        if (!scrollbar) return;
+        try {
+            const auto idle_background_color = light
+                ? winrt::Windows::UI::Color{0xff, 0xf0, 0xf1, 0xf3}
+#if defined(AICLI_QT_UI_BUILD)
+                : winrt::Windows::UI::Color{0xff, 0x04, 0x04, 0x10};
+#else
+                : winrt::Windows::UI::Color{0xff, 0x0c, 0x0e, 0x12};
+#endif
+            scrollbar.Background(
+                winrt::Windows::UI::Xaml::Media::SolidColorBrush(
+                    idle_background_color));
+
+#if !defined(AICLI_QT_UI_BUILD)
+            // The WinUI ScrollBar template paints its expanded track from
+            // ThemeResource brushes rather than from ScrollBar.Background.
+            // Without overriding those resources, a loose XAML island can
+            // retain the light #d0d0da acrylic track even in the app's dark
+            // theme. The idle channel matches the terminal canvas, while the
+            // expanded/hover track keeps its existing, slightly lighter
+            // surface for a clear interactive state.
+            scrollbar.RequestedTheme(
+                light ? winrt::Windows::UI::Xaml::ElementTheme::Light
+                      : winrt::Windows::UI::Xaml::ElementTheme::Dark);
+            const auto expanded_track_color = light
+                ? winrt::Windows::UI::Color{0xff, 0xf0, 0xf1, 0xf3}
+                : winrt::Windows::UI::Color{0xff, 0x12, 0x15, 0x1b};
+            const auto expanded_track_brush =
+                winrt::Windows::UI::Xaml::Media::SolidColorBrush(
+                    expanded_track_color);
+            auto resources = scrollbar.Resources();
+            for (const wchar_t* key : {
+                     L"ScrollBarTrackFill",
+                     L"ScrollBarTrackFillDisabled",
+                     L"ScrollBarTrackStroke",
+                     L"ScrollBarTrackStrokeDisabled"}) {
+                resources.Insert(
+                    winrt::box_value(key),
+                    winrt::Windows::UI::Xaml::Media::SolidColorBrush(
+                        idle_background_color));
+            }
+            for (const wchar_t* key : {
+                     L"ScrollBarTrackFillPointerOver",
+                     L"ScrollBarTrackStrokePointerOver"}) {
+                resources.Insert(winrt::box_value(key), expanded_track_brush);
+            }
+#endif
+        } catch (...) {
+        }
+    }
+
     void EnsureNativeScrollbar(TerminalSession* session = nullptr) {
         if (!session) session = ActiveSession();
         if (!session || !session->control) return;
@@ -1083,11 +1168,7 @@ private:
             }
             const auto scrollbar = session->native_scrollbar;
             if (scrollbar) {
-                const auto track_color = light_theme_
-                    ? winrt::Windows::UI::Color{0xff, 0xf0, 0xf1, 0xf3}
-                    : winrt::Windows::UI::Color{0xff, 0x04, 0x04, 0x10};
-                scrollbar.Background(
-                    winrt::Windows::UI::Xaml::Media::SolidColorBrush(track_color));
+                ApplyNativeScrollbarTheme(scrollbar, light_theme_);
                 // Keep Windows Terminal's own visual-state manager intact:
                 // a thin indicator while idle and the wider thumb/track on
                 // pointer hover, exactly like the standalone terminal.

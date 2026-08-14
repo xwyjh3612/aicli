@@ -44,6 +44,7 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
+import okio.ByteString;
 
 /**
  * Authenticated desktop client. Every post-pairing request uses TLS, a short
@@ -162,6 +163,7 @@ public final class AicliClient {
     private volatile WebSocket eventsSocket;
     private volatile EventCallback eventsCallback;
     private volatile String eventsConversationId = "";
+    private volatile boolean packedTerminalTransportEnabled = true;
     private final AtomicLong eventsGeneration = new AtomicLong();
     private ScheduledFuture<?> reconnectTask;
     private ScheduledFuture<?> routeStatusProbeTask;
@@ -516,6 +518,11 @@ public final class AicliClient {
                     if (query.length() > 0) query.append('&');
                     query.append("afterSequence=").append(afterSequence);
                 }
+                if (packedTerminalTransportEnabled) {
+                    if (query.length() > 0) query.append('&');
+                    query.append("terminalTransport=")
+                            .append(TerminalWireCodec.TRANSPORT);
+                }
                 if (query.length() > 0) path += "?" + query;
                 Request request = signedBuilder("GET", path, "", true)
                         .url(webSocketUrl(connectionAddress, path)).build();
@@ -531,6 +538,26 @@ public final class AicliClient {
                         if (generation != eventsGeneration.get()) return;
                         EventCallback current = eventsCallback;
                         if (current != null) current.onEvent(text);
+                    }
+                    @Override public void onMessage(@NonNull WebSocket socket,
+                                                    @NonNull ByteString bytes) {
+                        if (generation != eventsGeneration.get()) return;
+                        try {
+                            List<String> events = TerminalWireCodec.unpack(
+                                    bytes.toByteArray());
+                            EventCallback current = eventsCallback;
+                            if (current == null) return;
+                            for (String event : events) {
+                                if (generation != eventsGeneration.get()) return;
+                                current.onEvent(event);
+                            }
+                        } catch (IOException invalidPacket) {
+                            // A text reconnect is a fail-safe for mixed desktop
+                            // versions or a damaged packet. No terminal bytes
+                            // are guessed, skipped or rendered partially.
+                            packedTerminalTransportEnabled = false;
+                            socket.close(1003, "invalid terminal packet");
+                        }
                     }
                     @Override public void onClosed(@NonNull WebSocket socket, int code, @NonNull String reason) {
                         scheduleReconnect(generation, conversationId, callback);

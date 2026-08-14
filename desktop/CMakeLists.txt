@@ -41,6 +41,7 @@ set(AICLI_COMMON_SOURCES
     src/agent/remote_agent.cpp
     src/agent/terminal_snapshot_publisher.cpp
     src/agent/terminal_stream_publisher.cpp
+    src/agent/terminal_wire_codec.cpp
     src/app/application_activation.cpp
     src/app/project_launcher.cpp
     src/app/runtime_components.cpp
@@ -95,6 +96,7 @@ add_executable(aicli_data_store_tests
 add_executable(aicli_terminal_stream_tests
     tests/terminal_stream_publisher_tests.cpp
     src/agent/terminal_stream_publisher.cpp
+    src/agent/terminal_wire_codec.cpp
     src/core/text_utils.cpp
 )
 
