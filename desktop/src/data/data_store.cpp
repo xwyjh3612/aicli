@@ -899,9 +899,27 @@ std::wstring DefaultDataDirectory() {
                                        &local_app_data)) && local_app_data) {
         std::filesystem::path result{local_app_data};
         CoTaskMemFree(local_app_data);
+#if defined(AICLI_QT_UI_BUILD) && defined(AICLI_DEBUG_BUILD)
+        return (result / L"AI CLI Qt Dev").wstring();
+#elif defined(AICLI_QT_UI_BUILD)
+        return (result / L"AI CLI Qt").wstring();
+#elif defined(AICLI_DEBUG_BUILD)
+        return (result / L"AI CLI Dev").wstring();
+#else
+        // Keep the established non-Qt Release directory so existing users do
+        // not lose projects, settings, pairings, or conversation state.
         return (result / L"AI CLI").wstring();
+#endif
     }
+#if defined(AICLI_QT_UI_BUILD) && defined(AICLI_DEBUG_BUILD)
+    return (std::filesystem::current_path() / L"data-qt-dev").wstring();
+#elif defined(AICLI_QT_UI_BUILD)
+    return (std::filesystem::current_path() / L"data-qt").wstring();
+#elif defined(AICLI_DEBUG_BUILD)
+    return (std::filesystem::current_path() / L"data-dev").wstring();
+#else
     return (std::filesystem::current_path() / L"data").wstring();
+#endif
 }
 
 }

@@ -13,6 +13,7 @@
 #include "app/application_activation.h"
 #include "app/desktop_controller.h"
 #include "app/resource.h"
+#include "app/single_instance.h"
 #include "ui/qt_main_window.h"
 #include "ui/qt_widgets.h"
 
@@ -92,6 +93,28 @@ int WINAPI wWinMain(HINSTANCE instance,
     if (activation == 0) {
         winrt::uninit_apartment();
         return 0;
+    }
+
+    aicli::app::SingleInstanceGuard single_instance;
+    std::wstring single_instance_error;
+    const auto instance_result = single_instance.Acquire(&single_instance_error);
+    if (instance_result == aicli::app::SingleInstanceResult::activated_existing) {
+        winrt::uninit_apartment();
+        return 0;
+    }
+    if (instance_result == aicli::app::SingleInstanceResult::existing_starting) {
+        MessageBoxW(nullptr, L"AiCli 已在启动，请稍候。", L"AiCli",
+                    MB_OK | MB_ICONINFORMATION);
+        winrt::uninit_apartment();
+        return 0;
+    }
+    if (instance_result == aicli::app::SingleInstanceResult::error) {
+        MessageBoxW(nullptr,
+                    single_instance_error.empty() ? L"无法检查正在运行的 AiCli 实例。"
+                                                  : single_instance_error.c_str(),
+                    L"AiCli", MB_OK | MB_ICONERROR);
+        winrt::uninit_apartment();
+        return 1;
     }
 
     // Register the side-by-side WinUI/Windows Terminal activation factories

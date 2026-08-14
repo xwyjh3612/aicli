@@ -43,6 +43,7 @@ set(AICLI_COMMON_SOURCES
     src/agent/terminal_stream_publisher.cpp
     src/app/application_activation.cpp
     src/app/runtime_components.cpp
+    src/app/single_instance.cpp
     src/core/process_metrics.cpp
     src/core/text_utils.cpp
     src/data/data_store.cpp
@@ -105,7 +106,11 @@ endif()
 
 target_compile_definitions(aicli PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN USE_WEBSOCKET NO_SSL_DL OPENSSL_API_3_0
+    $<$<CONFIG:Debug>:AICLI_DEBUG_BUILD=1>
 )
+if (AICLI_USE_QT_UI)
+    target_compile_definitions(aicli PRIVATE AICLI_QT_UI_BUILD=1)
+endif()
 if (AICLI_DATA_DIRECTORY_OVERRIDE)
     file(TO_CMAKE_PATH "${AICLI_DATA_DIRECTORY_OVERRIDE}" AICLI_DATA_DIRECTORY_OVERRIDE_NORMALIZED)
     target_compile_definitions(aicli PRIVATE
