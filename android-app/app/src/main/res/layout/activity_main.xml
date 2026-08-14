@@ -422,6 +422,30 @@
                             app:strokeWidth="1dp" />
 
                         <com.google.android.material.button.MaterialButton
+                            android:id="@+id/closeProjectButton"
+                            style="@style/Widget.Material3.Button.TonalButton"
+                            android:layout_width="0dp"
+                            android:layout_height="54dp"
+                            android:layout_marginEnd="8dp"
+                            android:layout_weight="1"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minWidth="0dp"
+                            android:text="关闭"
+                            android:textAllCaps="false"
+                            android:textColor="@color/aicli_stopped"
+                            android:textSize="13sp"
+                            app:backgroundTint="@color/aicli_surface_high"
+                            app:cornerRadius="14dp"
+                            app:icon="@drawable/ic_stop"
+                            app:iconGravity="textStart"
+                            app:iconPadding="5dp"
+                            app:iconSize="16dp"
+                            app:iconTint="@color/aicli_stopped"
+                            app:strokeColor="@color/aicli_outline"
+                            app:strokeWidth="1dp" />
+
+                        <com.google.android.material.button.MaterialButton
                             android:id="@+id/cameraButton"
                             style="@style/Widget.Material3.Button.TonalButton"
                             android:layout_width="0dp"

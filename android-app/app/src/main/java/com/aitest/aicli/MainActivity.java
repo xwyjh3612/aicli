@@ -47,6 +47,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.textfield.MaterialAutoCompleteTextView;
 import com.google.android.material.button.MaterialButton;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonArray;
@@ -112,6 +113,7 @@ public final class MainActivity extends AppCompatActivity {
     private MaterialButton startProjectButton;
     private MaterialButton wrapButton;
     private MaterialButton sendButton;
+    private View closeProjectButton;
     private EditText messageInput;
     private RecyclerView conversationList;
     private boolean terminalReconnectScheduled;
@@ -194,6 +196,7 @@ public final class MainActivity extends AppCompatActivity {
         startProjectButton = findViewById(R.id.startProjectButton);
         wrapButton = findViewById(R.id.wrapButton);
         sendButton = findViewById(R.id.sendButton);
+        closeProjectButton = findViewById(R.id.closeProjectButton);
         messageInput = findViewById(R.id.messageInput);
         conversationList = findViewById(R.id.conversationList);
         lastImeHeightPx = getSharedPreferences(APP_PREFS, MODE_PRIVATE)
@@ -230,6 +233,7 @@ public final class MainActivity extends AppCompatActivity {
                 drawerLayout.closeDrawer(GravityCompat.START));
         sendButton.setOnClickListener(view -> handleComposerAction());
         startProjectButton.setOnClickListener(view -> startSelectedProject());
+        closeProjectButton.setOnClickListener(view -> confirmCloseSelectedProject());
         wrapButton.setOnClickListener(view -> toggleSoftWrap());
         findViewById(R.id.keyLeftButton).setOnClickListener(view -> sendTerminalKey("left"));
         findViewById(R.id.keyUpButton).setOnClickListener(view -> sendTerminalKey("up"));
@@ -973,6 +977,48 @@ public final class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void confirmCloseSelectedProject() {
+        if (selectedConversation == null || selectedConversationId == null || client == null ||
+                !"running".equalsIgnoreCase(selectedConversation.status)) return;
+        String projectName = selectedConversation.name.isEmpty()
+                ? "当前项目" : selectedConversation.name;
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("关闭项目")
+                .setMessage("确定关闭“" + projectName + "”的终端会话吗？\n\n项目不会被删除，之后仍可重新开始。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("关闭", (dialog, which) -> closeSelectedProject())
+                .show();
+    }
+
+    private void closeSelectedProject() {
+        if (selectedConversationId == null || client == null) return;
+        String conversationId = selectedConversationId;
+        closeProjectButton.setEnabled(false);
+        client.control(conversationId, "cancel", new AicliClient.ActionCallback() {
+            @Override public void onSuccess() {
+                runOnUiThread(() -> {
+                    if (!conversationId.equals(selectedConversationId)) return;
+                    terminalKeyPanelVisible = false;
+                    terminalKeyBar.setVisibility(View.GONE);
+                    inputBar.setVisibility(View.GONE);
+                    closeProjectButton.setVisibility(View.GONE);
+                    closeProjectButton.setEnabled(true);
+                    Toast.makeText(MainActivity.this,
+                            "项目已关闭，可随时重新开始", Toast.LENGTH_SHORT).show();
+                    loadConversations();
+                });
+            }
+
+            @Override public void onError(String message) {
+                runOnUiThread(() -> {
+                    closeProjectButton.setEnabled(true);
+                    Toast.makeText(MainActivity.this,
+                            "关闭项目失败：" + message, Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+    }
+
     private void toggleSoftWrap() {
         boolean enabled = !terminalView.softWrapEnabled();
         terminalView.setSoftWrapEnabled(enabled);
@@ -1391,6 +1437,8 @@ public final class MainActivity extends AppCompatActivity {
         terminalKeyBar.setVisibility(running && terminalKeyPanelVisible
                 ? View.VISIBLE : View.GONE);
         inputBar.setVisibility(running ? View.VISIBLE : View.GONE);
+        closeProjectButton.setVisibility(running ? View.VISIBLE : View.GONE);
+        closeProjectButton.setEnabled(true);
         updateComposerAction();
         startProjectButton.setVisibility(conversation != null && !running
                 ? View.VISIBLE : View.GONE);
@@ -1419,6 +1467,8 @@ public final class MainActivity extends AppCompatActivity {
         terminalView.setVisibility(View.GONE);
         terminalKeyPanelVisible = false;
         terminalKeyBar.setVisibility(View.GONE);
+        closeProjectButton.setVisibility(View.GONE);
+        closeProjectButton.setEnabled(true);
         startProjectButton.setVisibility(View.GONE);
         inputBar.setVisibility(View.GONE);
     }
