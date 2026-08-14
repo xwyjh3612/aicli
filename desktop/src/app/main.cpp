@@ -195,7 +195,7 @@ COLORREF& fg = g_theme.text;
 COLORREF& muted = g_theme.muted;
 COLORREF& accent = g_theme.accent;
 COLORREF& accent2 = g_theme.accent_strong;
-HBRUSH g_edit_brush{},g_focus_brush{},g_list_brush{},g_bg_brush{},g_detail_surface_brush{};bool g_light_theme{};bool g_theme_workspace_dirty{};
+HBRUSH g_edit_brush{},g_focus_brush{},g_list_brush{},g_panel_brush{},g_bg_brush{},g_detail_surface_brush{};bool g_light_theme{};bool g_theme_workspace_dirty{};
 bool g_settings_open_posted{};
 bool g_close_confirmation_open{};
 HWND g_project_dialog{}, g_d_name{}, g_d_note{}, g_d_type{}, g_d_group{}, g_d_folder{}, g_d_folder_browse{}, g_d_command{}; bool g_project_dialog_ok{}; bool g_project_dialog_edit{}; Project g_project_draft{};
@@ -232,6 +232,10 @@ int ScaleUi(int value) noexcept {
     return g_layout_metrics.Scale(value);
 }
 
+COLORREF SidebarBackground() noexcept {
+    return g_light_theme ? panel : RGB(10, 17, 31);
+}
+
 float ScaleUiF(float value) noexcept {
     return value * static_cast<float>(std::max(1, g_layout_metrics.dpi)) / 96.0f;
 }
@@ -251,7 +255,8 @@ bool ApplyStoredTheme(){
     const bool next_light=stored==L"light";
     const bool palette_changed=g_theme_manager.light()!=next_light||
                                 !g_edit_brush||!g_focus_brush||
-                                !g_list_brush||!g_bg_brush||!g_detail_surface_brush;
+                                !g_list_brush||!g_panel_brush||!g_bg_brush||
+                                !g_detail_surface_brush;
     if(!palette_changed){
         g_light_theme=next_light;
         return false;
@@ -261,11 +266,13 @@ bool ApplyStoredTheme(){
     if(g_edit_brush)DeleteObject(g_edit_brush);
     if(g_focus_brush)DeleteObject(g_focus_brush);
     if(g_list_brush)DeleteObject(g_list_brush);
+    if(g_panel_brush)DeleteObject(g_panel_brush);
     if(g_bg_brush)DeleteObject(g_bg_brush);
     if(g_detail_surface_brush)DeleteObject(g_detail_surface_brush);
     g_edit_brush=CreateSolidBrush(g_theme.field);
     g_focus_brush=CreateSolidBrush(g_theme.field_focus);
-    g_list_brush=CreateSolidBrush(panel);
+    g_list_brush=CreateSolidBrush(SidebarBackground());
+    g_panel_brush=CreateSolidBrush(panel);
     g_bg_brush=CreateSolidBrush(bg);
     g_detail_surface_brush=CreateSolidBrush(
         g_light_theme?RGB(239,243,248):RGB(18,21,27));
@@ -1155,7 +1162,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);info->ptMinTrackSize.x=metrics.Scale(900);info->ptMinTrackSize.y=metrics.Scale(600);return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;
-    case WM_CTLCOLORSTATIC: {HDC dc=(HDC)w;HWND control=(HWND)l;const bool onPanel=control==g_sidebar_title||control==g_status;const bool detailValue=control==g_detail_folder||control==g_detail_command||control==g_detail_note;const bool detailLabel=control==g_detail_subtitle||control==g_detail_folder_label||control==g_detail_command_label||control==g_detail_note_label;const bool detail=control==g_detail_title||detailLabel||detailValue||control==g_detail_state;if(detail){const COLORREF detailSurface=g_light_theme?RGB(239,243,248):RGB(18,21,27);SetBkMode(dc,OPAQUE);SetBkColor(dc,detailValue?detailSurface:bg);SetTextColor(dc,control==g_detail_state?(g_light_theme?RGB(177,113,16):RGB(245,178,72)):(detailLabel?muted:fg));return (LRESULT)(detailValue?g_detail_surface_brush:g_bg_brush);}SetBkMode(dc,OPAQUE);SetTextColor(dc,fg);SetBkColor(dc,onPanel?panel:bg);return (LRESULT)(onPanel?g_list_brush:g_bg_brush);}
+    case WM_CTLCOLORSTATIC: {HDC dc=(HDC)w;HWND control=(HWND)l;const bool onSidebar=control==g_sidebar_title;const bool onFooter=control==g_status;const bool detailValue=control==g_detail_folder||control==g_detail_command||control==g_detail_note;const bool detailLabel=control==g_detail_subtitle||control==g_detail_folder_label||control==g_detail_command_label||control==g_detail_note_label;const bool detail=control==g_detail_title||detailLabel||detailValue||control==g_detail_state;if(detail){const COLORREF detailSurface=g_light_theme?RGB(239,243,248):RGB(18,21,27);SetBkMode(dc,OPAQUE);SetBkColor(dc,detailValue?detailSurface:bg);SetTextColor(dc,control==g_detail_state?(g_light_theme?RGB(177,113,16):RGB(245,178,72)):(detailLabel?muted:fg));return (LRESULT)(detailValue?g_detail_surface_brush:g_bg_brush);}SetBkMode(dc,OPAQUE);SetTextColor(dc,fg);const COLORREF controlBackground=onSidebar?SidebarBackground():(onFooter?panel:bg);SetBkColor(dc,controlBackground);return (LRESULT)(onSidebar?g_list_brush:(onFooter?g_panel_brush:g_bg_brush));}
     case WM_CTLCOLOREDIT: {
         HDC dc=(HDC)w;
         HWND control=(HWND)l;
@@ -1166,7 +1173,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         return (LRESULT)(focused?(g_focus_brush?g_focus_brush:GetStockObject(WHITE_BRUSH)):
                                    (g_edit_brush?g_edit_brush:GetStockObject(WHITE_BRUSH)));
     }
-    case WM_CTLCOLORLISTBOX: {HDC dc=(HDC)w;SetTextColor(dc,fg);SetBkColor(dc,panel);return (LRESULT)(g_list_brush?g_list_brush:GetStockObject(NULL_BRUSH));}
+    case WM_CTLCOLORLISTBOX: {HDC dc=(HDC)w;SetTextColor(dc,fg);SetBkColor(dc,SidebarBackground());return (LRESULT)(g_list_brush?g_list_brush:GetStockObject(NULL_BRUSH));}
     case WM_COMMAND:{
         const UINT id=LOWORD(w),notification=HIWORD(w);
         if(id==ID_CLOSE){SendMessageW(h,WM_CLOSE,0,0);return 0;}
@@ -1362,7 +1369,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);
         if(!g_font_git)RecreateMainFontsForDpi();
         aicli::ui::PaintMainWindow(
-            target_dc,r,ps.rcPaint,h,g_search,g_sidebar_title,g_list,g_app_icon_large,g_font_medium,g_font_small,g_font_git,
+            target_dc,r,ps.rcPaint,h,g_search,g_sidebar_title,g_list,g_app_icon_large,g_font_medium,g_font_small,g_font_git,SidebarBackground(),
             metrics,g_theme,g_window_chrome,g_footer_status);
         if(!IsRectEmpty(&g_prestart_panel)){
             const COLORREF surface=g_light_theme?RGB(239,243,248):RGB(18,21,27);
@@ -1373,7 +1380,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         EndPaint(h,&ps);
         return 0;
     }
-    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
     if(m==WM_NCDESTROY&&g_font_git){
         DeleteObject(g_font_git);
         g_font_git=nullptr;

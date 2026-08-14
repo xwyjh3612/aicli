@@ -20,6 +20,7 @@ void PaintMainWindow(HDC target_dc,
                      HFONT medium_font,
                      HFONT small_font,
                      HFONT git_font,
+                     COLORREF sidebar_background,
                      const LayoutMetrics& metrics,
                      const ThemePalette& theme,
                      const WindowChrome& chrome,
@@ -37,18 +38,21 @@ void PaintMainWindow(HDC target_dc,
     DeleteObject(title_bar);
     chrome.DrawButtons(dc, window, theme);
 
-    HBRUSH panel_brush = CreateSolidBrush(theme.panel);
+    HBRUSH sidebar_brush = CreateSolidBrush(sidebar_background);
     RECT side{
         0,
         metrics.title_bar_height,
         metrics.sidebar_width,
         client.bottom - metrics.footer_height};
+    FillRect(dc, &side, sidebar_brush);
+    DeleteObject(sidebar_brush);
+
+    HBRUSH panel_brush = CreateSolidBrush(theme.panel);
     RECT footer{
         0,
         client.bottom - metrics.footer_height,
         client.right,
         client.bottom};
-    FillRect(dc, &side, panel_brush);
     FillRect(dc, &footer, panel_brush);
     DeleteObject(panel_brush);
 

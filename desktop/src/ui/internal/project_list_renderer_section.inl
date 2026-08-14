@@ -26,7 +26,7 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
         HDC dc=reinterpret_cast<HDC>(w);
         if(dc){
             RECT client{};GetClientRect(h,&client);
-            HBRUSH brush=g_list_brush?g_list_brush:CreateSolidBrush(panel);
+            HBRUSH brush=g_list_brush?g_list_brush:CreateSolidBrush(SidebarBackground());
             FillRect(dc,&client,brush);
             if(!g_list_brush)DeleteObject(brush);
         }
@@ -140,7 +140,7 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
     const bool projectButton=parentWindow==g_project_dialog;
     COLORREF under=panel;
     bool onMainTitleBar=false;
-    if(parentWindow==g_hwnd){POINT pos{};ClientToScreen(item->hwndItem,&pos);ScreenToClient(parentWindow,&pos);onMainTitleBar=pos.y<g_layout_metrics.title_bar_height;under=onMainTitleBar?TitleBarBackground():(pos.x<g_layout_metrics.sidebar_width?panel:bg);}
+    if(parentWindow==g_hwnd){POINT pos{};ClientToScreen(item->hwndItem,&pos);ScreenToClient(parentWindow,&pos);onMainTitleBar=pos.y<g_layout_metrics.title_bar_height;under=onMainTitleBar?TitleBarBackground():(pos.x<g_layout_metrics.sidebar_width?SidebarBackground():bg);}
     HBRUSH clear=CreateSolidBrush(under);FillRect(item->hDC,&r,clear);DeleteObject(clear);
     wchar_t text[256]{};GetWindowTextW(item->hwndItem,text,256);SetBkMode(item->hDC,TRANSPARENT);
     const bool title_button=parentWindow==g_hwnd&&
@@ -214,7 +214,7 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     const bool sourceDragging=g_project_dragging&&
         static_cast<int>(item->itemID)==g_project_drag_source;
     RECT row=item->rcItem;
-    HBRUSH rowBackground=CreateSolidBrush(panel);
+    HBRUSH rowBackground=CreateSolidBrush(SidebarBackground());
     FillRect(item->hDC,&row,rowBackground);
     DeleteObject(rowBackground);
 
@@ -223,7 +223,7 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     RECT card{row.left+1,row.top+1,row.right-1,row.bottom-1};
     COLORREF cardFill=g_light_theme?RGB(250,251,253):RGB(22,25,32);
     if(sourceDragging){
-        cardFill=panel;
+        cardFill=SidebarBackground();
     }else if(selected){
         cardFill=g_light_theme?RGB(238,245,254):RGB(25,37,54);
     }else if(hovered){
