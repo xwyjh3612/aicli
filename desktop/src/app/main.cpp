@@ -714,7 +714,7 @@ void Layout(){
     // 35px outer box: 38px outer height with 2px inset = 34px control height.
     const int searchHeight=S(38);
     const int titleHeight=S(30);
-    const int titleBottomGap=S(14);
+    const int titleBottomGap=S(16);
     const int addButtonSize=S(26);
     const int searchTop=top+S(8);
     const int searchBottom=searchTop+searchHeight;
