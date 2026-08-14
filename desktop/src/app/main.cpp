@@ -263,6 +263,10 @@ bool ApplyStoredTheme(){
     }
     g_theme_manager.LoadMode(next_light?aicli::ui::ThemeMode::Light:aicli::ui::ThemeMode::Dark);
     g_light_theme=g_theme_manager.light();
+    if(!g_light_theme){
+        g_theme.titlebar=RGB(9,15,28);
+        g_theme.titlebar_inactive=RGB(9,15,28);
+    }
     if(g_edit_brush)DeleteObject(g_edit_brush);
     if(g_focus_brush)DeleteObject(g_focus_brush);
     if(g_list_brush)DeleteObject(g_list_brush);
@@ -272,7 +276,7 @@ bool ApplyStoredTheme(){
     g_edit_brush=CreateSolidBrush(g_theme.field);
     g_focus_brush=CreateSolidBrush(g_theme.field_focus);
     g_list_brush=CreateSolidBrush(SidebarBackground());
-    g_panel_brush=CreateSolidBrush(panel);
+    g_panel_brush=CreateSolidBrush(g_theme.titlebar);
     g_bg_brush=CreateSolidBrush(bg);
     g_detail_surface_brush=CreateSolidBrush(
         g_light_theme?RGB(239,243,248):RGB(18,21,27));
@@ -1162,7 +1166,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);info->ptMinTrackSize.x=metrics.Scale(900);info->ptMinTrackSize.y=metrics.Scale(600);return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;
-    case WM_CTLCOLORSTATIC: {HDC dc=(HDC)w;HWND control=(HWND)l;const bool onSidebar=control==g_sidebar_title;const bool onFooter=control==g_status;const bool detailValue=control==g_detail_folder||control==g_detail_command||control==g_detail_note;const bool detailLabel=control==g_detail_subtitle||control==g_detail_folder_label||control==g_detail_command_label||control==g_detail_note_label;const bool detail=control==g_detail_title||detailLabel||detailValue||control==g_detail_state;if(detail){const COLORREF detailSurface=g_light_theme?RGB(239,243,248):RGB(18,21,27);SetBkMode(dc,OPAQUE);SetBkColor(dc,detailValue?detailSurface:bg);SetTextColor(dc,control==g_detail_state?(g_light_theme?RGB(177,113,16):RGB(245,178,72)):(detailLabel?muted:fg));return (LRESULT)(detailValue?g_detail_surface_brush:g_bg_brush);}SetBkMode(dc,OPAQUE);SetTextColor(dc,fg);const COLORREF controlBackground=onSidebar?SidebarBackground():(onFooter?panel:bg);SetBkColor(dc,controlBackground);return (LRESULT)(onSidebar?g_list_brush:(onFooter?g_panel_brush:g_bg_brush));}
+    case WM_CTLCOLORSTATIC: {HDC dc=(HDC)w;HWND control=(HWND)l;const bool onSidebar=control==g_sidebar_title;const bool onFooter=control==g_status;const bool detailValue=control==g_detail_folder||control==g_detail_command||control==g_detail_note;const bool detailLabel=control==g_detail_subtitle||control==g_detail_folder_label||control==g_detail_command_label||control==g_detail_note_label;const bool detail=control==g_detail_title||detailLabel||detailValue||control==g_detail_state;if(detail){const COLORREF detailSurface=g_light_theme?RGB(239,243,248):RGB(18,21,27);SetBkMode(dc,OPAQUE);SetBkColor(dc,detailValue?detailSurface:bg);SetTextColor(dc,control==g_detail_state?(g_light_theme?RGB(177,113,16):RGB(245,178,72)):(detailLabel?muted:fg));return (LRESULT)(detailValue?g_detail_surface_brush:g_bg_brush);}SetBkMode(dc,OPAQUE);SetTextColor(dc,fg);const COLORREF controlBackground=onSidebar?SidebarBackground():(onFooter?g_theme.titlebar:bg);SetBkColor(dc,controlBackground);return (LRESULT)(onSidebar?g_list_brush:(onFooter?g_panel_brush:g_bg_brush));}
     case WM_CTLCOLOREDIT: {
         HDC dc=(HDC)w;
         HWND control=(HWND)l;

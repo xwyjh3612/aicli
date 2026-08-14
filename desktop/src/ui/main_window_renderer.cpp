@@ -9,6 +9,44 @@
 
 namespace aicli::ui {
 
+namespace {
+
+void DrawHorizontalGradientSeparator(HDC dc,
+                                     int width,
+                                     int y,
+                                     int peak_x,
+                                     COLORREF edge_color,
+                                     COLORREF peak_color) {
+    if (!dc || width <= 0) return;
+    peak_x = std::clamp(peak_x, 1, std::max(1, width - 1));
+
+    const auto vertex = [y](int x, COLORREF color) {
+        TRIVERTEX result{};
+        result.x = x;
+        result.y = y;
+        result.Red = static_cast<COLOR16>(GetRValue(color) << 8);
+        result.Green = static_cast<COLOR16>(GetGValue(color) << 8);
+        result.Blue = static_cast<COLOR16>(GetBValue(color) << 8);
+        result.Alpha = 0xFF00;
+        return result;
+    };
+    const auto draw_segment = [&](int left, int right,
+                                  COLORREF left_color,
+                                  COLORREF right_color) {
+        if (right <= left) return;
+        TRIVERTEX vertices[2]{
+            vertex(left, left_color), vertex(right, right_color)};
+        vertices[1].y = y + 1;
+        GRADIENT_RECT gradient{0, 1};
+        GradientFill(dc, vertices, 2, &gradient, 1, GRADIENT_FILL_RECT_H);
+    };
+
+    draw_segment(0, peak_x, edge_color, peak_color);
+    draw_segment(peak_x, width, peak_color, edge_color);
+}
+
+} // namespace
+
 void PaintMainWindow(HDC target_dc,
                      const RECT& client,
                      const RECT& dirty,
@@ -47,7 +85,7 @@ void PaintMainWindow(HDC target_dc,
     FillRect(dc, &side, sidebar_brush);
     DeleteObject(sidebar_brush);
 
-    HBRUSH panel_brush = CreateSolidBrush(theme.panel);
+    HBRUSH panel_brush = CreateSolidBrush(theme.titlebar);
     RECT footer{
         0,
         client.bottom - metrics.footer_height,
@@ -63,10 +101,12 @@ void PaintMainWindow(HDC target_dc,
     MoveToEx(dc, metrics.sidebar_width - 1, metrics.title_bar_height, nullptr);
     LineTo(dc, metrics.sidebar_width - 1,
            client.bottom - metrics.footer_height);
-    MoveToEx(dc, 0, metrics.title_bar_height - 1, nullptr);
-    LineTo(dc, client.right, metrics.title_bar_height - 1);
-    MoveToEx(dc, 0, client.bottom - metrics.footer_height, nullptr);
-    LineTo(dc, client.right, client.bottom - metrics.footer_height);
+    if (theme.mode == ThemeMode::Light) {
+        MoveToEx(dc, 0, metrics.title_bar_height - 1, nullptr);
+        LineTo(dc, client.right, metrics.title_bar_height - 1);
+        MoveToEx(dc, 0, client.bottom - metrics.footer_height, nullptr);
+        LineTo(dc, client.right, client.bottom - metrics.footer_height);
+    }
     // Separate the sidebar heading/action row from the project items without
     // adding a border around the list itself.
     int sidebar_divider_y = metrics.title_bar_height + metrics.Scale(88);
@@ -90,6 +130,16 @@ void PaintMainWindow(HDC target_dc,
     SelectObject(dc, previous_pen);
     DeleteObject(separator);
 
+    if (theme.mode == ThemeMode::Dark) {
+        constexpr COLORREF gradient_peak = RGB(34, 39, 83);
+        DrawHorizontalGradientSeparator(
+            dc, client.right, metrics.title_bar_height - 1,
+            client.right / 3, theme.titlebar, gradient_peak);
+        DrawHorizontalGradientSeparator(
+            dc, client.right, client.bottom - metrics.footer_height,
+            client.right * 2 / 3, theme.titlebar, gradient_peak);
+    }
+
     if (app_icon) {
         DrawIconEx(dc, metrics.Scale(14), metrics.Scale(8), app_icon,
                    metrics.Scale(24), metrics.Scale(24),
@@ -101,8 +151,10 @@ void PaintMainWindow(HDC target_dc,
     SelectObject(dc, medium_font);
     TextOutW(dc, metrics.Scale(48), metrics.Scale(10), L"AI CLI", 6);
 
+    ThemePalette footer_theme = theme;
+    footer_theme.panel = theme.titlebar;
     footer_status.Draw(
-        dc, client, metrics.footer_height, small_font, git_font, theme);
+        dc, client, metrics.footer_height, small_font, git_font, footer_theme);
 
     // DWM glass changes shade as activation changes, so the dark theme owns
     // its one-pixel outline in client space. This keeps every edge exactly
