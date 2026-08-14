@@ -35,6 +35,7 @@
 #include <filesystem>
 
 #include "features/git_repository.h"
+#include "app/project_launcher.h"
 #include "ui/qt_binding_dialog.h"
 #include "ui/qt_project_dialog.h"
 #include "ui/qt_settings_dialog.h"
@@ -721,6 +722,7 @@ void MainWindow::showProjectContextMenu(const QPoint& point) {
     menu.addSeparator();
     QAction* edit = menu.addAction(QStringLiteral("编辑项目"));
     QAction* open = menu.addAction(QStringLiteral("打开项目文件夹"));
+    QAction* command_prompt = menu.addAction(QStringLiteral("用 CMD 打开项目目录"));
     auto* move = menu.addMenu(QStringLiteral("移动到分组"));
     for (const auto& group : controller_.groups()) {
         QAction* action = move->addAction(ToQString(group.name));
@@ -733,6 +735,7 @@ void MainWindow::showProjectContextMenu(const QPoint& point) {
     else if (pause && chosen == pause) pauseSelectedProject();
     else if (chosen == edit) editSelectedProject();
     else if (chosen == open) openProjectFolder();
+    else if (chosen == command_prompt) openProjectCommandPrompt();
     else if (chosen == remove) deleteSelectedProject();
 }
 
@@ -1119,6 +1122,16 @@ void MainWindow::changeEvent(QEvent* event) {
     if (event->type() == QEvent::WindowStateChange) {
         if (title_bar_) title_bar_->UpdateMaximizeGlyph(isMaximized());
         if (!isMinimized() && project_title_) refreshProjectDetails();
+    }
+}
+
+void MainWindow::openProjectCommandPrompt() {
+    const auto* project = selectedProject();
+    if (!project) return;
+    std::wstring error;
+    if (!aicli::app::OpenCommandPromptAt(project->folder, &error)) {
+        QMessageBox::warning(this, QStringLiteral("用 CMD 打开项目目录"),
+                             ToQString(error));
     }
 }
 

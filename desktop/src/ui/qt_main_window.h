@@ -72,6 +72,7 @@ private:
     const Project* selectedProject() const;
     std::wstring selectedProjectIdFromList() const;
     void openProjectFolder();
+    void openProjectCommandPrompt();
     void moveSelectedProject(const std::wstring& group);
     void pauseSelectedProject();
     void prepareTerminalSurface();

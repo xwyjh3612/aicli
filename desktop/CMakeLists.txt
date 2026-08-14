@@ -42,6 +42,7 @@ set(AICLI_COMMON_SOURCES
     src/agent/terminal_snapshot_publisher.cpp
     src/agent/terminal_stream_publisher.cpp
     src/app/application_activation.cpp
+    src/app/project_launcher.cpp
     src/app/runtime_components.cpp
     src/app/single_instance.cpp
     src/core/process_metrics.cpp
