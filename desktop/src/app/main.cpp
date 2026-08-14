@@ -384,7 +384,7 @@ void RecreateMainFontsForDpi() {
     g_font_medium = CreateMainFont(17, FW_SEMIBOLD, L"Segoe UI");
     g_font_small = CreateMainFont(13, FW_NORMAL, L"Segoe UI");
     g_font_git = CreateMainFont(12, FW_NORMAL, L"Segoe UI");
-    g_font_sidebar_title = CreateMainFont(16, FW_NORMAL, L"Segoe UI");
+    g_font_sidebar_title = CreateMainFont(15, FW_NORMAL, L"Segoe UI");
     g_font_project_list = CreateMainFont(14, FW_NORMAL, L"Segoe UI");
     g_font_modal_title = CreateMainFont(16, FW_SEMIBOLD, L"Segoe UI");
     g_font_modal_subtitle = CreateMainFont(14, FW_NORMAL, L"Segoe UI");
@@ -702,18 +702,19 @@ void Layout(){
     // Restore the search field geometry from before it was reduced to a
     // 35px outer box: 38px outer height with 2px inset = 34px control height.
     const int searchHeight=S(38);
-    const int titleHeight=S(28);
-    const int titleBottomGap=S(10);
-    const int addButtonSize=S(28);
-    const int searchTop=top+S(6);
+    const int titleHeight=S(30);
+    const int titleBottomGap=S(12);
+    const int addButtonSize=S(26);
+    const int searchTop=top+S(8);
     const int searchBottom=searchTop+searchHeight;
-    RECT search_rect{sidebarInset+S(2),searchTop+S(2),
-                     left-sidebarInset-S(2),searchBottom+S(2)};
+    RECT search_rect{sidebarInset+S(4),searchTop+S(2),
+                     left-sidebarInset-S(4),searchBottom+S(2)};
     aicli::ui::LayoutStyledInput(g_search,search_rect,S(2),S(9));
-    // Keep every control below the search field at its current position.
-    const int titleTop=top+S(49);
-    MoveMainChild(g_sidebar_title,S(9),titleTop,S(200),titleHeight);
-    MoveMainChild(g_new_project,left-sidebarInset-addButtonSize,titleTop,addButtonSize,addButtonSize);
+    // Keep a little more breathing room between the search field and heading.
+    const int titleTop=top+S(55);
+    MoveMainChild(g_sidebar_title,S(11),titleTop,S(200),titleHeight);
+    const int addButtonTop=titleTop+(titleHeight-addButtonSize)/2;
+    MoveMainChild(g_new_project,left-sidebarInset-addButtonSize-S(3),addButtonTop,addButtonSize,addButtonSize);
     SetWindowPos(g_new_project,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
     const int footer_top=r.bottom-bottom;
     g_footer_status.Layout(r,bottom);
@@ -1071,7 +1072,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     switch(m){
     case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY);g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);RecreateMainFontsForDpi();
         g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
-        g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputTheme(g_search,g_theme);aicli::ui::SetStyledInputFocusBorderOnly(g_search);aicli::ui::SetStyledInputParentFrame(g_search,true,2);
+        g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE|SS_LEFT|SS_CENTERIMAGE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputTheme(g_search,g_theme);aicli::ui::SetStyledInputFocusBorderOnly(g_search);aicli::ui::SetStyledInputParentFrame(g_search,true,2);
         g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SendMessageW(g_list,LB_SETITEMHEIGHT,0,ScaleUi(kProjectListItemHeight));g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
         auto detailStatic=[&](const wchar_t* text){return CreateWindowW(L"STATIC",text,WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);};
         g_detail_title=detailStatic(L"选择一个项目");
@@ -1361,7 +1362,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);
         if(!g_font_git)RecreateMainFontsForDpi();
         aicli::ui::PaintMainWindow(
-            target_dc,r,ps.rcPaint,h,g_search,g_app_icon_large,g_font_medium,g_font_small,g_font_git,
+            target_dc,r,ps.rcPaint,h,g_search,g_sidebar_title,g_list,g_app_icon_large,g_font_medium,g_font_small,g_font_git,
             metrics,g_theme,g_window_chrome,g_footer_status);
         if(!IsRectEmpty(&g_prestart_panel)){
             const COLORREF surface=g_light_theme?RGB(239,243,248):RGB(18,21,27);

@@ -14,6 +14,8 @@ void PaintMainWindow(HDC target_dc,
                      const RECT& dirty,
                      HWND window,
                      HWND search,
+                     HWND sidebar_title,
+                     HWND project_list,
                      HICON app_icon,
                      HFONT medium_font,
                      HFONT small_font,
@@ -63,9 +65,24 @@ void PaintMainWindow(HDC target_dc,
     LineTo(dc, client.right, client.bottom - metrics.footer_height);
     // Separate the sidebar heading/action row from the project items without
     // adding a border around the list itself.
-    const int sidebar_divider_y = metrics.title_bar_height + metrics.Scale(80);
-    MoveToEx(dc, metrics.Scale(6), sidebar_divider_y, nullptr);
-    LineTo(dc, metrics.sidebar_width - metrics.Scale(6), sidebar_divider_y);
+    int sidebar_divider_y = metrics.title_bar_height + metrics.Scale(88);
+    RECT title_rect{};
+    RECT list_rect{};
+    if (sidebar_title && project_list &&
+        GetWindowRect(sidebar_title, &title_rect) &&
+        GetWindowRect(project_list, &list_rect)) {
+        MapWindowPoints(HWND_DESKTOP, window,
+                        reinterpret_cast<POINT*>(&title_rect), 2);
+        MapWindowPoints(HWND_DESKTOP, window,
+                        reinterpret_cast<POINT*>(&list_rect), 2);
+        if (list_rect.top > title_rect.bottom) {
+            sidebar_divider_y =
+                title_rect.bottom + (list_rect.top - title_rect.bottom) / 2;
+        }
+    }
+    sidebar_divider_y += metrics.Scale(2);
+    MoveToEx(dc, metrics.Scale(2), sidebar_divider_y, nullptr);
+    LineTo(dc, metrics.sidebar_width - metrics.Scale(2), sidebar_divider_y);
     SelectObject(dc, previous_pen);
     DeleteObject(separator);
 
