@@ -542,6 +542,8 @@ public:
                 session->control.UpdateControlSettings(
                     session->control_settings, session->unfocused_settings);
                 session->control.UpdateLayout();
+                if (session->native_scrollbar)
+                    ApplyNativeScrollbarPalette(*session, light);
             }
             if (grid_) grid_.UpdateLayout();
             // Qt can complete the host layout after UpdateControlSettings.
@@ -936,6 +938,10 @@ private:
         winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection connection{nullptr};
         winrt::com_ptr<aicli::terminal::ConPtyConnectionBridge> conpty_connection;
         winrt::Windows::UI::Xaml::Controls::Primitives::ScrollBar native_scrollbar{nullptr};
+        winrt::Windows::UI::Xaml::Media::SolidColorBrush scrollbar_idle_brush{nullptr};
+        winrt::Windows::UI::Xaml::Media::SolidColorBrush scrollbar_hover_brush{nullptr};
+        bool scrollbar_palette_initialized{};
+        bool scrollbar_palette_light{};
         bool scrollbar_visual_initialized{};
         bool scrollbar_expanded{};
         bool scrollbar_loaded_handler_attached{};
@@ -1070,6 +1076,72 @@ private:
         }
     }
 
+    static void ApplyNativeScrollbarPalette(
+        TerminalSession& session,
+        bool light) noexcept {
+        const auto scrollbar = session.native_scrollbar;
+        if (!scrollbar) return;
+        try {
+#if defined(AICLI_QT_UI_BUILD)
+            const auto idle_color = light
+                ? winrt::Windows::UI::Color{0xff, 0xf0, 0xf1, 0xf3}
+                : winrt::Windows::UI::Color{0xff, 0x04, 0x04, 0x10};
+            scrollbar.Background(
+                winrt::Windows::UI::Xaml::Media::SolidColorBrush(idle_color));
+#else
+            const auto idle_color = light
+                ? winrt::Windows::UI::Color{0xff, 0xf7, 0xf8, 0xfa}
+                : winrt::Windows::UI::Color{0xff, 0x0c, 0x0c, 0x0c};
+            const auto hover_color = light
+                ? winrt::Windows::UI::Color{0xff, 0xf0, 0xf1, 0xf3}
+                : winrt::Windows::UI::Color{0xff, 0x12, 0x15, 0x1b};
+
+            // Keep the same brush objects for the lifetime of the scrollbar.
+            // WinUI visual-state setters cache ThemeResource objects, so
+            // replacing a brush on every theme switch can leave Expanded on
+            // the previous theme. Mutating Color updates both the current and
+            // future states without touching TermControl's root theme.
+            if (!session.scrollbar_idle_brush) {
+                session.scrollbar_idle_brush =
+                    winrt::Windows::UI::Xaml::Media::SolidColorBrush(idle_color);
+            } else {
+                session.scrollbar_idle_brush.Color(idle_color);
+            }
+            if (!session.scrollbar_hover_brush) {
+                session.scrollbar_hover_brush =
+                    winrt::Windows::UI::Xaml::Media::SolidColorBrush(hover_color);
+            } else {
+                session.scrollbar_hover_brush.Color(hover_color);
+            }
+            scrollbar.Background(session.scrollbar_idle_brush);
+
+            if (!session.scrollbar_palette_initialized) {
+                auto resources = scrollbar.Resources();
+                for (const wchar_t* key : {
+                         L"ScrollBarBackground",
+                         L"ScrollBarBackgroundDisabled",
+                         L"ScrollBarTrackFill",
+                         L"ScrollBarTrackFillDisabled",
+                         L"ScrollBarTrackStroke",
+                         L"ScrollBarTrackStrokeDisabled"}) {
+                    resources.Insert(
+                        winrt::box_value(key), session.scrollbar_idle_brush);
+                }
+                for (const wchar_t* key : {
+                         L"ScrollBarBackgroundPointerOver",
+                         L"ScrollBarTrackFillPointerOver",
+                         L"ScrollBarTrackStrokePointerOver"}) {
+                    resources.Insert(
+                        winrt::box_value(key), session.scrollbar_hover_brush);
+                }
+            }
+#endif
+            session.scrollbar_palette_initialized = true;
+            session.scrollbar_palette_light = light;
+        } catch (...) {
+        }
+    }
+
     void EnsureNativeScrollbar(TerminalSession* session = nullptr) {
         if (!session) session = ActiveSession();
         if (!session || !session->control) return;
@@ -1083,11 +1155,10 @@ private:
             }
             const auto scrollbar = session->native_scrollbar;
             if (scrollbar) {
-                const auto track_color = light_theme_
-                    ? winrt::Windows::UI::Color{0xff, 0xf0, 0xf1, 0xf3}
-                    : winrt::Windows::UI::Color{0xff, 0x04, 0x04, 0x10};
-                scrollbar.Background(
-                    winrt::Windows::UI::Xaml::Media::SolidColorBrush(track_color));
+                if (!session->scrollbar_palette_initialized ||
+                    session->scrollbar_palette_light != light_theme_) {
+                    ApplyNativeScrollbarPalette(*session, light_theme_);
+                }
                 // Keep Windows Terminal's own visual-state manager intact:
                 // a thin indicator while idle and the wider thumb/track on
                 // pointer hover, exactly like the standalone terminal.
