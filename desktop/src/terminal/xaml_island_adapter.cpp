@@ -940,6 +940,7 @@ private:
         winrt::Windows::UI::Xaml::Controls::Primitives::ScrollBar native_scrollbar{nullptr};
         winrt::Windows::UI::Xaml::Media::SolidColorBrush scrollbar_idle_brush{nullptr};
         winrt::Windows::UI::Xaml::Media::SolidColorBrush scrollbar_hover_brush{nullptr};
+        winrt::Windows::UI::Xaml::Media::SolidColorBrush scrollbar_thumb_brush{nullptr};
         bool scrollbar_palette_initialized{};
         bool scrollbar_palette_light{};
         bool scrollbar_visual_initialized{};
@@ -1095,6 +1096,10 @@ private:
             const auto hover_color = light
                 ? winrt::Windows::UI::Color{0xff, 0xf0, 0xf1, 0xf3}
                 : winrt::Windows::UI::Color{0xff, 0x12, 0x15, 0x1b};
+            const auto thumb_color = light
+                // Preserve WinUI/Windows Terminal's standard light thumb.
+                ? winrt::Windows::UI::Color{0x72, 0x00, 0x00, 0x00}
+                : winrt::Windows::UI::Color{0xff, 0x9f, 0x9f, 0x9f};
 
             // Keep the same brush objects for the lifetime of the scrollbar.
             // WinUI visual-state setters cache ThemeResource objects, so
@@ -1112,6 +1117,12 @@ private:
                     winrt::Windows::UI::Xaml::Media::SolidColorBrush(hover_color);
             } else {
                 session.scrollbar_hover_brush.Color(hover_color);
+            }
+            if (!session.scrollbar_thumb_brush) {
+                session.scrollbar_thumb_brush =
+                    winrt::Windows::UI::Xaml::Media::SolidColorBrush(thumb_color);
+            } else {
+                session.scrollbar_thumb_brush.Color(thumb_color);
             }
             scrollbar.Background(session.scrollbar_idle_brush);
 
@@ -1133,6 +1144,15 @@ private:
                          L"ScrollBarTrackStrokePointerOver"}) {
                     resources.Insert(
                         winrt::box_value(key), session.scrollbar_hover_brush);
+                }
+                for (const wchar_t* key : {
+                         L"ScrollBarThumbFill",
+                         L"ScrollBarThumbFillPointerOver",
+                         L"ScrollBarThumbFillPressed",
+                         L"ScrollBarThumbBackground",
+                         L"ScrollBarPanningThumbBackground"}) {
+                    resources.Insert(
+                        winrt::box_value(key), session.scrollbar_thumb_brush);
                 }
             }
 #endif
