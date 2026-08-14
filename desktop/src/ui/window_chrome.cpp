@@ -67,9 +67,12 @@ void WindowChrome::ApplyTheme(HWND window,
     BOOL dark = light ? FALSE : TRUE;
     DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
                           &dark, sizeof(dark));
-    const COLORREF compositor_border = light
-        ? CompositorBorder(window, border_color)
-        : kDwmColorNone;
+    // The antialiased pixels at a rounded window corner are owned by DWM and
+    // sit outside our client bitmap. Suppressing the compositor border leaves
+    // one of those pixels transparent, which can appear as a pure-white speck
+    // above the close button in the dark theme. Give DWM the exact frame color
+    // for floating windows; maximized windows still use DWMWA_COLOR_NONE.
+    const COLORREF compositor_border = CompositorBorder(window, border_color);
     DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
                           &compositor_border, sizeof(compositor_border));
     // Although the title bar is client-rendered, DWM still owns the thin
@@ -108,9 +111,8 @@ void WindowChrome::UpdateSizeState(HWND window,
                                    bool light,
                                    COLORREF border_color) const {
     if (!window) return;
-    const COLORREF compositor_border = light
-        ? CompositorBorder(window, border_color)
-        : kDwmColorNone;
+    (void)light;
+    const COLORREF compositor_border = CompositorBorder(window, border_color);
     DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR,
                           &compositor_border, sizeof(compositor_border));
     const MARGINS compositor_rim = CompositorMargins(window);
