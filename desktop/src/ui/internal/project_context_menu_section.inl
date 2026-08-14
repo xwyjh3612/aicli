@@ -2,7 +2,7 @@
 // inside its private namespace until the main-window controller is fully
 // object-owned.
 
-struct ContextMenuEntry{const wchar_t* icon;const wchar_t* label;bool submenu;};
+struct ContextMenuEntry{const wchar_t* icon;const wchar_t* label;bool submenu;bool compact_icon{};bool current{};};
 void DrawContextMenuItem(const DRAWITEMSTRUCT* item){
     const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);
     if(!entry)return;
@@ -12,8 +12,9 @@ void DrawContextMenuItem(const DRAWITEMSTRUCT* item){
     const bool disabled=(item->itemState&ODS_DISABLED)!=0;
     HBRUSH fill=CreateSolidBrush(selected?(g_light_theme?RGB(226,237,251):RGB(55,62,73)):(g_light_theme?RGB(250,251,253):RGB(34,36,40)));FillRect(item->hDC,&r,fill);DeleteObject(fill);
     SetBkMode(item->hDC,TRANSPARENT);SetTextColor(item->hDC,disabled?(g_light_theme?RGB(153,160,170):RGB(111,116,126)):(g_light_theme?RGB(38,44,54):RGB(222,226,233)));
-    SelectObject(item->hDC,g_icon_font?g_icon_font:g_font);RECT icon{r.left+ScaleUi(13),r.top+ScaleUi(1),r.left+ScaleUi(39),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,entry->icon,-1,&icon,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    SelectObject(item->hDC,entry->compact_icon?g_font_header_icon:(g_icon_font?g_icon_font:g_font));RECT icon{r.left+ScaleUi(13),r.top+ScaleUi(1),r.left+ScaleUi(39),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,entry->icon,-1,&icon,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
     SelectObject(item->hDC,g_font);RECT text{r.left+ScaleUi(49),r.top+ScaleUi(1),r.right-ScaleUi(34),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,entry->label,-1,&text,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+    if(entry->current){SetTextColor(item->hDC,accent);SelectObject(item->hDC,g_font_header_icon);RECT current{r.right-ScaleUi(29),r.top+ScaleUi(1),r.right-ScaleUi(9),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,L"\xE73E",-1,&current,DT_CENTER|DT_VCENTER|DT_SINGLELINE);}
     if(entry->submenu){SelectObject(item->hDC,g_font_small);RECT arrow{r.right-ScaleUi(28),r.top+ScaleUi(1),r.right-ScaleUi(10),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,L">",-1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);}
 }
 void ConfigureContextMenu(HMENU menu,HBRUSH background){MENUINFO info{sizeof(info)};info.fMask=MIM_BACKGROUND;info.hbrBack=background;SetMenuInfo(menu,&info);}
@@ -31,11 +32,11 @@ void ShowGroupDropdown(){
     labels.push_back(std::wstring(kStartedProjectsName)+L" ("+std::to_wstring(started_count)+L")");
     for(const auto& group:g_groups){const auto count=std::count_if(g_projects.begin(),g_projects.end(),[&](const Project& project){const std::wstring value=project.group.empty()?L"默认分组":project.group;return value==group.name;});labels.push_back(group.name+L" ("+std::to_wstring(count)+L")");}
     std::vector<ContextMenuEntry> entries;entries.reserve(labels.size());
-    entries.push_back({g_group_name==kAllGroupsName?L"\xE73E":L"\xE8B7",labels[0].c_str(),false});
+    entries.push_back({L"\xE71D",labels[0].c_str(),false,true,g_group_name==kAllGroupsName});
     AppendContextEntry(menu,MF_ENABLED,ID_GROUP_SELECT_BASE,entries.back());
-    entries.push_back({g_group_name==kStartedProjectsName?L"\xE73E":L"\xE8B7",labels[1].c_str(),false});
+    entries.push_back({L"\xE768",labels[1].c_str(),false,true,g_group_name==kStartedProjectsName});
     AppendContextEntry(menu,MF_ENABLED,ID_GROUP_SELECT_BASE+1,entries.back());
-    for(size_t i=0;i<g_groups.size();++i){entries.push_back({g_groups[i].name==g_group_name?L"\xE73E":L"\xE8B7",labels[i+2].c_str(),false});AppendContextEntry(menu,MF_ENABLED,ID_GROUP_SELECT_BASE+2+static_cast<UINT>(i),entries.back());}
+    for(size_t i=0;i<g_groups.size();++i){entries.push_back({L"\xE8B7",labels[i+2].c_str(),false,true,g_groups[i].name==g_group_name});AppendContextEntry(menu,MF_ENABLED,ID_GROUP_SELECT_BASE+2+static_cast<UINT>(i),entries.back());}
     RECT button{};GetWindowRect(g_group,&button);const UINT command=TrackPopupMenuEx(menu,TPM_RETURNCMD|TPM_LEFTALIGN|TPM_TOPALIGN|TPM_NONOTIFY,button.left,button.bottom,g_hwnd,nullptr);DestroyMenu(menu);DeleteObject(brush);
     if(command==ID_GROUP_SELECT_BASE){g_group_name=kAllGroupsName;g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();RefreshProjectDetails();Layout();}
     else if(command==ID_GROUP_SELECT_BASE+1){g_group_name=kStartedProjectsName;g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();RefreshProjectDetails();Layout();}

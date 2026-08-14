@@ -169,7 +169,7 @@ HWND g_detail_title{}, g_detail_subtitle{}, g_detail_folder_label{}, g_detail_fo
      g_detail_tooltip{};
 HICON g_app_icon_large{},g_app_icon_small{};
 WNDPROC g_button_proc{}; HWND g_hover_button{};
-HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_git{}, g_font_sidebar_title{}, g_font_project_list{}, g_font_modal_title{}, g_font_modal_subtitle{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
+HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_header{}, g_font_header_icon{}, g_font_search{}, g_font_git{}, g_font_sidebar_title{}, g_font_project_list{}, g_font_modal_title{}, g_font_modal_subtitle{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
 HFONT g_font_project_heading{},g_font_monospace{};
 aicli::DataStore g_store;
 aicli::agent::RemoteAgent g_remote_agent;
@@ -195,7 +195,7 @@ COLORREF& fg = g_theme.text;
 COLORREF& muted = g_theme.muted;
 COLORREF& accent = g_theme.accent;
 COLORREF& accent2 = g_theme.accent_strong;
-HBRUSH g_edit_brush{},g_focus_brush{},g_list_brush{},g_panel_brush{},g_bg_brush{},g_detail_surface_brush{};bool g_light_theme{};bool g_theme_workspace_dirty{};
+HBRUSH g_edit_brush{},g_focus_brush{},g_search_brush{},g_list_brush{},g_panel_brush{},g_bg_brush{},g_detail_surface_brush{};bool g_light_theme{};bool g_theme_workspace_dirty{};
 bool g_settings_open_posted{};
 bool g_close_confirmation_open{};
 HWND g_project_dialog{}, g_d_name{}, g_d_note{}, g_d_type{}, g_d_group{}, g_d_folder{}, g_d_folder_browse{}, g_d_command{}; bool g_project_dialog_ok{}; bool g_project_dialog_edit{}; Project g_project_draft{};
@@ -236,6 +236,19 @@ COLORREF SidebarBackground() noexcept {
     return g_light_theme ? panel : RGB(10, 17, 31);
 }
 
+COLORREF SearchInputBackground() noexcept {
+    return g_light_theme ? g_theme.field : RGB(24, 28, 63);
+}
+
+aicli::ui::ThemePalette SearchInputPalette() {
+    auto palette = g_theme;
+    if (!g_light_theme) {
+        palette.field = SearchInputBackground();
+        palette.field_focus = SearchInputBackground();
+    }
+    return palette;
+}
+
 float ScaleUiF(float value) noexcept {
     return value * static_cast<float>(std::max(1, g_layout_metrics.dpi)) / 96.0f;
 }
@@ -255,7 +268,7 @@ bool ApplyStoredTheme(){
     const bool next_light=stored==L"light";
     const bool palette_changed=g_theme_manager.light()!=next_light||
                                 !g_edit_brush||!g_focus_brush||
-                                !g_list_brush||!g_panel_brush||!g_bg_brush||
+                                !g_search_brush||!g_list_brush||!g_panel_brush||!g_bg_brush||
                                 !g_detail_surface_brush;
     if(!palette_changed){
         g_light_theme=next_light;
@@ -269,18 +282,20 @@ bool ApplyStoredTheme(){
     }
     if(g_edit_brush)DeleteObject(g_edit_brush);
     if(g_focus_brush)DeleteObject(g_focus_brush);
+    if(g_search_brush)DeleteObject(g_search_brush);
     if(g_list_brush)DeleteObject(g_list_brush);
     if(g_panel_brush)DeleteObject(g_panel_brush);
     if(g_bg_brush)DeleteObject(g_bg_brush);
     if(g_detail_surface_brush)DeleteObject(g_detail_surface_brush);
     g_edit_brush=CreateSolidBrush(g_theme.field);
     g_focus_brush=CreateSolidBrush(g_theme.field_focus);
+    g_search_brush=CreateSolidBrush(SearchInputBackground());
     g_list_brush=CreateSolidBrush(SidebarBackground());
     g_panel_brush=CreateSolidBrush(g_theme.titlebar);
     g_bg_brush=CreateSolidBrush(bg);
     g_detail_surface_brush=CreateSolidBrush(
         g_light_theme?RGB(239,243,248):RGB(18,21,27));
-    if(g_search) aicli::ui::SetStyledInputTheme(g_search,g_theme);
+    if(g_search) aicli::ui::SetStyledInputTheme(g_search,SearchInputPalette());
     return true;
 }
 COLORREF TitleBarBackground(){return g_window_chrome.Background(g_theme);}
@@ -339,8 +354,11 @@ HFONT CreateMainFont(int logical_height, int weight, const wchar_t* face,
 }
 
 void ApplyMainFontsToControls() {
-    for (HWND control : {g_group, g_group_add, g_bind, g_devices,
-                         g_new_project, g_settings, g_detail_folder_label,
+    for (HWND control : {g_group, g_group_add, g_bind, g_devices, g_settings}) {
+        if (control) SendMessageW(control, WM_SETFONT,
+                                  reinterpret_cast<WPARAM>(g_font_header), TRUE);
+    }
+    for (HWND control : {g_new_project, g_detail_folder_label,
                          g_detail_command_label, g_detail_note_label,
                          g_detail_note, g_detail_state, g_start_project}) {
         if (control) SendMessageW(control, WM_SETFONT,
@@ -355,7 +373,7 @@ void ApplyMainFontsToControls() {
                      reinterpret_cast<WPARAM>(g_font_sidebar_title), TRUE);
     if (g_search)
         SendMessageW(g_search, WM_SETFONT,
-                     reinterpret_cast<WPARAM>(g_font), TRUE);
+                     reinterpret_cast<WPARAM>(g_font_search), TRUE);
     if (g_list) {
         SendMessageW(g_list, WM_SETFONT,
                      reinterpret_cast<WPARAM>(g_font_project_list), TRUE);
@@ -385,8 +403,8 @@ void ApplyMainFontsToControls() {
 }
 
 void RecreateMainFontsForDpi() {
-    const std::array<HFONT, 11> previous{
-        g_font, g_font_medium, g_font_small, g_font_git,
+    const std::array<HFONT, 14> previous{
+        g_font, g_font_medium, g_font_small, g_font_header, g_font_header_icon, g_font_search, g_font_git,
         g_font_sidebar_title, g_font_project_list, g_font_modal_title,
         g_font_modal_subtitle, g_font_project_heading, g_font_monospace,
         g_icon_font};
@@ -394,6 +412,9 @@ void RecreateMainFontsForDpi() {
     g_font = CreateMainFont(15, FW_NORMAL, L"Segoe UI");
     g_font_medium = CreateMainFont(17, FW_SEMIBOLD, L"Segoe UI");
     g_font_small = CreateMainFont(13, FW_NORMAL, L"Segoe UI");
+    g_font_header = CreateMainFont(13, FW_NORMAL, L"Microsoft YaHei UI");
+    g_font_header_icon = CreateMainFont(11, FW_NORMAL, L"Segoe MDL2 Assets");
+    g_font_search = CreateMainFont(14, FW_NORMAL, L"Microsoft YaHei UI");
     g_font_git = CreateMainFont(12, FW_NORMAL, L"Segoe UI");
     g_font_sidebar_title = CreateMainFont(15, FW_NORMAL, L"Segoe UI");
     g_font_project_list = CreateMainFont(14, FW_NORMAL, L"Segoe UI");
@@ -680,8 +701,10 @@ void Layout(){
     const int bottom=g_layout_metrics.footer_height;
     if(r.right<=left+ScaleUi(80) || r.bottom<=top+bottom+ScaleUi(120))return;
     const auto S=[](int value){return ScaleUi(value);};
-    MoveMainChild(g_group,S(168),S(4),S(154),S(32));
-    MoveMainChild(g_group_add,S(326),S(4),S(34),S(32));
+    const int headerButtonTop=S(5);
+    const int headerButtonHeight=S(30);
+    MoveMainChild(g_group,S(168),headerButtonTop,S(154),headerButtonHeight);
+    MoveMainChild(g_group_add,S(328),headerButtonTop,S(30),headerButtonHeight);
     // Anchor the complete phone/settings cluster from the native caption
     // buttons and lay each control out sequentially. Clamping every button to
     // its own minimum X made the first two overlap on narrower/high-DPI
@@ -696,9 +719,9 @@ void Layout(){
     const int devicesX=settingsX-headerGap-devicesWidth;
     const int bindX=devicesX-headerGap-bindWidth;
     const bool headerControlsMoved =
-        MoveMainChild(g_bind,bindX,S(4),bindWidth,S(32)) |
-        MoveMainChild(g_devices,devicesX,S(4),devicesWidth,S(32)) |
-        MoveMainChild(g_settings,settingsX,S(4),settingsWidth,S(32));
+        MoveMainChild(g_bind,bindX,headerButtonTop,bindWidth,headerButtonHeight) |
+        MoveMainChild(g_devices,devicesX,headerButtonTop,devicesWidth,headerButtonHeight) |
+        MoveMainChild(g_settings,settingsX,headerButtonTop,settingsWidth,headerButtonHeight);
     if(headerControlsMoved){
         // During interactive horizontal resizing USER32 otherwise preserves
         // pixels from the controls' old positions.  The parent title bar is
@@ -715,7 +738,7 @@ void Layout(){
     const int searchHeight=S(38);
     const int titleHeight=S(30);
     const int titleBottomGap=S(16);
-    const int addButtonSize=S(26);
+    const int addButtonSize=S(28);
     const int searchTop=top+S(8);
     const int searchBottom=searchTop+searchHeight;
     RECT search_rect{sidebarInset+S(4),searchTop+S(2),
@@ -1082,8 +1105,8 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     if(g_taskbar_button_created_message&&m==g_taskbar_button_created_message){g_taskbar_working_indicator.OnTaskbarButtonCreated();return 0;}
     switch(m){
     case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY);g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);RecreateMainFontsForDpi();
-        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,326,8,34,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)g_font,TRUE);EnableButtonHover(b);}
-        g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE|SS_LEFT|SS_CENTERIMAGE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font,L"搜索会话");aicli::ui::SetStyledInputTheme(g_search,g_theme);aicli::ui::SetStyledInputFocusBorderOnly(g_search);aicli::ui::SetStyledInputParentFrame(g_search,true,2);
+        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,328,8,30,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"\xE710",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)(b==g_new_project?g_font:g_font_header),TRUE);EnableButtonHover(b);}
+        g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE|SS_LEFT|SS_CENTERIMAGE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font_search,L"搜索会话");aicli::ui::SetStyledInputTheme(g_search,SearchInputPalette());aicli::ui::SetStyledInputFocusBorderOnly(g_search);aicli::ui::SetStyledInputParentFrame(g_search,true,2);
         g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SendMessageW(g_list,LB_SETITEMHEIGHT,0,ScaleUi(kProjectListItemHeight));g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
         auto detailStatic=[&](const wchar_t* text){return CreateWindowW(L"STATIC",text,WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);};
         g_detail_title=detailStatic(L"选择一个项目");
@@ -1170,6 +1193,11 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_CTLCOLOREDIT: {
         HDC dc=(HDC)w;
         HWND control=(HWND)l;
+        if(control==g_search&&!g_light_theme){
+            SetTextColor(dc,fg);
+            SetBkColor(dc,SearchInputBackground());
+            return (LRESULT)(g_search_brush?g_search_brush:GetStockObject(BLACK_BRUSH));
+        }
         const bool focused=GetFocus()==control;
         const COLORREF field_color=focused?g_theme.field_focus:g_theme.field;
         SetTextColor(dc,fg);
@@ -1384,7 +1412,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         EndPaint(h,&ps);
         return 0;
     }
-    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_header)DeleteObject(g_font_header);if(g_font_header_icon)DeleteObject(g_font_header_icon);if(g_font_search)DeleteObject(g_font_search);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_search_brush){DeleteObject(g_search_brush);g_search_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
     if(m==WM_NCDESTROY&&g_font_git){
         DeleteObject(g_font_git);
         g_font_git=nullptr;

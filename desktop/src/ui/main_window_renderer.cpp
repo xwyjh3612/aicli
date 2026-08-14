@@ -149,7 +149,7 @@ void PaintMainWindow(HDC target_dc,
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, chrome.Text(theme));
     SelectObject(dc, medium_font);
-    TextOutW(dc, metrics.Scale(48), metrics.Scale(10), L"AI CLI", 6);
+    TextOutW(dc, metrics.Scale(48), metrics.Scale(10), L"AiCli", 5);
 
     ThemePalette footer_theme = theme;
     footer_theme.panel = theme.titlebar;

@@ -145,6 +145,10 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
     wchar_t text[256]{};GetWindowTextW(item->hwndItem,text,256);SetBkMode(item->hDC,TRANSPARENT);
     const bool title_button=parentWindow==g_hwnd&&
         (item->CtlID==ID_MINIMIZE||item->CtlID==ID_MAXIMIZE||item->CtlID==ID_CLOSE);
+    const bool header_action_button=parentWindow==g_hwnd&&onMainTitleBar&&
+        (item->CtlID==ID_GROUP_DEFAULT||item->CtlID==ID_GROUP_ADD||
+         item->CtlID==ID_BIND_PHONE||item->CtlID==ID_DEVICES||
+         item->CtlID==ID_SETTINGS);
     if(title_button){
         COLORREF fill=TitleBarBackground();
         if(hover){
@@ -185,7 +189,7 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         else{fill=disabled?g_theme.surface:(down?g_theme.pressed:(hover?g_theme.hover:g_theme.field));stroke=fill;}
     }else{
         if(item->CtlID==ID_D_CANCEL||item->CtlID==ID_EDIT_PROJECT||item->CtlID==ID_OPEN_PROJECT_FOLDER)fill=elevated;
-        if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)fill=accent2;
+        if(item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)fill=accent2;
         if(disabled)fill=g_light_theme?RGB(235,238,243):RGB(33,37,45);
         else if(down){
             // Header actions already provide a hover cue.  A bright blue
@@ -197,10 +201,72 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
                 :(g_light_theme?RGB(205,220,241):RGB(37,91,174));
         }else if(hover)fill=g_light_theme?RGB(229,235,243):RGB(34,40,51);
         if(item->CtlID==ID_CLOSE)fill=down?RGB(157,44,55):(hover?RGB(120,38,47):panel);if(item->CtlID==ID_MINIMIZE)fill=hover?RGB(37,42,51):panel;
-        stroke=disabled?(g_light_theme?RGB(218,223,231):RGB(43,48,57)):(hover?(g_light_theme?RGB(164,181,205):RGB(78,104,142)):border);if(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)stroke=hover?RGB(117,177,255):RGB(64,128,225);
+        stroke=disabled?(g_light_theme?RGB(218,223,231):RGB(43,48,57)):(hover?(g_light_theme?RGB(164,181,205):RGB(78,104,142)):border);if(item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)stroke=hover?RGB(117,177,255):RGB(64,128,225);
+        if(item->CtlID==ID_NEW_PROJECT){
+            fill=disabled?SidebarBackground():(down?g_theme.pressed:(hover?g_theme.hover:SidebarBackground()));
+            stroke=disabled?g_theme.border:(hover?(g_light_theme?RGB(139,151,168):RGB(91,106,128)):g_theme.border);
+        }
+        if(header_action_button&&!g_light_theme){
+            fill=disabled?RGB(12,15,30):(down?RGB(29,35,61):(hover?RGB(22,28,51):RGB(14,18,39)));
+            stroke=disabled?RGB(35,41,62):(hover?RGB(67,79,108):RGB(42,49,75));
+        }
+    }
+    if(item->CtlID==ID_NEW_PROJECT){
+        RECT shell{r.left,r.top,r.right-1,r.bottom-1};
+        DrawSmoothRoundedRect(item->hDC,shell,6.0f,fill,stroke,1.0f);
+        Gdiplus::Graphics graphics(item->hDC);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+        const COLORREF glyphColor=disabled?muted:(hover?fg:g_theme.muted);
+        Gdiplus::Pen glyph(SmoothColor(glyphColor),ScaleUiF(1.35f));
+        glyph.SetStartCap(Gdiplus::LineCapRound);
+        glyph.SetEndCap(Gdiplus::LineCapRound);
+        const float cx=(r.left+r.right)/2.0f;
+        const float cy=(r.top+r.bottom)/2.0f;
+        const float half=ScaleUiF(3.75f);
+        graphics.DrawLine(&glyph,cx-half,cy,cx+half,cy);
+        graphics.DrawLine(&glyph,cx,cy-half,cx,cy+half);
+        return;
     }
     HBRUSH brush=CreateSolidBrush(fill);HPEN pen=CreatePen(PS_SOLID,1,stroke);auto oldBrush=SelectObject(item->hDC,brush);auto oldPen=SelectObject(item->hDC,pen);RoundRect(item->hDC,r.left+1,r.top+1,r.right-1,r.bottom-1,9,9);SelectObject(item->hDC,oldBrush);SelectObject(item->hDC,oldPen);DeleteObject(brush);DeleteObject(pen);
-    const bool primary_button=item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT;COLORREF text_color=disabled?muted:((primary_button||(!g_light_theme&&hover))?RGB(255,255,255):fg);HFONT text_font=(item->CtlID==ID_EDIT_PROJECT||item->CtlID==ID_OPEN_PROJECT_FOLDER)?g_icon_font:g_font;UINT text_format=DT_CENTER|DT_VCENTER|DT_SINGLELINE;if(onMainTitleBar&&!g_window_chrome.active()&&!hover&&!down){text_color=TitleBarText();}SetTextColor(item->hDC,text_color);SelectObject(item->hDC,text_font);DrawTextW(item->hDC,text,-1,&r,text_format);
+    const bool primary_button=item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT;COLORREF text_color=disabled?muted:((primary_button||(!g_light_theme&&hover))?RGB(255,255,255):fg);HFONT text_font=(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_EDIT_PROJECT||item->CtlID==ID_OPEN_PROJECT_FOLDER)?g_icon_font:(onMainTitleBar?g_font_header:g_font);UINT text_format=DT_CENTER|DT_VCENTER|DT_SINGLELINE;if(onMainTitleBar&&!g_window_chrome.active()&&!hover&&!down){text_color=TitleBarText();}SetTextColor(item->hDC,text_color);
+    if(header_action_button){
+        const wchar_t* icon=L"\xE710";
+        if(item->CtlID==ID_GROUP_DEFAULT){
+            icon=g_group_name==kAllGroupsName?L"\xE71D":
+                 (g_group_name==kStartedProjectsName?L"\xE768":L"\xE8B7");
+        }else if(item->CtlID==ID_BIND_PHONE){icon=L"\xE717";}
+        else if(item->CtlID==ID_DEVICES){icon=L"\xE772";}
+        else if(item->CtlID==ID_SETTINGS){icon=L"\xE713";}
+
+        if(item->CtlID==ID_GROUP_ADD){
+            SelectObject(item->hDC,g_font_header_icon);
+            DrawTextW(item->hDC,icon,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+            return;
+        }
+
+        SIZE iconSize{},textSize{};
+        auto previousFont=SelectObject(item->hDC,g_font_header_icon);
+        GetTextExtentPoint32W(item->hDC,icon,1,&iconSize);
+        SelectObject(item->hDC,g_font_header);
+        GetTextExtentPoint32W(item->hDC,text,static_cast<int>(wcslen(text)),&textSize);
+        const int gap=ScaleUi(5);
+        const int padding=ScaleUi(8);
+        const int contentWidth=iconSize.cx+gap+textSize.cx;
+        const int availableWidth=std::max(1L,r.right-r.left-padding*2);
+        const int startX=r.left+padding+
+            std::max(0,(availableWidth-std::min(contentWidth,availableWidth))/2);
+        RECT iconRect{startX,r.top,startX+iconSize.cx,r.bottom};
+        SelectObject(item->hDC,g_font_header_icon);
+        DrawTextW(item->hDC,icon,-1,&iconRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        RECT textRect{iconRect.right+gap,r.top,r.right-padding,r.bottom};
+        SelectObject(item->hDC,g_font_header);
+        DrawTextW(item->hDC,text,-1,&textRect,
+                  DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        SelectObject(item->hDC,previousFont);
+        return;
+    }
+    SelectObject(item->hDC,text_font);DrawTextW(item->hDC,text,-1,&r,text_format);
 }
 void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     if(item->itemID==(UINT)-1)return;
