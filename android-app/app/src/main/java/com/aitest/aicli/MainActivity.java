@@ -67,7 +67,10 @@ public final class MainActivity extends AppCompatActivity {
     private static final String CONNECTION_PREFS = "connection";
     private static final String BASE_URL_KEY = "baseUrl";
     private static final String APP_PREFS = "app_settings";
+    private static final String CONVERSATION_CACHE_PREFS = "conversation_cache";
+    private static final String CONVERSATION_CACHE_PREFIX = "items.";
     private static final String ALL_GROUPS = "__all__";
+    private static final String RUNNING_GROUP = "__running__";
     private static final String LAST_CONVERSATION_PREFIX = "last_conversation.";
     private static final String LAST_IME_HEIGHT_KEY = "last_ime_height";
     private static final long[] POST_SEND_REPLAY_DELAYS_MS = {220L, 900L};
@@ -90,6 +93,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private DrawerLayout drawerLayout;
     private View mainHeader;
+    private View conversationDrawer;
     private View conversationContent;
     private View computerSelectorLayout;
     private MaterialAutoCompleteTextView computerSelector;
@@ -129,6 +133,11 @@ public final class MainActivity extends AppCompatActivity {
     private int headerBasePaddingRight;
     private int headerBasePaddingBottom;
     private int headerTopInsetPx = Integer.MIN_VALUE;
+    private int drawerBasePaddingLeft;
+    private int drawerBasePaddingTop;
+    private int drawerBasePaddingRight;
+    private int drawerBasePaddingBottom;
+    private int drawerTopInsetPx = Integer.MIN_VALUE;
     private int lastImeHeightPx;
     private ActivityResultLauncher<String> galleryLauncher;
     private ActivityResultLauncher<Uri> cameraLauncher;
@@ -170,6 +179,11 @@ public final class MainActivity extends AppCompatActivity {
         headerBasePaddingLeft = mainHeader.getPaddingLeft();
         headerBasePaddingRight = mainHeader.getPaddingRight();
         headerBasePaddingBottom = mainHeader.getPaddingBottom();
+        conversationDrawer = findViewById(R.id.conversationDrawer);
+        drawerBasePaddingLeft = conversationDrawer.getPaddingLeft();
+        drawerBasePaddingTop = conversationDrawer.getPaddingTop();
+        drawerBasePaddingRight = conversationDrawer.getPaddingRight();
+        drawerBasePaddingBottom = conversationDrawer.getPaddingBottom();
         conversationContent = findViewById(R.id.conversationContent);
         conversationBasePaddingBottom = conversationContent.getPaddingBottom();
         computerSelectorLayout = findViewById(R.id.computerSelectorLayout);
@@ -379,6 +393,7 @@ public final class MainActivity extends AppCompatActivity {
             hideConversation();
             return;
         }
+        if (allConversations.isEmpty()) restoreCachedConversations();
         loadConversations();
     }
 
@@ -394,6 +409,7 @@ public final class MainActivity extends AppCompatActivity {
                     if (client != requestClient || serverGeneration != requestGeneration) return;
                     allConversations.clear();
                     allConversations.addAll(conversations);
+                    cacheConversations(conversations);
                     refreshComputerSelector(connectionStore.active());
                     updateComputerTitle();
                     prepareLastConversationRestore(conversations);
@@ -407,12 +423,97 @@ public final class MainActivity extends AppCompatActivity {
             @Override public void onError(String message) {
                 runOnUiThread(() -> {
                     if (client != requestClient || serverGeneration != requestGeneration) return;
-                    setConnectionStatus(computerName + " · 连接失败");
-                    showEmptyState("暂时无法连接电脑", "请确认电脑端在线且已授权此手机；也可以在设置中重新扫码。");
+                    if (!allConversations.isEmpty()) {
+                        setConnectionStatus(computerName + " · 连接失败 · 显示上次项目列表");
+                    } else {
+                        setConnectionStatus(computerName + " · 连接失败");
+                        showEmptyState("暂时无法连接电脑", "请确认电脑端在线且已授权此手机；也可以在设置中重新扫码。");
+                    }
                     Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show();
                 });
             }
         });
+    }
+
+    private void restoreCachedConversations() {
+        List<AicliClient.Conversation> cached = readCachedConversations();
+        if (cached.isEmpty()) return;
+        allConversations.clear();
+        allConversations.addAll(cached);
+        prepareLastConversationRestore(cached);
+        rebuildGroupSelector(cached);
+        setConnectionStatus(activeComputerName() + " · 正在连接 · 显示上次项目列表");
+        renderSelectedGroup(false);
+    }
+
+    private void cacheConversations(List<AicliClient.Conversation> conversations) {
+        JsonArray items = new JsonArray();
+        for (AicliClient.Conversation conversation : conversations) {
+            JsonObject value = new JsonObject();
+            value.addProperty("id", conversation.id);
+            value.addProperty("name", conversation.name);
+            value.addProperty("provider", conversation.provider);
+            value.addProperty("type", conversation.type);
+            value.addProperty("group", conversation.group);
+            value.addProperty("folder", conversation.folder);
+            value.addProperty("status", conversation.status);
+            items.add(value);
+        }
+        getSharedPreferences(CONVERSATION_CACHE_PREFS, MODE_PRIVATE).edit()
+                .putString(conversationCacheKey(), items.toString()).apply();
+    }
+
+    private List<AicliClient.Conversation> readCachedConversations() {
+        List<AicliClient.Conversation> result = new ArrayList<>();
+        SharedPreferences preferences = getSharedPreferences(
+                CONVERSATION_CACHE_PREFS, MODE_PRIVATE);
+        String key = conversationCacheKey();
+        String raw = preferences.getString(key, "");
+        if (raw == null || raw.isEmpty()) return result;
+        try {
+            JsonElement parsed = JsonParser.parseString(raw);
+            if (!parsed.isJsonArray()) throw new IllegalStateException("cache is not an array");
+            for (JsonElement item : parsed.getAsJsonArray()) {
+                if (!item.isJsonObject()) continue;
+                JsonObject value = item.getAsJsonObject();
+                String id = stringValue(value, "id");
+                if (id.isEmpty()) continue;
+                result.add(new AicliClient.Conversation(id,
+                        stringValue(value, "name"),
+                        stringValue(value, "provider"),
+                        stringValue(value, "type"),
+                        stringValue(value, "group"),
+                        stringValue(value, "folder"),
+                        stringValue(value, "status")));
+            }
+        } catch (RuntimeException error) {
+            preferences.edit().remove(key).apply();
+            android.util.Log.w("AicliCache", "invalid conversation cache", error);
+            result.clear();
+        }
+        return result;
+    }
+
+    private String conversationCacheKey() {
+        ComputerConnectionStore.Computer active = connectionStore == null
+                ? null : connectionStore.active();
+        String computerId = active == null ? "" : active.computerId;
+        if (computerId == null || computerId.isEmpty()) {
+            SharedPreferences preferences = getSharedPreferences(
+                    CONNECTION_PREFS, MODE_PRIVATE);
+            computerId = preferences.getString("computerId", "");
+            if (computerId == null || computerId.isEmpty()) {
+                String address = preferences.getString(BASE_URL_KEY, "");
+                computerId = "legacy-" + Integer.toHexString(
+                        address == null ? 0 : address.hashCode());
+            }
+        }
+        return CONVERSATION_CACHE_PREFIX + computerId;
+    }
+
+    private static boolean isRunning(AicliClient.Conversation conversation) {
+        return conversation != null &&
+                "running".equalsIgnoreCase(conversation.status);
     }
 
     private void rebuildGroupSelector(List<AicliClient.Conversation> conversations) {
@@ -422,6 +523,7 @@ public final class MainActivity extends AppCompatActivity {
         }
         List<String> next = new ArrayList<>();
         next.add(ALL_GROUPS);
+        next.add(RUNNING_GROUP);
         next.addAll(unique);
         displayedGroups.clear();
         displayedGroups.addAll(next);
@@ -435,9 +537,13 @@ public final class MainActivity extends AppCompatActivity {
             int count = 0;
             for (AicliClient.Conversation conversation : conversations) {
                 String itemGroup = conversation.group.isEmpty() ? "默认分组" : conversation.group;
-                if (ALL_GROUPS.equals(group) || group.equals(itemGroup)) count++;
+                if (ALL_GROUPS.equals(group) ||
+                        (RUNNING_GROUP.equals(group) && isRunning(conversation)) ||
+                        group.equals(itemGroup)) count++;
             }
-            labels.add((ALL_GROUPS.equals(group) ? "全部" : group) + " (" + count + ")");
+            String label = ALL_GROUPS.equals(group) ? "全部"
+                    : RUNNING_GROUP.equals(group) ? "正在运行" : group;
+            labels.add(label + " (" + count + ")");
             if (group.equals(selectedGroup)) selectedIndex = index;
         }
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this, R.layout.item_group_dropdown, labels);
@@ -451,12 +557,14 @@ public final class MainActivity extends AppCompatActivity {
         List<AicliClient.Conversation> filtered = new ArrayList<>();
         for (AicliClient.Conversation conversation : allConversations) {
             String group = conversation.group.isEmpty() ? "默认分组" : conversation.group;
-            if (ALL_GROUPS.equals(selectedGroup) || selectedGroup.equals(group)) filtered.add(conversation);
+            if (ALL_GROUPS.equals(selectedGroup) ||
+                    (RUNNING_GROUP.equals(selectedGroup) && isRunning(conversation)) ||
+                    selectedGroup.equals(group)) filtered.add(conversation);
         }
         conversationAdapter.replace(filtered);
-        drawerGroupLabel.setText(ALL_GROUPS.equals(selectedGroup)
-                ? "全部分组 · " + filtered.size() + " 个项目"
-                : selectedGroup + " · " + filtered.size() + " 个项目");
+        String selectedGroupLabel = ALL_GROUPS.equals(selectedGroup) ? "全部分组"
+                : RUNNING_GROUP.equals(selectedGroup) ? "正在运行" : selectedGroup;
+        drawerGroupLabel.setText(selectedGroupLabel + " · " + filtered.size() + " 个项目");
         if (filtered.isEmpty()) {
             pendingConversationId = null;
             selectedConversationId = null;
@@ -805,8 +913,10 @@ public final class MainActivity extends AppCompatActivity {
 
     private void observeImeHeight() {
         ViewCompat.setOnApplyWindowInsetsListener(drawerLayout, (view, insets) -> {
-            applyHeaderTopInset(insets.getInsets(
-                    WindowInsetsCompat.Type.statusBars()).top);
+            int statusBarInset = insets.getInsets(
+                    WindowInsetsCompat.Type.statusBars()).top;
+            applyHeaderTopInset(statusBarInset);
+            applyDrawerTopInset(statusBarInset);
             systemBottomInsetPx = insets.getInsets(
                     WindowInsetsCompat.Type.navigationBars()).bottom;
             int imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom;
@@ -830,7 +940,9 @@ public final class MainActivity extends AppCompatActivity {
         int[] contentLocation = new int[2];
         root.getLocationOnScreen(rootLocation);
         conversationContent.getLocationOnScreen(contentLocation);
-        applyHeaderTopInset(Math.max(0, visibleWindowFrame.top - rootLocation[1]));
+        int statusBarInset = Math.max(0, visibleWindowFrame.top - rootLocation[1]);
+        applyHeaderTopInset(statusBarInset);
+        applyDrawerTopInset(statusBarInset);
         int rootBottom = rootLocation[1] + root.getHeight();
         int coveredHeight = Math.max(0, rootBottom - visibleWindowFrame.bottom);
         boolean keyboardVisible = coveredHeight >= dpToPx(120);
@@ -869,6 +981,16 @@ public final class MainActivity extends AppCompatActivity {
         headerTopInsetPx = safeInset;
         mainHeader.setPadding(headerBasePaddingLeft, safeInset,
                 headerBasePaddingRight, headerBasePaddingBottom);
+    }
+
+    private void applyDrawerTopInset(int inset) {
+        if (conversationDrawer == null) return;
+        int safeInset = Math.max(0, inset);
+        if (drawerTopInsetPx == safeInset) return;
+        drawerTopInsetPx = safeInset;
+        conversationDrawer.setPadding(drawerBasePaddingLeft,
+                drawerBasePaddingTop + safeInset,
+                drawerBasePaddingRight, drawerBasePaddingBottom);
     }
 
     private void rememberImeHeight(int height) {

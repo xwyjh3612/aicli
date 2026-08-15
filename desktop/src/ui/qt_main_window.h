@@ -98,6 +98,7 @@ private:
     QLabel* telemetry_{};
     QTimer* telemetry_timer_{};
     QTimer* terminal_snapshot_timer_{};
+    QTimer* status_clear_timer_{};
     QPointer<BindingDialog> binding_dialog_;
     TaskbarWorkingIndicator taskbar_working_indicator_;
     UINT taskbar_button_created_message_{};

@@ -335,6 +335,13 @@ bool MainWindow::Initialize(std::wstring* error) {
     telemetry_timer_ = new QTimer(this);
     telemetry_timer_->setInterval(2000);
     connect(telemetry_timer_, &QTimer::timeout, this, &MainWindow::updateTelemetry);
+
+    status_clear_timer_ = new QTimer(this);
+    status_clear_timer_->setSingleShot(true);
+    status_clear_timer_->setInterval(15000);
+    connect(status_clear_timer_, &QTimer::timeout, this, [this] {
+        if (status_) status_->clear();
+    });
     telemetry_timer_->start();
 
     terminal_snapshot_timer_ = new QTimer(this);
@@ -910,6 +917,9 @@ void MainWindow::handlePairing(const agent::PendingPairing& pairing) {
 
 void MainWindow::setStatus(const std::wstring& text) {
     status_->setText(ToQString(text));
+    if (!status_clear_timer_) return;
+    status_clear_timer_->stop();
+    if (!text.empty()) status_clear_timer_->start();
 }
 
 void MainWindow::updateTelemetry() {
@@ -1143,6 +1153,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     shutting_down_ = true;
     if (telemetry_timer_) telemetry_timer_->stop();
     if (terminal_snapshot_timer_) terminal_snapshot_timer_->stop();
+    if (status_clear_timer_) status_clear_timer_->stop();
     if (project_list_) project_list_->SetWorkingAnimationActive(false);
     taskbar_working_indicator_.Detach();
     QMainWindow::closeEvent(event);

@@ -105,6 +105,8 @@ constexpr UINT_PTR kXamlIslandSubclassId = 0xA1C11;
 constexpr UINT_PTR kTerminalSnapshotTimerId = 2;
 constexpr UINT_PTR kProjectSpinnerTimerId = 3;
 constexpr UINT_PTR kGitSpinnerTimerId = 4;
+constexpr UINT_PTR kStatusClearTimerId = 5;
+constexpr UINT kStatusDisplayDurationMs = 15000;
 constexpr UINT kProjectSpinnerIntervalMs = 75;
 constexpr UINT kGitSpinnerIntervalMs = 80;
 constexpr UINT kProjectListItemHeight = 40;
@@ -439,6 +441,16 @@ void SetText(HWND h,const std::wstring& s){
         current.resize(static_cast<size_t>(length));
     }else current.clear();
     if(current!=s)SetWindowTextW(h,s.c_str());
+}
+
+void SetStatusText(const std::wstring& text) {
+    if (!g_status) return;
+    SetText(g_status, text);
+    if (!g_hwnd) return;
+    KillTimer(g_hwnd, kStatusClearTimerId);
+    if (!text.empty()) {
+        SetTimer(g_hwnd, kStatusClearTimerId, kStatusDisplayDurationMs, nullptr);
+    }
 }
 bool MoveMainChild(HWND control,int x,int y,int width,int height){
     if(!control||!IsWindow(control))return false;
@@ -848,13 +860,13 @@ void CreateProject(){
     if(!g_store.SaveProject(g_project_draft,&error)){MessageBoxW(g_hwnd,error.c_str(),L"保存项目",MB_OK|MB_ICONWARNING);return;}
     g_projects.push_back(g_project_draft);g_group_name=g_project_draft.group;g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();
     for(size_t i=0;i<g_projects.size();++i)if(g_projects[i].id==g_project_draft.id){const int row=static_cast<int>(std::find(g_visible_project_indices.begin(),g_visible_project_indices.end(),static_cast<int>(i))-g_visible_project_indices.begin());if(row<(int)g_visible_project_indices.size())SendMessageW(g_list,LB_SETCURSEL,row,0);break;}
-    RefreshProjectDetails();Layout();SetText(g_status,L"项目已创建    |    选择右侧立即开始");
+    RefreshProjectDetails();Layout();SetStatusText(L"项目已创建    |    选择右侧立即开始");
 }
 void EditProject(){
     const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;const Project before=g_projects[index];
     if(!ShowProjectDialog(g_hwnd,&before))return;std::wstring error;
     if(!g_store.SaveProject(g_project_draft,&error)){MessageBoxW(g_hwnd,error.c_str(),L"保存项目",MB_OK|MB_ICONWARNING);return;}
-    g_projects[index]=g_project_draft;RefreshProjectList();SetText(g_status,L"项目配置已更新");Layout();
+    g_projects[index]=g_project_draft;RefreshProjectList();SetStatusText(L"项目配置已更新");Layout();
 }
 void DeleteProject(){
     const int index=SelectedProjectIndex();
@@ -875,7 +887,7 @@ void DeleteProject(){
     RefreshProjectList();
     RefreshProjectDetails();
     Layout();
-    SetText(g_status,L"项目“"+project.name+L"”已删除，项目文件夹未受影响");
+    SetStatusText(L"项目“"+project.name+L"”已删除，项目文件夹未受影响");
 }
 #include "ui/internal/project_context_menu_section.inl"
 bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const std::wstring& title,const std::wstring& sessionAgent,const std::wstring& project_id){
@@ -908,14 +920,14 @@ bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const s
            [project_id](std::uint32_t rows,std::uint32_t columns){
                g_terminal_streams.PublishResize(project_id,rows,columns);
            })){
-        SetText(g_status,L"");
+        SetStatusText(L"");
         Layout();
         return true;
     }
     const std::wstring error=g_island.LastError().empty()?L"无法创建原生终端控件":g_island.LastError();
     g_terminal_streams.RemoveSession(project_id);
     SetText(g_detail_state,L"状态: 启动失败");
-    SetText(g_status,L"终端启动失败: "+error);
+    SetStatusText(L"终端启动失败: "+error);
     Layout(); return false;
 }
 void StartSession(bool restart=false){
@@ -1005,7 +1017,7 @@ void ConfigureRemoteAgent(){
     g_remote_agent.SetControlCallback([](const std::wstring& project,const std::wstring& phone,const std::wstring& action,std::wstring* error){auto* message=new(std::nothrow) RemoteControlMessage{project,phone,action};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_REMOTE_CONTROL,0,reinterpret_cast<LPARAM>(message))){delete message;if(error)*error=L"桌面窗口未就绪";return false;}return true;});
     g_remote_agent.SetPairingCallback([](const aicli::agent::PendingPairing& pairing){auto* message=new(std::nothrow) aicli::agent::PendingPairing(pairing);if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_PAIRING_PENDING,0,reinterpret_cast<LPARAM>(message)))delete message;});
     g_remote_agent.SetStatusCallback([](bool online,const std::wstring& text){auto* message=new(std::nothrow) AgentStatusMessage{online,text};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_AGENT_STATUS,0,reinterpret_cast<LPARAM>(message)))delete message;});
-    aicli::agent::AgentConfig config;config.computer_name=g_store.GetSetting(L"computer_name",aicli::text::LocalComputerName());config.bind_address=g_store.GetSetting(L"listen_address",L"0.0.0.0");config.port=g_store.GetSetting(L"listen_port",L"4280");config.local_address=g_store.GetSetting(L"local_address");config.remote_address=g_store.GetSetting(L"remote_address");config.data_directory=aicli::DefaultDataDirectory();std::wstring error;if(!g_remote_agent.Start(&g_store,config,&error))SetText(g_status,L"Agent 启动失败: "+error);else SetText(g_status,L"就绪");UpdateDeviceHeader();
+    aicli::agent::AgentConfig config;config.computer_name=g_store.GetSetting(L"computer_name",aicli::text::LocalComputerName());config.bind_address=g_store.GetSetting(L"listen_address",L"0.0.0.0");config.port=g_store.GetSetting(L"listen_port",L"4280");config.local_address=g_store.GetSetting(L"local_address");config.remote_address=g_store.GetSetting(L"remote_address");config.data_directory=aicli::DefaultDataDirectory();std::wstring error;if(!g_remote_agent.Start(&g_store,config,&error))SetStatusText(L"Agent 启动失败: "+error);else SetStatusText(L"就绪");UpdateDeviceHeader();
 }
 
 aicli::agent::AgentConfig CurrentAgentConfig() {
@@ -1023,10 +1035,10 @@ aicli::agent::AgentConfig CurrentAgentConfig() {
 bool RestartAgent(const aicli::agent::AgentConfig& config, std::wstring* error) {
     g_remote_agent.Stop();
     if (!g_remote_agent.Start(&g_store, config, error)) {
-        if (g_status) SetText(g_status, L"Agent 启动失败: " + (error ? *error : L"未知错误"));
+        if (g_status) SetStatusText(L"Agent 启动失败: " + (error ? *error : L"未知错误"));
         return false;
     }
-    if (g_status) SetText(g_status, L"Agent 服务已重启");
+    if (g_status) SetStatusText(L"Agent 服务已重启");
     UpdateDeviceHeader();
     return true;
 }
@@ -1185,7 +1197,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
                      RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
         return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshots.MarkDirtyMessageHandled();if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
-    case WM_TIMER:if(g_footer_status.HandleTimer(w))return 0;if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);g_project_idle_pulse_angle=std::fmod(g_project_idle_pulse_angle+9.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
+    case WM_TIMER:if(g_footer_status.HandleTimer(w))return 0;if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kStatusClearTimerId){KillTimer(h,kStatusClearTimerId);SetText(g_status,L"");return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);g_project_idle_pulse_angle=std::fmod(g_project_idle_pulse_angle+9.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);info->ptMinTrackSize.x=metrics.Scale(900);info->ptMinTrackSize.y=metrics.Scale(600);return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;
@@ -1236,7 +1248,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
                 project.status=L"paused";
                 g_store.UpdateProjectStatus(project.id,project.status);
             }
-            SetText(g_status,L"会话已暂停");
+            SetStatusText(L"会话已暂停");
             RefreshProjectDetails();RefreshProjectList();Layout();return 0;
         }
         if(id==ID_CTX_CONTINUE){StartSession();return 0;}
@@ -1379,7 +1391,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         return 0;
     }
     case WM_PAIRING_PENDING:{std::unique_ptr<aicli::agent::PendingPairing> pairing(reinterpret_cast<aicli::agent::PendingPairing*>(l));if(!pairing)return 0;g_pending_pairing=*pairing;if(g_binding_dialog){LayoutBindingDialog(g_binding_dialog);InvalidateRect(g_binding_dialog,nullptr,FALSE);}else if(pairing->submitted&&!pairing->authorized&&!pairing->rejected){const std::wstring text=L"手机名称："+pairing->device.name+L"\n型号："+pairing->device.model+L"\n设备 ID："+pairing->device.phone_id+L"\n\n确认后该手机可远程操作管理员终端。";const bool approve=MessageBoxW(h,text.c_str(),L"确认绑定手机",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES;std::wstring error;if(!g_remote_agent.ConfirmPairing(pairing->info.pairing_id,approve,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);}UpdateDeviceHeader();return 0;}
-    case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message&&!message->online)SetText(g_status,message->text);UpdateHeaderTelemetry();return 0;}
+    case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message&&!message->online)SetStatusText(message->text);UpdateHeaderTelemetry();return 0;}
     case WM_AGENT_WORKING_STATE:{std::unique_ptr<AgentWorkingStateMessage> message(reinterpret_cast<AgentWorkingStateMessage*>(l));if(message)SetProjectWorkingState(message->project_id,message->working);return 0;}
     case WM_GIT_STATUS_READY:{
         std::unique_ptr<GitStatusMessage> message(
