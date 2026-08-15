@@ -287,13 +287,13 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     // Two physical pixels between adjacent project cards, with only a subtle
     // two-pixel corner radius as requested for the compact sidebar.
     RECT card{row.left+1,row.top+1,row.right-1,row.bottom-1};
-    COLORREF cardFill=g_light_theme?RGB(250,251,253):RGB(22,25,32);
+    COLORREF cardFill=g_light_theme?RGB(250,251,253):SidebarBackground();
     if(sourceDragging){
         cardFill=SidebarBackground();
     }else if(selected){
-        cardFill=g_light_theme?RGB(238,245,254):RGB(25,37,54);
+        cardFill=g_light_theme?RGB(238,245,254):RGB(23,38,65);
     }else if(hovered){
-        cardFill=g_light_theme?RGB(243,247,252):RGB(29,34,43);
+        cardFill=g_light_theme?RGB(243,247,252):RGB(17,28,48);
     }
     DrawSmoothRoundedRect(item->hDC,card,2.0f,cardFill,cardFill,0.0f);
 
