@@ -51,6 +51,7 @@
 #include "ui/main_window_renderer.h"
 #include "ui/management_dialog.h"
 #include "ui/overlay_scrollbar.h"
+#include "ui/rounded_context_menu.h"
 #include "ui/rounded_select_popup.h"
 #include "ui/theme.h"
 #include "ui/layout_metrics.h"
@@ -215,7 +216,7 @@ COLORREF& accent2 = g_theme.accent_strong;
 HBRUSH g_edit_brush{},g_focus_brush{},g_search_brush{},g_list_brush{},g_panel_brush{},g_bg_brush{},g_detail_surface_brush{};bool g_light_theme{};bool g_theme_workspace_dirty{};
 bool g_settings_open_posted{};
 bool g_close_confirmation_open{};
-HWND g_project_dialog{}, g_d_name{}, g_d_note{}, g_d_type{}, g_d_group{}, g_d_folder{}, g_d_folder_browse{}, g_d_command{}; bool g_project_dialog_ok{}; bool g_project_dialog_edit{}; Project g_project_draft{};
+HWND g_project_dialog{}, g_d_name{}, g_d_note{}, g_d_type{}, g_d_group{}, g_d_folder{}, g_d_folder_browse{}, g_d_command{}, g_d_close{}; bool g_project_dialog_ok{}; bool g_project_dialog_edit{}; Project g_project_draft{};
 HWND g_binding_dialog{},g_binding_refresh{},g_binding_close{},g_binding_approve{},g_binding_reject{};
 aicli::agent::PairingInfo g_binding_info{};
 std::optional<qrcodegen::QrCode> g_binding_qr;
@@ -272,7 +273,7 @@ float ScaleUiF(float value) noexcept {
     return value * static_cast<float>(std::max(1, g_layout_metrics.dpi)) / 96.0f;
 }
 
-enum { ID_D_NAME=2001, ID_D_TYPE=2002, ID_D_GROUP=2003, ID_D_FOLDER=2004, ID_D_COMMAND=2005, ID_D_OK=2006, ID_D_CANCEL=2007, ID_D_BROWSE=2008, ID_D_NOTE=2009 };
+enum { ID_D_NAME=2001, ID_D_TYPE=2002, ID_D_GROUP=2003, ID_D_FOLDER=2004, ID_D_COMMAND=2005, ID_D_OK=2006, ID_D_CANCEL=2007, ID_D_BROWSE=2008, ID_D_NOTE=2009, ID_D_CLOSE=2010 };
 enum { ID_BIND_REFRESH=2101,ID_BIND_CLOSE=2102,ID_BIND_APPROVE=2103,ID_BIND_REJECT=2104 };
 HWND g_project_dropdown_open_control{};
 void DrawModernButton(const DRAWITEMSTRUCT* item);
@@ -413,7 +414,7 @@ void ApplyMainFontsToControls() {
                      reinterpret_cast<WPARAM>(g_font_git), TRUE);
 
     for (HWND control : {g_d_name, g_d_note, g_d_type, g_d_group,
-                         g_d_folder, g_d_folder_browse, g_d_command,
+                         g_d_folder, g_d_folder_browse, g_d_command, g_d_close,
                          g_binding_refresh, g_binding_close,
                          g_binding_approve, g_binding_reject}) {
         if (control) SendMessageW(control, WM_SETFONT,
@@ -1261,8 +1262,8 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_LBUTTONDOWN:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(g_window_chrome.OnLeftButtonDown(h,point))return 0;break;}
     case WM_LBUTTONUP:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const auto action=g_window_chrome.OnLeftButtonUp(h,point);if(action.has_value()){if(*action)ExecuteTitleButton(h,*action);return 0;}break;}
     case WM_CAPTURECHANGED:g_window_chrome.OnCaptureChanged(h);break;
-    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);item->itemWidth=ScaleUi(218);item->itemHeight=entry&&!entry->label[0]?ScaleUi(10):ScaleUi(38);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){item->itemHeight=ScaleUi(kProjectListItemHeight);return TRUE;}}break;
-    case WM_DRAWITEM:{auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){DrawContextMenuItem(item);return TRUE;}if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){DrawProjectItem(item);return TRUE;}}break;
+    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlID==ID_PROJECT_LIST){item->itemHeight=ScaleUi(kProjectListItemHeight);return TRUE;}}break;
+    case WM_DRAWITEM:{auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){DrawProjectItem(item);return TRUE;}}break;
     case WM_SIZE:
         if(w==SIZE_MINIMIZED){g_island.SetVisible(false);return 0;}
         // Remove the compositor rim while maximized, then restore it with the

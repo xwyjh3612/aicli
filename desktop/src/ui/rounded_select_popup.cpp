@@ -391,7 +391,8 @@ bool EnsurePopupClass() {
 int MeasureWidth(const RoundedSelectPopupOptions& options,
                  const std::vector<RoundedSelectEntry>& entries) {
     RECT anchor{};
-    GetWindowRect(options.anchor, &anchor);
+    if (options.use_screen_anchor) anchor = options.screen_anchor;
+    else GetWindowRect(options.anchor, &anchor);
     const int anchor_width = std::max(1L, anchor.right - anchor.left);
     if (options.match_anchor_width) return anchor_width;
 
@@ -450,17 +451,26 @@ std::optional<std::wstring> ShowRoundedSelectPopup(
     const int width = MeasureWidth(options, state.entries);
     const int height = state.viewport_height + state.padding * 2;
     RECT anchor{};
-    GetWindowRect(options.anchor, &anchor);
+    if (options.use_screen_anchor) anchor = options.screen_anchor;
+    else GetWindowRect(options.anchor, &anchor);
     HMONITOR monitor = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitor_info{sizeof(monitor_info)};
     GetMonitorInfoW(monitor, &monitor_info);
     const RECT work = monitor_info.rcWork;
     int x = anchor.left;
     int y = anchor.bottom + Scale(5, options.dpi);
-    if (x + width > work.right) x = work.right - width;
-    x = std::max(static_cast<int>(work.left), x);
-    if (y + height > work.bottom)
-        y = anchor.top - height - Scale(5, options.dpi);
+    if (options.placement == RoundedPopupPlacement::Right) {
+        x = anchor.right + Scale(5, options.dpi);
+        y = anchor.top;
+        if (x + width > work.right)
+            x = anchor.left - width - Scale(5, options.dpi);
+    } else {
+        if (x + width > work.right) x = work.right - width;
+        if (y + height > work.bottom)
+            y = anchor.top - height - Scale(5, options.dpi);
+    }
+    x = std::clamp(x, static_cast<int>(work.left),
+                   static_cast<int>(work.right) - width);
     y = std::clamp(y, static_cast<int>(work.top),
                    static_cast<int>(work.bottom) - height);
 

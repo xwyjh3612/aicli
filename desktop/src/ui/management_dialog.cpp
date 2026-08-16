@@ -89,6 +89,7 @@ enum : int {
     kGroupNameInput = 2410,
     kGroupNameSave = 2411,
     kGroupNameCancel = 2412,
+    kGroupNameClose = 2413,
 };
 
 enum : int {
@@ -96,6 +97,7 @@ enum : int {
     kProjectTypeCommandInput = 2421,
     kProjectTypeSave = 2422,
     kProjectTypeCancel = 2423,
+    kProjectTypeClose = 2424,
 };
 
 enum class SettingsPage {
@@ -202,6 +204,7 @@ struct GroupNameState {
     HWND input{};
     HWND save{};
     HWND cancel{};
+    HWND close{};
     HWND hovered{};
     RECT panel{};
     HFONT font{};
@@ -233,6 +236,7 @@ struct ProjectTypeEditorState {
     HWND command_input{};
     HWND save{};
     HWND cancel{};
+    HWND close{};
     HWND hovered{};
     RECT panel{};
     HFONT font{};
@@ -314,6 +318,7 @@ void LayoutSettingsContent(State& state);
 void UpdateSettingsPage(State& state, SettingsPage page);
 void RefreshList(State& state);
 void ReadSelection(State& state);
+bool SelectedIndex(HWND list, size_t& index);
 
 constexpr UINT_PTR kManagementButtonSubclassId = 0xA1C14;
 constexpr UINT_PTR kSettingsWheelSubclassId = 0xA1C19;
@@ -476,17 +481,19 @@ void LayoutGroupNameDialog(GroupNameState& state) {
     const int client_width = static_cast<int>(client.right);
     const int client_height = static_cast<int>(client.bottom);
     const auto S=[&](int value){return DpiScale(state.window,value);};
-    const int width = std::min(S(540), std::max(S(430), client_width - S(120)));
-    const int height = S(270);
+    const int width = std::min(S(460), std::max(S(400), client_width - S(120)));
+    const int height = S(238);
     const int left = (client_width - width) / 2;
     const int top = std::max(S(24), (client_height - height) / 2);
     state.panel = {left, top, left + width, top + height};
-    LayoutStyledInput(state.input, {left + S(30), top + S(126), left + width - S(30), top + S(161)}, S(2), S(9));
-    MoveWindow(state.cancel, left + width - S(250), top + S(208), S(100), S(38), TRUE);
-    MoveWindow(state.save, left + width - S(138), top + S(208), S(108), S(38), TRUE);
-    SetWindowRgn(state.cancel, CreateRoundRectRgn(0, 0, S(101), S(39), S(9), S(9)), TRUE);
-    SetWindowRgn(state.save, CreateRoundRectRgn(0, 0, S(109), S(39), S(9), S(9)), TRUE);
-    SetModalSurfaceRegion(state.window, state.panel, S(16));
+    LayoutStyledInput(state.input, {left + S(24), top + S(112), left + width - S(24), top + S(147)}, S(2), S(8));
+    MoveWindow(state.cancel, left + width - S(226), top + S(178), S(92), S(36), TRUE);
+    MoveWindow(state.save, left + width - S(124), top + S(178), S(100), S(36), TRUE);
+    MoveWindow(state.close, left + width - S(42), top + S(5), S(32), S(32), TRUE);
+    SetWindowRgn(state.cancel, CreateRoundRectRgn(0, 0, S(93), S(37), S(8), S(8)), TRUE);
+    SetWindowRgn(state.save, CreateRoundRectRgn(0, 0, S(101), S(37), S(8), S(8)), TRUE);
+    SetWindowRgn(state.close, CreateRoundRectRgn(0, 0, S(33), S(33), S(7), S(7)), TRUE);
+    SetModalSurfaceRegion(state.window, state.panel, S(12));
     InvalidateRect(state.window, nullptr, FALSE);
 }
 
@@ -511,27 +518,32 @@ void PaintGroupNameDialog(GroupNameState& state, HDC dc) {
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, state.title_font);
     SetTextColor(dc, state.text);
-    RECT title{state.panel.left + S(30), state.panel.top + S(24),
-               state.panel.right - S(30), state.panel.top + S(50)};
+    RECT title{state.panel.left + S(24), state.panel.top,
+               state.panel.right - S(52), state.panel.top + S(42)};
     DrawTextW(dc, state.title.c_str(), -1, &title, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     SelectObject(dc, state.small_font);
     SetTextColor(dc, state.muted);
-    RECT subtitle{state.panel.left + S(30), state.panel.top + S(54),
-                  state.panel.right - S(30), state.panel.top + S(80)};
+    RECT subtitle{state.panel.left + S(24), state.panel.top + S(50),
+                  state.panel.right - S(24), state.panel.top + S(76)};
     DrawTextW(dc, state.subtitle.c_str(), -1, &subtitle,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    RECT label{state.panel.left + S(30), state.panel.top + S(98),
-               state.panel.right - S(30), state.panel.top + S(122)};
+    RECT label{state.panel.left + S(24), state.panel.top + S(84),
+               state.panel.right - S(24), state.panel.top + S(108)};
     DrawTextW(dc, L"分组名称", -1, &label, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     const COLORREF outline = GetFocus() == state.input ? state.accent : state.panel_edge;
     HPEN input_pen = CreatePen(PS_SOLID, 1, outline);
     HGDIOBJ previous_pen = SelectObject(dc, input_pen);
     HGDIOBJ previous_brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
-    RoundRect(dc, state.panel.left + S(30), state.panel.top + S(126),
-              state.panel.right - S(30), state.panel.top + S(161), S(10), S(10));
+    RoundRect(dc, state.panel.left + S(24), state.panel.top + S(112),
+              state.panel.right - S(24), state.panel.top + S(147), S(8), S(8));
     SelectObject(dc, previous_brush);
     SelectObject(dc, previous_pen);
     DeleteObject(input_pen);
+    HPEN separator=CreatePen(PS_SOLID,1,state.panel_edge);
+    HGDIOBJ old_separator=SelectObject(dc,separator);
+    MoveToEx(dc,state.panel.left+1,state.panel.top+S(42),nullptr);
+    LineTo(dc,state.panel.right-1,state.panel.top+S(42));
+    SelectObject(dc,old_separator);DeleteObject(separator);
 }
 
 void DrawGroupNameButton(GroupNameState& state, const DRAWITEMSTRUCT& item) {
@@ -593,7 +605,12 @@ LRESULT CALLBACK GroupNameWindowProc(HWND h, UINT message, WPARAM wparam, LPARAM
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1, h,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kGroupNameSave)),
             GetModuleHandleW(nullptr), nullptr);
-        for (HWND button : {state->cancel, state->save}) {
+        SetWindowTextW(state->save,L"确定");
+        state->close = CreateWindowExW(0,L"BUTTON",L"×",
+            WS_CHILD|WS_VISIBLE|BS_OWNERDRAW,0,0,1,1,h,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kGroupNameClose)),
+            GetModuleHandleW(nullptr),nullptr);
+        for (HWND button : {state->cancel, state->save, state->close}) {
             SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
             SetWindowSubclass(button, GroupNameButtonProc, kGroupNameButtonSubclassId,
                               reinterpret_cast<DWORD_PTR>(state));
@@ -627,7 +644,8 @@ LRESULT CALLBACK GroupNameWindowProc(HWND h, UINT message, WPARAM wparam, LPARAM
         return TRUE;
     }
     case WM_COMMAND:
-        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kGroupNameCancel) {
+        if (HIWORD(wparam) == BN_CLICKED &&
+            (LOWORD(wparam) == kGroupNameCancel || LOWORD(wparam) == kGroupNameClose)) {
             DestroyWindow(h);
             return 0;
         }
@@ -732,19 +750,21 @@ void LayoutProjectTypeEditorDialog(ProjectTypeEditorState& state) {
     const int client_height = static_cast<int>(client.bottom);
     const auto S=[&](int value){return DpiScale(state.window,value);};
     const int width = std::min(S(640), std::max(S(500), client_width - S(120)));
-    const int height = S(390);
+    const int height = S(370);
     const int left = (client_width - width) / 2;
     const int top = std::max(S(24), (client_height - height) / 2);
     state.panel = {left, top, left + width, top + height};
     LayoutStyledInput(state.name_input,
-                      {left + S(30), top + S(132), left + width - S(30), top + S(167)}, S(2), S(9));
+                      {left + S(30), top + S(120), left + width - S(30), top + S(155)}, S(2), S(8));
     LayoutStyledInput(state.command_input,
-                      {left + S(30), top + S(222), left + width - S(30), top + S(257)}, S(2), S(9));
-    MoveWindow(state.cancel, left + width - S(250), top + S(326), S(100), S(38), TRUE);
-    MoveWindow(state.save, left + width - S(138), top + S(326), S(108), S(38), TRUE);
+                      {left + S(30), top + S(204), left + width - S(30), top + S(239)}, S(2), S(8));
+    MoveWindow(state.cancel, left + width - S(238), top + S(310), S(100), S(36), TRUE);
+    MoveWindow(state.save, left + width - S(126), top + S(310), S(96), S(36), TRUE);
+    MoveWindow(state.close, left + width - S(42), top + S(5), S(32), S(32), TRUE);
     SetWindowRgn(state.cancel, CreateRoundRectRgn(0, 0, S(101), S(39), S(9), S(9)), TRUE);
     SetWindowRgn(state.save, CreateRoundRectRgn(0, 0, S(109), S(39), S(9), S(9)), TRUE);
-    SetModalSurfaceRegion(state.window, state.panel, S(16));
+    SetWindowRgn(state.close, CreateRoundRectRgn(0,0,S(33),S(33),S(7),S(7)),TRUE);
+    SetModalSurfaceRegion(state.window, state.panel, S(12));
     InvalidateRect(state.window, nullptr, FALSE);
 }
 
@@ -768,13 +788,13 @@ void PaintProjectTypeEditorDialog(ProjectTypeEditorState& state, HDC dc) {
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, state.title_font);
     SetTextColor(dc, state.text);
-    RECT title{state.panel.left + S(30), state.panel.top + S(24),
-               state.panel.right - S(30), state.panel.top + S(50)};
+    RECT title{state.panel.left + S(24), state.panel.top,
+               state.panel.right - S(52), state.panel.top + S(42)};
     DrawTextW(dc, state.title.c_str(), -1, &title,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     SelectObject(dc, state.small_font);
     SetTextColor(dc, state.muted);
-    RECT subtitle{state.panel.left + S(30), state.panel.top + S(54),
+    RECT subtitle{state.panel.left + S(30), state.panel.top + S(50),
                   state.panel.right - S(30), state.panel.top + S(80)};
     DrawTextW(dc, state.subtitle.c_str(), -1, &subtitle,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -784,8 +804,8 @@ void PaintProjectTypeEditorDialog(ProjectTypeEditorState& state, HDC dc) {
                   state.panel.right - S(30), state.panel.top + S(y + 24)};
         DrawTextW(dc, value, -1, &rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     };
-    label(L"类型名称", 102);
-    label(L"默认启动命令", 192);
+    label(L"类型名称", 90);
+    label(L"默认启动命令", 174);
 
     auto outline = [&](HWND input, RECT rect) {
         const COLORREF color = GetFocus() == input ? state.accent : state.panel_edge;
@@ -798,18 +818,23 @@ void PaintProjectTypeEditorDialog(ProjectTypeEditorState& state, HDC dc) {
         DeleteObject(pen);
     };
     outline(state.name_input,
-            {state.panel.left + S(30), state.panel.top + S(132),
-             state.panel.right - S(30), state.panel.top + S(167)});
+            {state.panel.left + S(30), state.panel.top + S(120),
+             state.panel.right - S(30), state.panel.top + S(155)});
     outline(state.command_input,
-            {state.panel.left + S(30), state.panel.top + S(222),
-             state.panel.right - S(30), state.panel.top + S(257)});
+            {state.panel.left + S(30), state.panel.top + S(204),
+             state.panel.right - S(30), state.panel.top + S(239)});
 
     SetTextColor(dc, state.muted);
     SelectObject(dc, state.small_font);
-    RECT hint{state.panel.left + S(30), state.panel.top + S(278),
-              state.panel.right - S(30), state.panel.top + S(308)};
+    RECT hint{state.panel.left + S(30), state.panel.top + S(254),
+              state.panel.right - S(30), state.panel.top + S(284)};
     DrawTextW(dc, L"启动命令会作为新建项目的默认值，项目仍可单独覆盖。", -1,
               &hint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    HPEN separator=CreatePen(PS_SOLID,1,state.panel_edge);
+    HGDIOBJ old_separator=SelectObject(dc,separator);
+    MoveToEx(dc,state.panel.left+1,state.panel.top+S(42),nullptr);
+    LineTo(dc,state.panel.right-1,state.panel.top+S(42));
+    SelectObject(dc,old_separator);DeleteObject(separator);
 }
 
 void DrawProjectTypeEditorButton(ProjectTypeEditorState& state,
@@ -881,7 +906,12 @@ LRESULT CALLBACK ProjectTypeEditorWindowProc(HWND h, UINT message,
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1, h,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProjectTypeSave)),
             GetModuleHandleW(nullptr), nullptr);
-        for (HWND button : {state->cancel, state->save}) {
+        SetWindowTextW(state->save,L"确定");
+        state->close=CreateWindowExW(0,L"BUTTON",L"×",
+            WS_CHILD|WS_VISIBLE|BS_OWNERDRAW,0,0,1,1,h,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProjectTypeClose)),
+            GetModuleHandleW(nullptr),nullptr);
+        for (HWND button : {state->cancel, state->save, state->close}) {
             SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
             SetWindowSubclass(button, ProjectTypeEditorButtonProc,
                               kProjectTypeEditorButtonSubclassId,
@@ -920,7 +950,8 @@ LRESULT CALLBACK ProjectTypeEditorWindowProc(HWND h, UINT message,
         return TRUE;
     }
     case WM_COMMAND:
-        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kProjectTypeCancel) {
+        if (HIWORD(wparam) == BN_CLICKED &&
+            (LOWORD(wparam) == kProjectTypeCancel || LOWORD(wparam) == kProjectTypeClose)) {
             DestroyWindow(h);
             return 0;
         }
@@ -1020,12 +1051,14 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
     const bool light = state && state->light_theme;
     const auto S=[&](int value){return state?DpiScale(state->window,value):value;};
 
-    const bool title_close = state && state->mode == ManagementMode::Settings &&
+    const bool title_close = state &&
                               state->title_close == item->hwndItem;
     if (title_close && state) {
         // Keep the idle control visually part of the title area, then add a
         // compact rounded hover layer without restoring the old square halo.
-        HBRUSH clear = CreateSolidBrush(SettingsHeaderColor(*state));
+        HBRUSH clear = CreateSolidBrush(state->mode==ManagementMode::Settings
+                                            ? SettingsHeaderColor(*state)
+                                            : state->panel_color);
         FillRect(item->hDC, &rect, clear);
         DeleteObject(clear);
         if (hovered || pressed) {
@@ -1211,9 +1244,39 @@ void DrawListItem(const DRAWITEMSTRUCT* item) {
     SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID, reinterpret_cast<LPARAM>(text));
     SetBkMode(item->hDC, TRANSPARENT);
     SetTextColor(item->hDC, selected ? state->text_color : state->palette.list_text);
-    SelectObject(item->hDC, state->font);
     const int inset=DpiScale(state->window,12);
     RECT rect{item->rcItem.left + inset, item->rcItem.top, item->rcItem.right - inset, item->rcItem.bottom};
+    const size_t data_index=static_cast<size_t>(SendMessageW(
+        item->hwndItem,LB_GETITEMDATA,item->itemID,0));
+    if(state->mode==ManagementMode::Devices&&data_index<state->devices.size()){
+        const auto& device=state->devices[data_index];
+        const COLORREF status=device.active?state->palette.success:state->palette.muted;
+        HBRUSH dot=CreateSolidBrush(status);
+        const int dot_size=DpiScale(state->window,7);
+        const int dot_top=(rect.top+rect.bottom-dot_size)/2;
+        RECT dot_rect{rect.left,dot_top,rect.left+dot_size,dot_top+dot_size};
+        FillRect(item->hDC,&dot_rect,dot);DeleteObject(dot);
+        SelectObject(item->hDC,state->font);
+        RECT name_rect{rect.left+DpiScale(state->window,18),rect.top+DpiScale(state->window,5),rect.right,rect.top+DpiScale(state->window,29)};
+        DrawTextW(item->hDC,device.name.c_str(),-1,&name_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        SelectObject(item->hDC,state->small_font);SetTextColor(item->hDC,state->muted_color);
+        std::wstring detail=device.model;
+        if(!device.phone_id.empty())detail+=L"  ·  "+device.phone_id.substr(0,std::min<size_t>(8,device.phone_id.size()));
+        RECT detail_rect{rect.left+DpiScale(state->window,18),rect.top+DpiScale(state->window,28),rect.right,rect.bottom-DpiScale(state->window,3)};
+        DrawTextW(item->hDC,detail.c_str(),-1,&detail_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        return;
+    }
+    if(IsSettingsProjectTypes(*state)&&data_index<state->types_data.size()){
+        const auto& type=state->types_data[data_index];
+        SelectObject(item->hDC,state->font);
+        RECT name_rect{rect.left,rect.top+DpiScale(state->window,4),rect.right,rect.top+DpiScale(state->window,27)};
+        DrawTextW(item->hDC,type.name.c_str(),-1,&name_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        SelectObject(item->hDC,state->small_font);SetTextColor(item->hDC,state->muted_color);
+        RECT command_rect{rect.left,rect.top+DpiScale(state->window,26),rect.right,rect.bottom-DpiScale(state->window,3)};
+        DrawTextW(item->hDC,type.default_command.c_str(),-1,&command_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        return;
+    }
+    SelectObject(item->hDC, state->font);
     DrawTextW(item->hDC, text, -1, &rect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
@@ -1253,10 +1316,10 @@ void Layout(State& state) {
          const int sidebar_width = S(214);
          const int nav_x = left + S(18);
          const int nav_width = sidebar_width - S(34);
-         button(state.settings_appearance, nav_x, top + S(88), nav_width, S(54));
-         button(state.settings_connection, nav_x, top + S(144), nav_width, S(54));
-         button(state.settings_project_types, nav_x, top + S(200), nav_width, S(54));
-         button(state.settings_groups, nav_x, top + S(256), nav_width, S(54));
+         button(state.settings_appearance, nav_x, top + S(62), nav_width, S(46));
+         button(state.settings_connection, nav_x, top + S(110), nav_width, S(46));
+         button(state.settings_project_types, nav_x, top + S(158), nav_width, S(46));
+         button(state.settings_groups, nav_x, top + S(206), nav_width, S(46));
          button(state.title_close, state.panel.right - S(54), top + S(4), S(32), S(32));
 
         // The content surface owns the full right pane.  Its painted content
@@ -1273,9 +1336,10 @@ void Layout(State& state) {
             LayoutSettingsContent(state);
         }
     } else if (state.mode == ManagementMode::Devices) {
-        if (state.list) MoveWindow(state.list, x, top + S(120), right - x, S(280), TRUE);
-        button(state.unbind, right - S(270), button_y, S(126), S(36));
-        button(state.close, right - S(126), button_y, S(126), S(36));
+        const int list_width=S(280);
+        if (state.list) MoveWindow(state.list, x, top + S(104), list_width, S(334), TRUE);
+        button(state.unbind, right - S(126), button_y, S(126), S(36));
+        button(state.title_close,state.panel.right-S(48),top+S(5),S(32),S(32));
     } else if (state.mode == ManagementMode::ProjectTypes) {
         if (state.list) MoveWindow(state.list, x, top + S(120), right - x, S(300), TRUE);
         button(state.add, x, button_y, S(108), S(36));
@@ -1349,11 +1413,16 @@ void Paint(State& state, HDC dc) {
 
     const int x = state.panel.left + S(34);
     const wchar_t* title = L"管理";
+    std::wstring dynamic_title;
     const wchar_t* subtitle = L"保存后立即写入本机 SQLite";
     if (state.mode == ManagementMode::Settings) { title = L"设置"; subtitle = L""; }
     else if (state.mode == ManagementMode::Groups) { title = L"分组管理"; subtitle = L"选择当前分组，或添加、重命名和删除空分组"; }
     else if (state.mode == ManagementMode::ProjectTypes) { title = L"项目类型"; subtitle = L"Codex / Claude 为预置类型，所有类型都可编辑"; }
-    else if (state.mode == ManagementMode::Devices) { title = L"已绑定设备"; subtitle = L"解绑后该手机的令牌和实时连接立即失效"; }
+    else if (state.mode == ManagementMode::Devices) {
+        dynamic_title=L"已绑定设备  "+std::to_wstring(state.devices.size());
+        title=dynamic_title.c_str();
+        subtitle = L"解绑后该手机的令牌和实时连接立即失效";
+    }
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, state.text_color);
     SelectObject(dc, state.settings_title_font ? state.settings_title_font : state.title_font);
@@ -1383,12 +1452,6 @@ void Paint(State& state, HDC dc) {
         DeleteObject(divider);
         SetTextColor(dc, state.muted_color);
         SelectObject(dc, state.small_font);
-        RECT shortcut_rect{state.panel.left + S(18),
-                           state.panel.top + S(kSettingsHeaderHeight + 10),
-                           divider_x - S(18),
-                           state.panel.top + S(kSettingsHeaderHeight + 34)};
-        DrawTextW(dc, L"选择左侧入口配置 AI CLI", -1, &shortcut_rect,
-                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         return;
     }
 
@@ -1410,7 +1473,41 @@ void Paint(State& state, HDC dc) {
         DrawTextW(dc, L"新增和修改会打开独立模态框；Codex 和 Claude 虽为预置类型，也可手工调整，但不能删除。", -1,
                   &hint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     } else {
-        label(L"已绑定手机（双击或选择后点击解绑）", 88);
+        label(L"已绑定手机", 76);
+        const int divider_x=x+S(300);
+        HPEN divider=CreatePen(PS_SOLID,1,state.panel_edge);
+        HGDIOBJ old_device_pen=SelectObject(dc,divider);
+        MoveToEx(dc,divider_x,state.panel.top+S(104),nullptr);
+        LineTo(dc,divider_x,state.panel.bottom-S(72));
+        SelectObject(dc,old_device_pen);DeleteObject(divider);
+        size_t index{};
+        const bool has_device=SelectedIndex(state.list,index)&&index<state.devices.size();
+        const int detail_x=divider_x+S(28);
+        const int detail_right=state.panel.right-S(34);
+        if(!has_device){
+            SelectObject(dc,state.font);SetTextColor(dc,state.muted_color);
+            RECT empty{detail_x,state.panel.top+S(180),detail_right,state.panel.top+S(260)};
+            DrawTextW(dc,L"选择一台设备查看授权信息",-1,&empty,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+        }else{
+            const auto& device=state.devices[index];
+            SelectObject(dc,state.title_font);SetTextColor(dc,state.text_color);
+            RECT name{detail_x,state.panel.top+S(112),detail_right,state.panel.top+S(144)};
+            DrawTextW(dc,device.name.c_str(),-1,&name,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+            SelectObject(dc,state.small_font);
+            auto detail_row=[&](const wchar_t* key,const std::wstring& value,int y){
+                SetTextColor(dc,state.muted_color);
+                RECT key_rect{detail_x,state.panel.top+S(y),detail_x+S(92),state.panel.top+S(y+28)};
+                DrawTextW(dc,key,-1,&key_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+                SetTextColor(dc,state.text_color);
+                RECT value_rect{detail_x+S(96),state.panel.top+S(y),detail_right,state.panel.top+S(y+28)};
+                DrawTextW(dc,value.c_str(),-1,&value_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+            };
+            detail_row(L"设备型号",device.model,158);
+            detail_row(L"设备 ID",device.phone_id,196);
+            detail_row(L"绑定时间",std::to_wstring(device.paired_at),234);
+            detail_row(L"最近在线",std::to_wstring(device.last_seen),272);
+            detail_row(L"授权状态",device.active?L"已授权":L"已解绑",310);
+        }
     }
 }
 
@@ -1796,8 +1893,7 @@ void RefreshList(State& state) {
     } else if (state.mode == ManagementMode::Devices) {
         state.devices = state.store->LoadDevices(true);
         for (const auto& value : state.devices) {
-            std::wstring text = (value.active ? L"●  " : L"○  ") + value.name + L"  ·  " +
-                                value.model + L"  ·  " + value.phone_id;
+            std::wstring text = value.name;
             LRESULT row = SendMessageW(state.list, LB_ADDSTRING, 0,
                                        reinterpret_cast<LPARAM>(text.c_str()));
             if (row != LB_ERR) SendMessageW(state.list, LB_SETITEMDATA, row,
@@ -2028,7 +2124,7 @@ void CreateControls(State& state) {
                                      GetModuleHandleW(nullptr), nullptr);
         SendMessageW(state.list, WM_SETFONT, reinterpret_cast<WPARAM>(state.font), TRUE);
         state.unbind = MakeButton(state, L"解绑设备", kUnbind);
-        state.close = MakeButton(state, L"关闭", kClose);
+        state.title_close = MakeButton(state, L"\x00D7", kClose);
         RefreshList(state);
     }
     Layout(state);
@@ -2106,7 +2202,9 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
     case WM_MEASUREITEM: {
         auto* measure = reinterpret_cast<MEASUREITEMSTRUCT*>(lparam);
         if (measure && measure->CtlID == kList) {
-            measure->itemHeight = DpiScale(h, 38);
+            measure->itemHeight = DpiScale(h,
+                state->mode==ManagementMode::Devices?58:
+                (IsSettingsProjectTypes(*state)?52:44));
             return TRUE;
         }
         return FALSE;
@@ -2123,6 +2221,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         const int notification = HIWORD(wparam);
         if (id == kList && (notification == LBN_SELCHANGE || notification == LBN_DBLCLK)) {
             ReadSelection(*state);
+            if(state->mode==ManagementMode::Devices)InvalidateRect(h,&state->panel,FALSE);
             if (notification == LBN_DBLCLK && state->mode == ManagementMode::Groups) {
                 size_t index{};
                 if (SelectedIndex(state->list, index) && index < state->groups.size()) {

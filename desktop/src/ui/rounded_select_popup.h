@@ -11,6 +11,11 @@
 
 namespace aicli::ui {
 
+enum class RoundedPopupPlacement {
+    Below,
+    Right,
+};
+
 struct RoundedSelectEntry {
     std::wstring value;
     std::wstring label;
@@ -33,6 +38,9 @@ struct RoundedSelectPopupOptions {
     int minimum_width{184};
     int maximum_width{300};
     bool match_anchor_width{};
+    bool use_screen_anchor{};
+    RECT screen_anchor{};
+    RoundedPopupPlacement placement{RoundedPopupPlacement::Below};
     std::function<void(bool)> open_state_changed;
 };
 

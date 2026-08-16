@@ -2,23 +2,6 @@
 // inside its private namespace until the main-window controller is fully
 // object-owned.
 
-struct ContextMenuEntry{const wchar_t* icon;const wchar_t* label;bool submenu;bool compact_icon{};bool current{};};
-void DrawContextMenuItem(const DRAWITEMSTRUCT* item){
-    const auto* entry=reinterpret_cast<const ContextMenuEntry*>(item->itemData);
-    if(!entry)return;
-    RECT r=item->rcItem;
-    if(!entry->label[0]){HBRUSH background=CreateSolidBrush(g_light_theme?RGB(250,251,253):RGB(34,36,40));FillRect(item->hDC,&r,background);DeleteObject(background);HPEN line=CreatePen(PS_SOLID,std::max(1,ScaleUi(1)),g_light_theme?RGB(218,223,231):RGB(57,60,67));auto old=(HPEN)SelectObject(item->hDC,line);const int y=(r.top+r.bottom)/2;MoveToEx(item->hDC,r.left+ScaleUi(8),y,nullptr);LineTo(item->hDC,r.right-ScaleUi(8),y);SelectObject(item->hDC,old);DeleteObject(line);return;}
-    const bool selected=(item->itemState&ODS_SELECTED)!=0;
-    const bool disabled=(item->itemState&ODS_DISABLED)!=0;
-    HBRUSH fill=CreateSolidBrush(selected?(g_light_theme?RGB(226,237,251):RGB(55,62,73)):(g_light_theme?RGB(250,251,253):RGB(34,36,40)));FillRect(item->hDC,&r,fill);DeleteObject(fill);
-    SetBkMode(item->hDC,TRANSPARENT);SetTextColor(item->hDC,disabled?(g_light_theme?RGB(153,160,170):RGB(111,116,126)):(g_light_theme?RGB(38,44,54):RGB(222,226,233)));
-    SelectObject(item->hDC,entry->compact_icon?g_font_header_icon:(g_icon_font?g_icon_font:g_font));RECT icon{r.left+ScaleUi(13),r.top+ScaleUi(1),r.left+ScaleUi(39),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,entry->icon,-1,&icon,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-    SelectObject(item->hDC,g_font);RECT text{r.left+ScaleUi(49),r.top+ScaleUi(1),r.right-ScaleUi(34),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,entry->label,-1,&text,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
-    if(entry->current){SetTextColor(item->hDC,accent);SelectObject(item->hDC,g_font_header_icon);RECT current{r.right-ScaleUi(29),r.top+ScaleUi(1),r.right-ScaleUi(9),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,L"\xE73E",-1,&current,DT_CENTER|DT_VCENTER|DT_SINGLELINE);}
-    if(entry->submenu){SelectObject(item->hDC,g_font_small);RECT arrow{r.right-ScaleUi(28),r.top+ScaleUi(1),r.right-ScaleUi(10),r.bottom-ScaleUi(1)};DrawTextW(item->hDC,L">",-1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);}
-}
-void ConfigureContextMenu(HMENU menu,HBRUSH background){MENUINFO info{sizeof(info)};info.fMask=MIM_BACKGROUND;info.hbrBack=background;SetMenuInfo(menu,&info);}
-void AppendContextEntry(HMENU menu,UINT flags,UINT_PTR id,const ContextMenuEntry& entry){AppendMenuW(menu,flags|MF_OWNERDRAW,id,reinterpret_cast<LPCWSTR>(&entry));}
 void OpenProjectFolder(){const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;const auto& folder=g_projects[index].folder;if(folder.empty()){MessageBoxW(g_hwnd,L"当前项目还没有设置项目文件夹。",L"打开项目文件夹",MB_OK|MB_ICONINFORMATION);return;}if((INT_PTR)ShellExecuteW(g_hwnd,L"open",folder.c_str(),nullptr,nullptr,SW_SHOWNORMAL)<=32)MessageBoxW(g_hwnd,L"无法打开项目文件夹。",L"打开项目文件夹",MB_OK|MB_ICONWARNING);}
 void OpenProjectCommandPrompt(){const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;std::wstring error;if(!aicli::app::OpenCommandPromptAt(g_projects[index].folder,&error))MessageBoxW(g_hwnd,error.c_str(),L"用 CMD 打开项目目录",MB_OK|MB_ICONWARNING);}
 void MoveSelectedProjectToGroup(const std::wstring& group){const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;g_projects[index].group=group;g_store.SaveProject(g_projects[index]);g_group_name=group;g_store.SetSetting(L"last_group",group);RefreshProjectList();SetText(g_status,L"项目已移动到 "+group);Layout();}
@@ -50,33 +33,45 @@ void ShowProjectContextMenu(HWND owner,LPARAM position){
     }
     const bool running=g_island.HasSession(g_projects[index].id);
     const bool paused=g_projects[index].status==L"paused";
-    HMENU menu=CreatePopupMenu(),groups=CreatePopupMenu();
-    if(!menu||!groups){if(menu)DestroyMenu(menu);if(groups)DestroyMenu(groups);return;}
-    HBRUSH menuBrush=CreateSolidBrush(g_light_theme?RGB(250,251,253):RGB(34,36,40));ConfigureContextMenu(menu,menuBrush);ConfigureContextMenu(groups,menuBrush);
-    ContextMenuEntry open{L"\xE8B7",L"打开项目文件夹",false};
-    ContextMenuEntry command_prompt{L"\xE756",L"用 CMD 打开项目目录",false};
-    ContextMenuEntry details{L"\xE946",L"项目详情",false};
-    ContextMenuEntry move{L"\xE8AB",L"移动到分组",true};
-    ContextMenuEntry restart{L"\xE72C",L"重新启动项目",false};
-    ContextMenuEntry session{L"\xE769",paused?L"继续会话":L"暂停会话",false};
-    ContextMenuEntry close{L"\xE74D",L"关闭项目",false};
-    ContextMenuEntry separator{L"",L"",false};
-    AppendContextEntry(menu,MF_ENABLED,ID_CTX_OPEN_FOLDER,open);
-    AppendContextEntry(menu,MF_ENABLED,ID_CTX_OPEN_CMD,command_prompt);
-    AppendContextEntry(menu,MF_ENABLED,ID_CTX_EDIT,details);
-    std::vector<ContextMenuEntry> group_entries;group_entries.reserve(g_groups.size());
-    for(size_t group_index=0;group_index<g_groups.size();++group_index){
-        group_entries.push_back({L"\xE8AB",g_groups[group_index].name.c_str(),false});
-        AppendMenuW(groups,MF_OWNERDRAW|MF_ENABLED,ID_CTX_MOVE_GROUP_BASE+static_cast<UINT>(group_index),reinterpret_cast<LPCWSTR>(&group_entries.back()));
-    }
-    AppendMenuW(menu,MF_OWNERDRAW|MF_POPUP,(UINT_PTR)groups,reinterpret_cast<LPCWSTR>(&move));
-    AppendContextEntry(menu,MF_ENABLED,ID_CTX_RESTART,restart);
-    AppendContextEntry(menu,(running||paused)?MF_ENABLED:MF_GRAYED,paused?ID_CTX_CONTINUE:ID_CTX_PAUSE,session);
-    AppendContextEntry(menu,MF_DISABLED,0,separator);
-    AppendContextEntry(menu,MF_ENABLED,ID_CTX_DELETE,close);
     SetForegroundWindow(owner);
-    TrackPopupMenuEx(menu,TPM_RIGHTBUTTON|TPM_LEFTALIGN,screen.x,screen.y,owner,nullptr);
-    DestroyMenu(menu);
-    DeleteObject(menuBrush);
+    std::vector<aicli::ui::RoundedContextMenuEntry> entries{
+        {ID_CTX_OPEN_FOLDER,L"打开项目文件夹",L"\xE8B7"},
+        {ID_CTX_OPEN_CMD,L"用 CMD 打开",L"\xE756"},
+        {ID_CTX_EDIT,L"编辑项目",L"\xE70F"},
+        {ID_CTX_MOVE_DEFAULT,L"移动到分组",L"\xE8B7",true,false,true,true},
+        {ID_CTX_RESTART,running||paused?L"重新启动":L"立即开始",running||paused?L"\xE72C":L"\xE768",true,false,true},
+        {paused?ID_CTX_CONTINUE:ID_CTX_PAUSE,paused?L"继续会话":L"暂停会话",paused?L"\xE768":L"\xE769",running||paused},
+        {ID_CTX_DELETE,L"删除项目",L"\xE74D",true,true,true},
+    };
+    aicli::ui::RoundedContextMenuOptions menu_options;
+    menu_options.owner=owner;
+    menu_options.screen_position=screen;
+    menu_options.palette=g_theme;
+    menu_options.text_font=g_font;
+    menu_options.icon_font=g_icon_font?g_icon_font:g_font;
+    menu_options.dpi=g_layout_metrics.dpi;
+    auto result=aicli::ui::ShowRoundedContextMenu(menu_options,std::move(entries));
+    if(result&&result->command==ID_CTX_MOVE_DEFAULT){
+        std::vector<aicli::ui::RoundedSelectEntry> group_entries;
+        group_entries.reserve(g_groups.size());
+        for(const auto& group:g_groups){
+            group_entries.push_back({group.name,group.name,L"",L"\xE8B7",group.name==g_projects[index].group});
+        }
+        aicli::ui::RoundedSelectPopupOptions group_options;
+        group_options.owner=owner;
+        group_options.palette=g_theme;
+        group_options.text_font=g_font;
+        group_options.detail_font=g_font_small;
+        group_options.icon_font=g_icon_font?g_icon_font:g_font;
+        group_options.dpi=g_layout_metrics.dpi;
+        group_options.use_screen_anchor=true;
+        group_options.screen_anchor=result->item_screen_rect;
+        group_options.placement=aicli::ui::RoundedPopupPlacement::Right;
+        group_options.minimum_width=190;
+        if(auto group=aicli::ui::ShowRoundedSelectPopup(group_options,std::move(group_entries)))
+            MoveSelectedProjectToGroup(*group);
+    }else if(result){
+        SendMessageW(owner,WM_COMMAND,MAKEWPARAM(result->command,0),0);
+    }
     PostMessageW(owner,WM_NULL,0,0);
 }

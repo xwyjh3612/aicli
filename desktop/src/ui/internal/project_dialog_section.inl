@@ -18,16 +18,16 @@ void LayoutProjectDialog(HWND h){
     const auto S=[dpi](int value){return MulDiv(value,dpi,96);};
     const int availableWidth=static_cast<int>(client.right-client.left);
     const int width=std::min(S(620),std::max(S(540),availableWidth-S(96)));
-    const int height=S(550);
+    const int height=S(558);
     const int left=(client.right-width)/2, top=(client.bottom-height)/2;
     g_project_panel={left,top,left+width,top+height};
     const int padding=S(34);
-    g_d_name_rect={left+padding,top+S(107),left+width-padding,top+S(142)};
-    g_d_type_rect={left+padding,top+S(181),left+width/2-S(12),top+S(216)};
-    g_d_group_rect={left+width/2+S(12),top+S(181),left+width-padding,top+S(216)};
-    g_d_folder_rect={left+padding,top+S(255),left+width-padding-S(122),top+S(290)};
-    g_d_command_rect={left+padding,top+S(329),left+width-padding,top+S(364)};
-    g_d_note_rect={left+padding,top+S(403),left+width-padding,top+S(438)};
+    g_d_name_rect={left+padding,top+S(105),left+width-padding,top+S(140)};
+    g_d_type_rect={left+padding,top+S(179),left+width/2-S(12),top+S(214)};
+    g_d_group_rect={left+width/2+S(12),top+S(179),left+width-padding,top+S(214)};
+    g_d_folder_rect={left+padding,top+S(253),left+width-padding-S(48),top+S(288)};
+    g_d_command_rect={left+padding,top+S(327),left+width-padding,top+S(362)};
+    g_d_note_rect={left+padding,top+S(401),left+width-padding,top+S(436)};
     // Text fields keep their parent-painted one-pixel outline. Dropdowns own
     // both their fill and outline, so they occupy the complete field rectangle
     // instead of exposing a strip of modal background around the child HWND.
@@ -35,10 +35,12 @@ void LayoutProjectDialog(HWND h){
     auto placeDropDown=[&](HWND control,RECT outer){if(!control)return;const int w=outer.right-outer.left,h=outer.bottom-outer.top;MoveWindow(control,outer.left,outer.top,w,h,TRUE);ApplyRoundedRegion(control,w,h,S(6));};
     auto placeButton=[&](HWND control,RECT outer){if(!control)return;MoveWindow(control,outer.left,outer.top,outer.right-outer.left,outer.bottom-outer.top,TRUE);ApplyRoundedRegion(control,outer.right-outer.left,outer.bottom-outer.top,S(7));};
     placeEdit(g_d_name,g_d_name_rect);placeEdit(g_d_note,g_d_note_rect);placeDropDown(g_d_type,g_d_type_rect);placeDropDown(g_d_group,g_d_group_rect);placeEdit(g_d_folder,g_d_folder_rect);placeEdit(g_d_command,g_d_command_rect);
-    RECT browse{g_d_folder_rect.right+S(12),g_d_folder_rect.top,g_project_panel.right-padding,g_d_folder_rect.bottom}; placeButton(g_d_folder_browse,browse);
-    RECT save{left+padding,top+S(490),left+width/2-S(7),top+S(526)}, cancel{left+width/2+S(7),top+S(490),left+width-padding,top+S(526)};
+    RECT browse{g_d_folder_rect.right+S(10),g_d_folder_rect.top,g_project_panel.right-padding,g_d_folder_rect.bottom}; placeButton(g_d_folder_browse,browse);
+    RECT cancel{left+width-padding-S(206),top+S(498),left+width-padding-S(106),top+S(534)};
+    RECT save{left+width-padding-S(96),top+S(498),left+width-padding,top+S(534)};
     HWND child=GetWindow(h,GW_CHILD); while(child){int id=GetDlgCtrlID(child);if(id==ID_D_OK){MoveWindow(child,save.left,save.top,save.right-save.left,save.bottom-save.top,TRUE);ApplyRoundedRegion(child,save.right-save.left,save.bottom-save.top,S(8));}if(id==ID_D_CANCEL){MoveWindow(child,cancel.left,cancel.top,cancel.right-cancel.left,cancel.bottom-cancel.top,TRUE);ApplyRoundedRegion(child,cancel.right-cancel.left,cancel.bottom-cancel.top,S(8));}child=GetWindow(child,GW_HWNDNEXT);}
-    aicli::ui::SetModalSurfaceRegion(h,g_project_panel,S(28));
+    if(g_d_close){MoveWindow(g_d_close,g_project_panel.right-S(43),g_project_panel.top+S(5),S(34),S(34),TRUE);ApplyRoundedRegion(g_d_close,S(34),S(34),S(7));}
+    aicli::ui::SetModalSurfaceRegion(h,g_project_panel,S(14));
     InvalidateRect(h,nullptr,FALSE);
 }
 void InvalidateProjectControlFrame(HWND dialog, HWND control) {
@@ -71,7 +73,7 @@ void PaintProjectDialogSurface(HDC dc,RECT client){
     SetBkMode(dc,TRANSPARENT);
     SelectObject(dc,g_font_modal_title?g_font_modal_title:g_font_medium);
     SetTextColor(dc,fg);
-    RECT title{g_project_panel.left+S(34),g_project_panel.top+S(24),g_project_panel.right-S(34),g_project_panel.top+S(50)};
+    RECT title{g_project_panel.left+S(24),g_project_panel.top,g_project_panel.right-S(58),g_project_panel.top+S(44)};
     DrawTextW(dc,g_project_dialog_edit?L"编辑项目":L"新建项目",-1,&title,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
     SelectObject(dc,g_font_modal_subtitle?g_font_modal_subtitle:g_font_small);SetTextColor(dc,muted);
     RECT subtitle{g_project_panel.left+S(34),g_project_panel.top+S(53),g_project_panel.right-S(34),g_project_panel.top+S(75)};
@@ -81,12 +83,16 @@ void PaintProjectDialogSurface(HDC dc,RECT client){
         if(x<0)x=g_project_panel.left+S(34);
         RECT rect{x,y,x+S(250),y+S(22)};DrawTextW(dc,value,-1,&rect,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
     };
-    label(L"项目名称 / Tab 标题",g_project_panel.top+S(81));
-    label(L"项目类型",g_project_panel.top+S(155));
-    label(L"分组",g_project_panel.top+S(155),g_project_panel.left+(g_project_panel.right-g_project_panel.left)/2+S(12));
-    label(L"项目路径",g_project_panel.top+S(229));
-    label(L"启动命令",g_project_panel.top+S(303));
-    label(L"备注",g_project_panel.top+S(377));
+    label(L"项目名称 / Tab 标题",g_project_panel.top+S(79));
+    label(L"项目类型",g_project_panel.top+S(153));
+    label(L"分组",g_project_panel.top+S(153),g_project_panel.left+(g_project_panel.right-g_project_panel.left)/2+S(12));
+    label(L"项目路径",g_project_panel.top+S(227));
+    label(L"启动命令",g_project_panel.top+S(301));
+    label(L"备注",g_project_panel.top+S(375));
+    HPEN separator=CreatePen(PS_SOLID,1,border);HGDIOBJ old_pen=SelectObject(dc,separator);
+    MoveToEx(dc,g_project_panel.left+S(1),g_project_panel.top+S(44),nullptr);LineTo(dc,g_project_panel.right-S(1),g_project_panel.top+S(44));
+    MoveToEx(dc,g_project_panel.left+S(24),g_project_panel.top+S(476),nullptr);LineTo(dc,g_project_panel.right-S(24),g_project_panel.top+S(476));
+    SelectObject(dc,old_pen);DeleteObject(separator);
     auto outline=[&](RECT rect,HWND control){
         const bool active=GetFocus()==control;
         DrawRoundedOutline(dc,rect,active?accent:border,ScaleUi(6));
@@ -152,12 +158,13 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
         const std::wstring initialGroup=g_project_draft.group.empty()?((g_group_name==kAllGroupsName||g_group_name==kStartedProjectsName)?L"默认分组":g_group_name):g_project_draft.group;
         g_d_group=MakeDialogControl(L"BUTTON",initialGroup.c_str(),BS_NOTIFY|WS_TABSTOP,ID_D_GROUP,h,0,0,1,1);
         g_d_folder=aicli::ui::CreateStyledInput(h,ID_D_FOLDER,g_font,L"输入或选择项目文件夹");
-        g_d_folder_browse=MakeDialogControl(L"BUTTON",L"选择文件夹",BS_PUSHBUTTON|WS_TABSTOP,ID_D_BROWSE,h,0,0,1,1);
+        g_d_folder_browse=MakeDialogControl(L"BUTTON",L"…",BS_PUSHBUTTON|WS_TABSTOP,ID_D_BROWSE,h,0,0,1,1);
         g_d_command=aicli::ui::CreateStyledInput(h,ID_D_COMMAND,g_font,L"输入启动命令");
         for(HWND field:{g_d_name,g_d_note,g_d_folder,g_d_command})
             aicli::ui::SetStyledInputTheme(field,g_theme);
-        MakeDialogControl(L"BUTTON",L"保存",BS_DEFPUSHBUTTON|WS_TABSTOP,ID_D_OK,h,0,0,1,1);
+        MakeDialogControl(L"BUTTON",L"确定",BS_DEFPUSHBUTTON|WS_TABSTOP,ID_D_OK,h,0,0,1,1);
         MakeDialogControl(L"BUTTON",L"取消",BS_PUSHBUTTON|WS_TABSTOP,ID_D_CANCEL,h,0,0,1,1);
+        g_d_close=MakeDialogControl(L"BUTTON",L"×",BS_PUSHBUTTON,ID_D_CLOSE,h,0,0,1,1);
         if(g_project_dialog_edit){SetWindowTextW(g_d_type,g_project_draft.type.c_str());aicli::ui::SetStyledInputText(g_d_name,g_project_draft.name);aicli::ui::SetStyledInputText(g_d_note,g_project_draft.note);aicli::ui::SetStyledInputText(g_d_folder,g_project_draft.folder);aicli::ui::SetStyledInputText(g_d_command,g_project_draft.command);}else{aicli::ui::SetStyledInputText(g_d_command,DefaultProjectCommand(initialType));}
         LayoutProjectDialog(h);SetFocus(g_d_name);return 0; }
     case WM_SIZE: LayoutProjectDialog(h);return 0;
@@ -185,7 +192,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(LOWORD(w)==ID_D_TYPE&&HIWORD(w)==BN_CLICKED){ShowProjectDropdown(h,g_d_type,true);return 0;}
         if(LOWORD(w)==ID_D_GROUP&&HIWORD(w)==BN_CLICKED){ShowProjectDropdown(h,g_d_group,false);return 0;}
         if(LOWORD(w)==ID_D_BROWSE){std::wstring selected;if(PickFolder(h,selected)){aicli::ui::SetStyledInputText(g_d_folder,selected);if(aicli::ui::GetStyledInputText(g_d_name).empty()){std::filesystem::path folder(selected);while(folder.filename().empty()&&folder.has_parent_path())folder=folder.parent_path();const std::wstring folderName=folder.filename().wstring();if(!folderName.empty())aicli::ui::SetStyledInputText(g_d_name,folderName);}InvalidateProjectControlFrame(h,g_d_folder);InvalidateProjectControlFrame(h,g_d_name);}return 0;}
-        if(LOWORD(w)==ID_D_CANCEL){DestroyWindow(h);return 0;}
+        if(LOWORD(w)==ID_D_CANCEL||LOWORD(w)==ID_D_CLOSE){DestroyWindow(h);return 0;}
         if(LOWORD(w)==ID_D_OK){
             g_project_draft.name=aicli::ui::GetStyledInputText(g_d_name);
             g_project_draft.note=aicli::ui::GetStyledInputText(g_d_note);
@@ -203,7 +210,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
             g_project_dialog_ok=true;DestroyWindow(h);return 0;
         } break;
     case WM_KEYDOWN:if(w==VK_ESCAPE){DestroyWindow(h);return 0;}break;
-    case WM_DESTROY:g_project_dropdown_open_control=nullptr;g_project_dialog=nullptr;g_d_name=g_d_note=g_d_type=g_d_group=g_d_folder=g_d_folder_browse=g_d_command=nullptr;return 0;
+    case WM_DESTROY:g_project_dropdown_open_control=nullptr;g_project_dialog=nullptr;g_d_name=g_d_note=g_d_type=g_d_group=g_d_folder=g_d_folder_browse=g_d_command=g_d_close=nullptr;return 0;
     case WM_CLOSE:DestroyWindow(h);return 0; }
     return DefWindowProcW(h,m,w,l);
 }
