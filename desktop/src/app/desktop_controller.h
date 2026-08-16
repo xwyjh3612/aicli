@@ -34,6 +34,7 @@ constexpr UINT kQtPairingPendingMessage = WM_APP + 43;
 constexpr UINT kQtAgentStatusMessage = WM_APP + 44;
 constexpr UINT kQtTerminalDirtyMessage = WM_APP + 45;
 constexpr UINT kQtWorkingStateMessage = WM_APP + 46;
+constexpr UINT kQtRemoteCreateProjectMessage = WM_APP + 47;
 
 class DesktopController final {
 public:
@@ -124,6 +125,7 @@ private:
     struct RemoteInputMessage;
     struct RemoteKeyMessage;
     struct RemoteControlMessage;
+    struct RemoteCreateProjectMessage;
     struct AgentStatusMessage;
     struct WorkingStateMessage;
 
@@ -135,6 +137,8 @@ private:
     bool HandleRemoteInput(const std::shared_ptr<RemoteInputMessage>& request);
     bool HandleRemoteKey(const std::shared_ptr<RemoteKeyMessage>& request);
     void HandleRemoteControl(std::unique_ptr<RemoteControlMessage> request);
+    void HandleRemoteCreateProject(
+        const std::shared_ptr<RemoteCreateProjectMessage>& request);
     void HandlePairing(std::unique_ptr<agent::PendingPairing> pairing);
     void HandleAgentStatus(std::unique_ptr<AgentStatusMessage> status);
     void HandleWorkingState(std::unique_ptr<WorkingStateMessage> state);

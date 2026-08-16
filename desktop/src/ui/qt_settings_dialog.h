@@ -66,6 +66,8 @@ private:
     QLineEdit* listen_port_{};
     QLineEdit* local_address_{};
     QLineEdit* remote_address_{};
+    QLineEdit* mobile_workspace_root_{};
+    QPushButton* mobile_access_{};
     QLabel* network_status_{};
     QListWidget* project_types_{};
     QListWidget* groups_{};

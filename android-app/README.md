@@ -17,6 +17,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File android-app/tools/build-release.ps1
 ```
 
+也可以直接双击项目根目录的 `build-android-release.bat` 一键完成正式版构建、
+签名验证、发布复制和 SHA-256 生成。
+
 脚本会生成并验证可安装的 Release APK。发布密钥保存在
 `F:\Android\AI-CLI\signing\ai-cli-release.p12`，随机密码使用当前 Windows
 账户的 DPAPI 加密保存，不会写入 Git。后续正式版本必须继续使用同一把密钥，

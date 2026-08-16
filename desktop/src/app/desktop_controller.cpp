@@ -11,6 +11,7 @@
 
 #include "core/process_metrics.h"
 #include "core/text_utils.h"
+#include "features/mobile_project_creation.h"
 #include "terminal/terminal_working_detector.h"
 
 namespace aicli::app {
@@ -68,6 +69,17 @@ struct DesktopController::RemoteControlMessage {
     std::wstring project_id;
     std::wstring phone_id;
     std::wstring action;
+};
+
+struct DesktopController::RemoteCreateProjectMessage {
+    mobile_projects::CreateRequest request;
+    mobile_projects::CreateResult result;
+    HANDLE completed{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+    std::atomic_bool cancelled{};
+
+    explicit RemoteCreateProjectMessage(
+        const mobile_projects::CreateRequest& value) : request(value) {}
+    ~RemoteCreateProjectMessage() { if (completed) CloseHandle(completed); }
 };
 
 struct DesktopController::AgentStatusMessage {
@@ -235,6 +247,34 @@ void DesktopController::ConfigureRemoteAgent() {
             return EventsJson(project, after);
         });
 
+    remote_agent_.SetCreateProjectCallback(
+        [this](const mobile_projects::CreateRequest& value) {
+            auto request = std::make_shared<RemoteCreateProjectMessage>(value);
+            if (!request->completed) {
+                request->result.http_status = 500;
+                request->result.error = L"无法创建项目同步事件";
+                return request->result;
+            }
+            auto* envelope = new (std::nothrow)
+                std::shared_ptr<RemoteCreateProjectMessage>(request);
+            if (!envelope || !ui_window_ ||
+                !PostMessageW(ui_window_, kQtRemoteCreateProjectMessage, 0,
+                              reinterpret_cast<LPARAM>(envelope))) {
+                delete envelope;
+                request->result.http_status = 503;
+                request->result.error = L"桌面窗口未就绪";
+                return request->result;
+            }
+            if (WaitForSingleObject(request->completed, 30000) != WAIT_OBJECT_0) {
+                request->cancelled = true;
+                mobile_projects::CreateResult timeout;
+                timeout.http_status = 504;
+                timeout.error = L"电脑端创建项目超时";
+                return timeout;
+            }
+            return request->result;
+        });
+
     remote_agent_.SetInputCallback(
         [this](const std::wstring& project, const std::wstring& phone,
                const std::wstring& input, std::wstring* error) {
@@ -322,11 +362,16 @@ void DesktopController::ConfigureRemoteAgent() {
             }
         });
 
+    remote_agent_.AttachStore(&store_);
+    if (!agent::IsMobileAccessEnabled(store_)) {
+        NotifyStatus(L"手机访问服务已关闭");
+        return;
+    }
     std::wstring error;
     if (!remote_agent_.Start(&store_, CurrentAgentConfig(), &error)) {
         NotifyStatus(L"Agent 启动失败: " + error);
     } else {
-        NotifyStatus(L"就绪");
+        NotifyStatus(L"手机访问服务在线");
     }
 }
 
@@ -345,11 +390,16 @@ agent::AgentConfig DesktopController::CurrentAgentConfig() {
 bool DesktopController::RestartAgent(const agent::AgentConfig& config,
                                      std::wstring* error) {
     remote_agent_.Stop();
+    if (!agent::IsMobileAccessEnabled(store_)) {
+        NotifyStatus(L"手机访问服务已关闭");
+        NotifyState();
+        return true;
+    }
     if (!remote_agent_.Start(&store_, config, error)) {
         NotifyStatus(L"Agent 启动失败: " + (error ? *error : L"未知错误"));
         return false;
     }
-    NotifyStatus(L"Agent 服务已重启");
+    NotifyStatus(L"手机访问服务在线");
     NotifyState();
     return true;
 }
@@ -764,13 +814,43 @@ void DesktopController::HandleRemoteControl(std::unique_ptr<RemoteControlMessage
     }
 }
 
+void DesktopController::HandleRemoteCreateProject(
+    const std::shared_ptr<RemoteCreateProjectMessage>& request) {
+    if (request->cancelled) {
+        request->result.http_status = 504;
+        request->result.error = L"创建项目请求已超时";
+        SetEvent(request->completed);
+        return;
+    }
+    request->result = mobile_projects::CreateProject(store_, request->request);
+    if (request->result.success) {
+        project_types_ = store_.LoadProjectTypes();
+        groups_ = store_.LoadGroups();
+        projects_ = store_.LoadProjects();
+        group_name_ = request->result.project.group.empty()
+            ? L"默认分组" : request->result.project.group;
+        selected_project_id_ = request->result.project.id;
+        store_.SetSetting(L"last_group", group_name_);
+        store_.SetSetting(L"last_project_id", selected_project_id_);
+        RefreshConversationCache();
+        NotifyStatus(L"手机已创建项目“" + request->result.project.name +
+                     L"”    |    选择右侧立即开始");
+        NotifyState();
+    }
+    SetEvent(request->completed);
+}
+
 void DesktopController::HandlePairing(std::unique_ptr<PendingPairing> pairing) {
     if (pairing && pairing_pending_) pairing_pending_(*pairing);
 }
 
 void DesktopController::HandleAgentStatus(std::unique_ptr<AgentStatusMessage> status) {
     if (!status) return;
-    if (agent_status_) agent_status_(status->online, status->text);
+    if (agent_status_) {
+        agent_status_(status->online,
+                      !status->online && !agent::IsMobileAccessEnabled(store_)
+                          ? L"手机访问服务已关闭" : status->text);
+    }
 }
 
 void DesktopController::HandleWorkingState(
@@ -813,6 +893,12 @@ bool DesktopController::HandleNativeMessage(UINT message, WPARAM, LPARAM lparam)
     if (message == kQtRemoteControlMessage) {
         HandleRemoteControl(std::unique_ptr<RemoteControlMessage>(
             reinterpret_cast<RemoteControlMessage*>(lparam)));
+        return true;
+    }
+    if (message == kQtRemoteCreateProjectMessage) {
+        std::unique_ptr<std::shared_ptr<RemoteCreateProjectMessage>> envelope(
+            reinterpret_cast<std::shared_ptr<RemoteCreateProjectMessage>*>(lparam));
+        if (envelope && *envelope) HandleRemoteCreateProject(*envelope);
         return true;
     }
     if (message == kQtPairingPendingMessage) {

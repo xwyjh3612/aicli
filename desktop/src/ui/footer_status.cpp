@@ -171,15 +171,18 @@ bool FooterStatusController::AdvanceRepositorySpinner() {
     return true;
 }
 
-bool FooterStatusController::UpdateTelemetry(bool agent_online,
+bool FooterStatusController::UpdateTelemetry(bool mobile_access_enabled,
+                                             bool agent_online,
                                              std::size_t memory_megabytes,
                                              bool remote_configured) {
     const bool changed = !telemetry_initialized_ ||
+                         mobile_access_enabled_ != mobile_access_enabled ||
                          agent_online_ != agent_online ||
                          memory_megabytes_ != memory_megabytes ||
                          remote_configured_ != remote_configured;
     if (!changed) return false;
     telemetry_initialized_ = true;
+    mobile_access_enabled_ = mobile_access_enabled;
     agent_online_ = agent_online;
     memory_megabytes_ = memory_megabytes;
     remote_configured_ = remote_configured;
@@ -567,9 +570,9 @@ void FooterStatusController::Draw(HDC dc,
     else if (font) SelectObject(dc, font);
 
     const int telemetry_top = client.bottom - footer_height;
-    const std::wstring agent_label = agent_online_
-        ? L"● Agent 在线"
-        : L"○ Agent 离线";
+    const std::wstring agent_label = !mobile_access_enabled_
+        ? L"○ 手机访问关闭"
+        : (agent_online_ ? L"● Agent 在线" : L"○ Agent 离线");
     const std::wstring memory_label =
         L"内存 " + std::to_wstring(memory_megabytes_) + L" MB";
     const std::wstring relay_label = remote_configured_
@@ -581,9 +584,9 @@ void FooterStatusController::Draw(HDC dc,
         agent_rect.right, telemetry_top, agent_rect.right + scale(108), client.bottom};
     RECT relay_rect{
         memory_rect.right, telemetry_top, client.right - scale(10), client.bottom};
-    SetTextColor(dc, agent_online_
-        ? RGB(83, 203, 146)
-        : RGB(225, 101, 112));
+    SetTextColor(dc, !mobile_access_enabled_
+        ? theme.muted
+        : (agent_online_ ? RGB(83, 203, 146) : RGB(225, 101, 112)));
     DrawTextW(dc, agent_label.c_str(), -1, &agent_rect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     SetTextColor(dc, theme.muted);

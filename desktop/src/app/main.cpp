@@ -40,6 +40,7 @@
 #include "core/process_metrics.h"
 #include "core/text_utils.h"
 #include "data/data_store.h"
+#include "features/mobile_project_creation.h"
 #include "terminal/conpty_connection_bridge.h"
 #include "terminal/terminal_working_detector.h"
 #include "terminal/xaml_island_adapter.h"
@@ -74,6 +75,7 @@ constexpr UINT WM_OPEN_SETTINGS = WM_APP + 26;
 constexpr UINT WM_REMOTE_KEY = WM_APP + 27;
 constexpr UINT WM_AGENT_WORKING_STATE = WM_APP + 28;
 constexpr UINT WM_GIT_STATUS_READY = WM_APP + 29;
+constexpr UINT WM_REMOTE_CREATE_PROJECT = WM_APP + 30;
 constexpr int ID_PROJECT_LIST = 1001;
 constexpr int ID_NEW_PROJECT = 1004;
 constexpr int ID_SETTINGS = 1005;
@@ -148,6 +150,15 @@ struct RemoteKeyMessage {
     RemoteKeyMessage(std::wstring project,std::wstring phone,std::wstring value):
         project_id(std::move(project)),phone_id(std::move(phone)),key(std::move(value)){}
     ~RemoteKeyMessage(){if(completed)CloseHandle(completed);}
+};
+struct RemoteCreateProjectMessage {
+    aicli::mobile_projects::CreateRequest request;
+    aicli::mobile_projects::CreateResult result;
+    HANDLE completed{CreateEventW(nullptr,TRUE,FALSE,nullptr)};
+    std::atomic_bool cancelled{};
+    explicit RemoteCreateProjectMessage(
+        const aicli::mobile_projects::CreateRequest& value):request(value){}
+    ~RemoteCreateProjectMessage(){if(completed)CloseHandle(completed);}
 };
 struct AgentStatusMessage { bool online{}; std::wstring text; };
 struct AgentWorkingStateMessage { std::wstring project_id; bool working{}; };
@@ -955,6 +966,7 @@ std::string EventsJson(const std::wstring& project_id,std::int64_t after){return
 void UpdateDeviceHeader(){if(!g_devices)return;const auto count=g_store.LoadDevices().size();SetText(g_devices,L"已绑定 "+std::to_wstring(count)+L" 台");InvalidateRect(g_hwnd,nullptr,FALSE);}
 void UpdateHeaderTelemetry(){
     g_footer_status.UpdateTelemetry(
+        aicli::agent::IsMobileAccessEnabled(g_store),
         g_remote_agent.Online(),
         WorkingSetMegabytes(),
         !g_store.GetSetting(L"remote_address").empty());
@@ -976,6 +988,33 @@ void ConfigureRemoteAgent(){
         });
     g_remote_agent.SetConversationsCallback([]{return ConversationsJson();});
     g_remote_agent.SetEventsCallback([](const std::wstring& project,std::int64_t after){return EventsJson(project,after);});
+    g_remote_agent.SetCreateProjectCallback(
+        [](const aicli::mobile_projects::CreateRequest& value){
+            auto request=std::make_shared<RemoteCreateProjectMessage>(value);
+            if(!request->completed){
+                request->result.http_status=500;
+                request->result.error=L"无法创建项目同步事件";
+                return request->result;
+            }
+            auto* envelope=new(std::nothrow)
+                std::shared_ptr<RemoteCreateProjectMessage>(request);
+            if(!envelope||!g_hwnd||
+               !PostMessageW(g_hwnd,WM_REMOTE_CREATE_PROJECT,0,
+                             reinterpret_cast<LPARAM>(envelope))){
+                delete envelope;
+                request->result.http_status=503;
+                request->result.error=L"桌面窗口未就绪";
+                return request->result;
+            }
+            if(WaitForSingleObject(request->completed,30000)!=WAIT_OBJECT_0){
+                request->cancelled=true;
+                aicli::mobile_projects::CreateResult timeout;
+                timeout.http_status=504;
+                timeout.error=L"电脑端创建项目超时";
+                return timeout;
+            }
+            return request->result;
+        });
     g_remote_agent.SetInputCallback([](const std::wstring& project,const std::wstring& phone,
                                        const std::wstring& input,std::wstring* error){
         auto request=std::make_shared<RemoteInputMessage>(project,phone,input);
@@ -1017,7 +1056,13 @@ void ConfigureRemoteAgent(){
     g_remote_agent.SetControlCallback([](const std::wstring& project,const std::wstring& phone,const std::wstring& action,std::wstring* error){auto* message=new(std::nothrow) RemoteControlMessage{project,phone,action};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_REMOTE_CONTROL,0,reinterpret_cast<LPARAM>(message))){delete message;if(error)*error=L"桌面窗口未就绪";return false;}return true;});
     g_remote_agent.SetPairingCallback([](const aicli::agent::PendingPairing& pairing){auto* message=new(std::nothrow) aicli::agent::PendingPairing(pairing);if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_PAIRING_PENDING,0,reinterpret_cast<LPARAM>(message)))delete message;});
     g_remote_agent.SetStatusCallback([](bool online,const std::wstring& text){auto* message=new(std::nothrow) AgentStatusMessage{online,text};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_AGENT_STATUS,0,reinterpret_cast<LPARAM>(message)))delete message;});
-    aicli::agent::AgentConfig config;config.computer_name=g_store.GetSetting(L"computer_name",aicli::text::LocalComputerName());config.bind_address=g_store.GetSetting(L"listen_address",L"0.0.0.0");config.port=g_store.GetSetting(L"listen_port",L"4280");config.local_address=g_store.GetSetting(L"local_address");config.remote_address=g_store.GetSetting(L"remote_address");config.data_directory=aicli::DefaultDataDirectory();std::wstring error;if(!g_remote_agent.Start(&g_store,config,&error))SetStatusText(L"Agent 启动失败: "+error);else SetStatusText(L"就绪");UpdateDeviceHeader();
+    g_remote_agent.AttachStore(&g_store);
+    if(!aicli::agent::IsMobileAccessEnabled(g_store)){
+        SetStatusText(L"手机访问服务已关闭");
+        UpdateDeviceHeader();
+        return;
+    }
+    aicli::agent::AgentConfig config;config.computer_name=g_store.GetSetting(L"computer_name",aicli::text::LocalComputerName());config.bind_address=g_store.GetSetting(L"listen_address",L"0.0.0.0");config.port=g_store.GetSetting(L"listen_port",L"4280");config.local_address=g_store.GetSetting(L"local_address");config.remote_address=g_store.GetSetting(L"remote_address");config.data_directory=aicli::DefaultDataDirectory();std::wstring error;if(!g_remote_agent.Start(&g_store,config,&error))SetStatusText(L"Agent 启动失败: "+error);else SetStatusText(L"手机访问服务在线");UpdateDeviceHeader();
 }
 
 aicli::agent::AgentConfig CurrentAgentConfig() {
@@ -1034,11 +1079,17 @@ aicli::agent::AgentConfig CurrentAgentConfig() {
 
 bool RestartAgent(const aicli::agent::AgentConfig& config, std::wstring* error) {
     g_remote_agent.Stop();
+    if (!aicli::agent::IsMobileAccessEnabled(g_store)) {
+        if (g_status) SetStatusText(L"手机访问服务已关闭");
+        UpdateDeviceHeader();
+        UpdateHeaderTelemetry();
+        return true;
+    }
     if (!g_remote_agent.Start(&g_store, config, error)) {
         if (g_status) SetStatusText(L"Agent 启动失败: " + (error ? *error : L"未知错误"));
         return false;
     }
-    if (g_status) SetStatusText(L"Agent 服务已重启");
+    if (g_status) SetStatusText(L"手机访问服务在线");
     UpdateDeviceHeader();
     return true;
 }
@@ -1390,8 +1441,41 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         }else if(message->action==L"ctrl_c")g_island.WriteInput(message->project_id,std::wstring(1,L'\x03'));
         return 0;
     }
+    case WM_REMOTE_CREATE_PROJECT:{
+        std::unique_ptr<std::shared_ptr<RemoteCreateProjectMessage>> envelope(
+            reinterpret_cast<std::shared_ptr<RemoteCreateProjectMessage>*>(l));
+        if(!envelope||!*envelope)return 0;
+        const auto request=*envelope;
+        if(request->cancelled){
+            request->result.http_status=504;
+            request->result.error=L"创建项目请求已超时";
+            SetEvent(request->completed);
+            return 0;
+        }
+        request->result=aicli::mobile_projects::CreateProject(
+            g_store,request->request);
+        if(request->result.success){
+            const std::wstring project_id=request->result.project.id;
+            g_project_types=g_store.LoadProjectTypes();
+            g_groups=g_store.LoadGroups();
+            g_projects=g_store.LoadProjects();
+            g_group_name=request->result.project.group.empty()
+                ?L"默认分组":request->result.project.group;
+            g_last_project_id=project_id;
+            g_store.SetSetting(L"last_group",g_group_name);
+            g_store.SetSetting(L"last_project_id",project_id);
+            SetText(g_group,g_group_name);
+            SendMessageW(g_list,LB_SETCURSEL,static_cast<WPARAM>(-1),0);
+            RefreshProjectList();
+            Layout();
+            SetStatusText(L"手机已创建项目“"+request->result.project.name+
+                          L"”    |    选择右侧立即开始");
+        }
+        SetEvent(request->completed);
+        return 0;
+    }
     case WM_PAIRING_PENDING:{std::unique_ptr<aicli::agent::PendingPairing> pairing(reinterpret_cast<aicli::agent::PendingPairing*>(l));if(!pairing)return 0;g_pending_pairing=*pairing;if(g_binding_dialog){LayoutBindingDialog(g_binding_dialog);InvalidateRect(g_binding_dialog,nullptr,FALSE);}else if(pairing->submitted&&!pairing->authorized&&!pairing->rejected){const std::wstring text=L"手机名称："+pairing->device.name+L"\n型号："+pairing->device.model+L"\n设备 ID："+pairing->device.phone_id+L"\n\n确认后该手机可远程操作管理员终端。";const bool approve=MessageBoxW(h,text.c_str(),L"确认绑定手机",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES;std::wstring error;if(!g_remote_agent.ConfirmPairing(pairing->info.pairing_id,approve,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);}UpdateDeviceHeader();return 0;}
-    case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message&&!message->online)SetStatusText(message->text);UpdateHeaderTelemetry();return 0;}
+    case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message&&!message->online)SetStatusText(aicli::agent::IsMobileAccessEnabled(g_store)?message->text:L"手机访问服务已关闭");UpdateHeaderTelemetry();return 0;}
     case WM_AGENT_WORKING_STATE:{std::unique_ptr<AgentWorkingStateMessage> message(reinterpret_cast<AgentWorkingStateMessage*>(l));if(message)SetProjectWorkingState(message->project_id,message->working);return 0;}
     case WM_GIT_STATUS_READY:{
         std::unique_ptr<GitStatusMessage> message(

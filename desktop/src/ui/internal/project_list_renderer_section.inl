@@ -312,6 +312,10 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         stateIcon=StateIcon::Warning;
         stateColor=g_light_theme?RGB(190,132,26):RGB(244,187,72);
     }
+    if(!g_light_theme&&stateIcon==StateIcon::Idle){
+        stateColor=selected?RGB(168,199,240):
+            (hovered?RGB(145,164,189):RGB(113,128,150));
+    }
     if(sourceDragging)stateColor=muted;
 
     {
@@ -336,7 +340,8 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         Gdiplus::RectF iconBounds{iconX,iconY,iconSize,iconSize};
         const bool workingSpinner=stateIcon==StateIcon::Running&&IsProjectWorking(project);
         Gdiplus::SolidBrush halo(SmoothColor(stateColor,30));
-        if(!workingSpinner&&stateIcon!=StateIcon::Running)
+        if(!workingSpinner&&stateIcon!=StateIcon::Running&&
+           stateIcon!=StateIcon::Idle)
             graphics.FillEllipse(&halo,iconBounds);
         Gdiplus::Pen iconPen(SmoothColor(stateColor),ScaleUiF(1.65f));
         iconPen.SetStartCap(Gdiplus::LineCapRound);

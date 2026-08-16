@@ -42,7 +42,8 @@ public:
         aicli::git::RepositoryStatus repository);
     bool AdvanceRepositorySpinner();
     bool repository_loading() const noexcept { return repository_loading_; }
-    bool UpdateTelemetry(bool agent_online,
+    bool UpdateTelemetry(bool mobile_access_enabled,
+                         bool agent_online,
                          std::size_t memory_megabytes,
                          bool remote_configured);
 
@@ -91,6 +92,7 @@ private:
     bool repository_loading_{};
     unsigned repository_spinner_frame_{};
     bool telemetry_initialized_{};
+    bool mobile_access_enabled_{};
     bool agent_online_{};
     std::size_t memory_megabytes_{};
     bool remote_configured_{};

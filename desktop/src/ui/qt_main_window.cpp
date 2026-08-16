@@ -788,7 +788,9 @@ void MainWindow::createGroup() {
 void MainWindow::showBindingDialog() {
     if (!controller_.agent().Online()) {
         QMessageBox::warning(this, QStringLiteral("绑定手机"),
-                             QStringLiteral("HTTPS/WSS Agent 未启动，请先检查设置中的端口。"));
+                             aicli::agent::IsMobileAccessEnabled(controller_.store())
+                                 ? QStringLiteral("手机访问服务启动失败，请检查设置中的监听地址和端口。")
+                                 : QStringLiteral("手机访问服务已关闭，请先在设置的“本机与网络”中开启。"));
         return;
     }
     BindingDialog dialog(controller_, this);
@@ -923,7 +925,10 @@ void MainWindow::setStatus(const std::wstring& text) {
 }
 
 void MainWindow::updateTelemetry() {
-    const QString agent = controller_.agent().Online() ? QStringLiteral("Agent 在线") : QStringLiteral("Agent 离线");
+    const QString agent = !aicli::agent::IsMobileAccessEnabled(controller_.store())
+        ? QStringLiteral("手机访问已关闭")
+        : (controller_.agent().Online() ? QStringLiteral("Agent 在线")
+                                        : QStringLiteral("Agent 离线"));
     const bool remote = !controller_.store().GetSetting(L"remote_address").empty();
     telemetry_->setText(agent + QStringLiteral("  |  内存 ") +
                         QString::number(controller_.WorkingSetMegabytes()) +

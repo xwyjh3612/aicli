@@ -27,6 +27,7 @@ import android.view.animation.AlphaAnimation;
 import android.view.animation.Animation;
 import android.widget.ArrayAdapter;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -46,7 +47,10 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.google.android.material.textfield.MaterialAutoCompleteTextView;
+import com.google.android.material.textfield.TextInputLayout;
 import com.google.android.material.button.MaterialButton;
+import com.google.android.material.bottomsheet.BottomSheetBehavior;
+import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -243,6 +247,8 @@ public final class MainActivity extends AppCompatActivity {
                 startActivity(new Intent(this, SettingsActivity.class)));
         findViewById(R.id.scanButton).setOnClickListener(view -> openScannerInSettings());
         findViewById(R.id.conversationsButton).setOnClickListener(view -> toggleConversationList());
+        findViewById(R.id.createProjectButton).setOnClickListener(view ->
+                showCreateProjectSheet());
         findViewById(R.id.closeDrawerButton).setOnClickListener(view ->
                 drawerLayout.closeDrawer(GravityCompat.START));
         sendButton.setOnClickListener(view -> handleComposerAction());
@@ -349,6 +355,208 @@ public final class MainActivity extends AppCompatActivity {
         Intent intent = new Intent(this, SettingsActivity.class);
         intent.putExtra(SettingsActivity.EXTRA_OPEN_SCANNER, true);
         startActivity(intent);
+    }
+
+    private void showCreateProjectSheet() {
+        if (client == null || client.baseUrl().isEmpty()) {
+            Toast.makeText(this, "请先连接一台电脑", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        final AicliClient requestClient = client;
+        final long requestGeneration = serverGeneration;
+        BottomSheetDialog dialog = new BottomSheetDialog(this);
+        View content = getLayoutInflater().inflate(R.layout.dialog_create_project, null);
+        dialog.setContentView(content);
+        dialog.setOnShowListener(ignored -> {
+            FrameLayout bottomSheet = dialog.findViewById(
+                    com.google.android.material.R.id.design_bottom_sheet);
+            if (bottomSheet == null) return;
+            bottomSheet.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+            BottomSheetBehavior<FrameLayout> behavior = BottomSheetBehavior.from(bottomSheet);
+            behavior.setSkipCollapsed(true);
+            behavior.setState(BottomSheetBehavior.STATE_EXPANDED);
+        });
+
+        TextInputLayout nameLayout = content.findViewById(R.id.projectNameLayout);
+        EditText nameInput = content.findViewById(R.id.projectNameInput);
+        MaterialAutoCompleteTextView typeSelector =
+                content.findViewById(R.id.projectTypeSelector);
+        MaterialAutoCompleteTextView groupSelector =
+                content.findViewById(R.id.projectGroupSelector);
+        TextView pathPreview = content.findViewById(R.id.projectPathPreview);
+        TextView status = content.findViewById(R.id.projectCreationStatus);
+        MaterialButton cancel = content.findViewById(R.id.cancelCreateProjectButton);
+        MaterialButton confirm = content.findViewById(R.id.confirmCreateProjectButton);
+        final String[] rootDirectory = {""};
+        final long[] selectedTypeId = {0L};
+        final long[] selectedGroupId = {0L};
+
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        nameInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start,
+                    int count, int after) { }
+
+            @Override public void onTextChanged(CharSequence value, int start,
+                    int before, int count) {
+                nameLayout.setError(null);
+                updateProjectPathPreview(pathPreview, rootDirectory[0], value.toString());
+            }
+
+            @Override public void afterTextChanged(Editable value) { }
+        });
+
+        requestClient.loadProjectCreationOptions(
+                new AicliClient.ProjectCreationOptionsCallback() {
+                    @Override public void onSuccess(
+                            AicliClient.ProjectCreationOptions options) {
+                        runOnUiThread(() -> {
+                            if (client != requestClient ||
+                                    serverGeneration != requestGeneration ||
+                                    !dialog.isShowing()) return;
+                            rootDirectory[0] = options.rootDirectory;
+                            updateProjectPathPreview(
+                                    pathPreview, rootDirectory[0],
+                                    nameInput.getText().toString());
+                            if (options.types.isEmpty() || options.groups.isEmpty()) {
+                                status.setText(options.types.isEmpty()
+                                        ? "电脑端还没有可用的项目类型"
+                                        : "电脑端还没有可用的项目分组");
+                                return;
+                            }
+
+                            List<String> typeNames = new ArrayList<>();
+                            int defaultTypeIndex = 0;
+                            for (int index = 0; index < options.types.size(); index++) {
+                                AicliClient.ProjectChoice choice = options.types.get(index);
+                                typeNames.add(choice.name);
+                                if (choice.id == options.defaultTypeId) defaultTypeIndex = index;
+                            }
+                            List<String> groupNames = new ArrayList<>();
+                            int defaultGroupIndex = 0;
+                            for (int index = 0; index < options.groups.size(); index++) {
+                                AicliClient.ProjectChoice choice = options.groups.get(index);
+                                groupNames.add(choice.name);
+                                if (choice.id == options.defaultGroupId) defaultGroupIndex = index;
+                            }
+                            selectedTypeId[0] = options.types.get(defaultTypeIndex).id;
+                            selectedGroupId[0] = options.groups.get(defaultGroupIndex).id;
+                            typeSelector.setAdapter(new ArrayAdapter<>(
+                                    MainActivity.this, R.layout.item_group_dropdown, typeNames));
+                            groupSelector.setAdapter(new ArrayAdapter<>(
+                                    MainActivity.this, R.layout.item_group_dropdown, groupNames));
+                            typeSelector.setText(typeNames.get(defaultTypeIndex), false);
+                            groupSelector.setText(groupNames.get(defaultGroupIndex), false);
+                            typeSelector.setOnItemClickListener((parent, view, position, id) -> {
+                                if (position >= 0 && position < options.types.size()) {
+                                    selectedTypeId[0] = options.types.get(position).id;
+                                }
+                            });
+                            groupSelector.setOnItemClickListener((parent, view, position, id) -> {
+                                if (position >= 0 && position < options.groups.size()) {
+                                    selectedGroupId[0] = options.groups.get(position).id;
+                                }
+                            });
+                            status.setText("");
+                            confirm.setEnabled(true);
+                        });
+                    }
+
+                    @Override public void onError(String message) {
+                        runOnUiThread(() -> {
+                            if (!dialog.isShowing()) return;
+                            status.setText(message);
+                        });
+                    }
+                });
+
+        confirm.setOnClickListener(view -> {
+            String name = nameInput.getText().toString().trim();
+            if (name.isEmpty()) {
+                nameLayout.setError("请输入项目名称");
+                nameInput.requestFocus();
+                return;
+            }
+            if (selectedTypeId[0] <= 0L || selectedGroupId[0] <= 0L) {
+                status.setText("项目类型或分组尚未加载完成");
+                return;
+            }
+            confirm.setEnabled(false);
+            cancel.setEnabled(false);
+            nameInput.setEnabled(false);
+            typeSelector.setEnabled(false);
+            groupSelector.setEnabled(false);
+            status.setTextColor(ContextCompat.getColor(
+                    MainActivity.this, R.color.aicli_text_secondary));
+            status.setText("正在电脑上创建项目…");
+            requestClient.createProject(name, selectedTypeId[0], selectedGroupId[0],
+                    new AicliClient.ProjectCreationCallback() {
+                        @Override public void onSuccess(AicliClient.Conversation project) {
+                            runOnUiThread(() -> {
+                                if (client != requestClient ||
+                                        serverGeneration != requestGeneration) return;
+                                dialog.dismiss();
+                                selectNewlyCreatedProject(project);
+                                Toast.makeText(MainActivity.this,
+                                        "项目已创建，尚未启动", Toast.LENGTH_SHORT).show();
+                                loadConversations();
+                            });
+                        }
+
+                        @Override public void onError(String message) {
+                            runOnUiThread(() -> {
+                                if (!dialog.isShowing()) {
+                                    Toast.makeText(MainActivity.this, message,
+                                            Toast.LENGTH_SHORT).show();
+                                    return;
+                                }
+                                confirm.setEnabled(true);
+                                cancel.setEnabled(true);
+                                nameInput.setEnabled(true);
+                                typeSelector.setEnabled(true);
+                                groupSelector.setEnabled(true);
+                                status.setTextColor(ContextCompat.getColor(
+                                        MainActivity.this,
+                                        R.color.aicli_connection_failed));
+                                status.setText(message);
+                            });
+                        }
+                    });
+        });
+        dialog.show();
+    }
+
+    private void updateProjectPathPreview(TextView view, String root, String name) {
+        if (root == null || root.trim().isEmpty()) {
+            view.setText("电脑端尚未配置手机项目目录");
+            return;
+        }
+        String normalizedRoot = root.trim();
+        String separator = normalizedRoot.endsWith("\\") || normalizedRoot.endsWith("/")
+                ? "" : "\\";
+        String leaf = name == null || name.trim().isEmpty()
+                ? "项目名称" : name.trim();
+        view.setText(normalizedRoot + separator + leaf);
+    }
+
+    private void selectNewlyCreatedProject(AicliClient.Conversation project) {
+        if (project == null || project.id == null || project.id.isEmpty()) return;
+        for (int index = allConversations.size() - 1; index >= 0; index--) {
+            if (project.id.equals(allConversations.get(index).id)) {
+                allConversations.remove(index);
+            }
+        }
+        allConversations.add(project);
+        cacheConversations(allConversations);
+        selectedConversationId = null;
+        selectedConversation = null;
+        pendingConversationId = project.id;
+        selectedGroup = project.group == null || project.group.isEmpty()
+                ? "默认分组" : project.group;
+        getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit()
+                .putString("selected_group", selectedGroup).apply();
+        rebuildGroupSelector(allConversations);
+        renderSelectedGroup(false);
     }
 
     private void configureClient() {
@@ -571,7 +779,7 @@ public final class MainActivity extends AppCompatActivity {
             selectedConversation = null;
             conversationAdapter.select(null);
             hideConversation();
-            showEmptyState("这个分组还没有项目", "请先在电脑端创建项目，手机会自动同步最新分组和会话。");
+            showEmptyState("这个分组还没有项目", "点击项目列表右上角的 +，即可在当前电脑上创建项目。");
             return;
         }
 

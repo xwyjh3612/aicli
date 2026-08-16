@@ -79,6 +79,34 @@ public final class AicliClient {
         }
     }
 
+    public static final class ProjectChoice {
+        public final long id;
+        public final String name;
+
+        ProjectChoice(long id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+    }
+
+    public static final class ProjectCreationOptions {
+        public final String rootDirectory;
+        public final long defaultTypeId;
+        public final long defaultGroupId;
+        public final List<ProjectChoice> types;
+        public final List<ProjectChoice> groups;
+
+        ProjectCreationOptions(String rootDirectory, long defaultTypeId,
+                               long defaultGroupId, List<ProjectChoice> types,
+                               List<ProjectChoice> groups) {
+            this.rootDirectory = rootDirectory;
+            this.defaultTypeId = defaultTypeId;
+            this.defaultGroupId = defaultGroupId;
+            this.types = types;
+            this.groups = groups;
+        }
+    }
+
     public static final class TerminalHistoryPage {
         public final String historyToken;
         public final List<String> lines;
@@ -100,6 +128,14 @@ public final class AicliClient {
     }
 
     public interface ConversationCallback { void onSuccess(List<Conversation> conversations); void onError(String message); }
+    public interface ProjectCreationOptionsCallback {
+        void onSuccess(ProjectCreationOptions options);
+        void onError(String message);
+    }
+    public interface ProjectCreationCallback {
+        void onSuccess(Conversation project);
+        void onError(String message);
+    }
     public interface ActionCallback { void onSuccess(); void onError(String message); }
     public interface AttachmentCallback { void onSuccess(String path); void onError(String message); }
     public interface EventCallback {
@@ -394,6 +430,52 @@ public final class AicliClient {
 
     public void listConversations(ConversationCallback callback) {
         listConversations(null, callback);
+    }
+
+    public void loadProjectCreationOptions(ProjectCreationOptionsCallback callback) {
+        signedRequest("GET", "/api/project-creation/options", "", new ResponseCallback() {
+            @Override public void onResponse(JsonObject root, int status) {
+                callback.onSuccess(new ProjectCreationOptions(
+                        stringValue(root, "rootDirectory"),
+                        longValue(root, "defaultTypeId", 0L),
+                        longValue(root, "defaultGroupId", 0L),
+                        parseProjectChoices(root, "types"),
+                        parseProjectChoices(root, "groups")));
+            }
+
+            @Override public void onError(String message) {
+                callback.onError(message);
+            }
+        });
+    }
+
+    public void createProject(String name, long typeId, long groupId,
+                              ProjectCreationCallback callback) {
+        JsonObject body = new JsonObject();
+        body.addProperty("name", name == null ? "" : name.trim());
+        body.addProperty("typeId", typeId);
+        body.addProperty("groupId", groupId);
+        signedRequest("POST", "/api/projects", body.toString(), new ResponseCallback() {
+            @Override public void onResponse(JsonObject root, int status) {
+                if (!root.has("project") || !root.get("project").isJsonObject()) {
+                    callback.onError("电脑端没有返回新项目");
+                    return;
+                }
+                JsonObject project = root.getAsJsonObject("project");
+                callback.onSuccess(new Conversation(
+                        stringValue(project, "id"),
+                        stringValue(project, "name"),
+                        stringValue(project, "provider"),
+                        stringValue(project, "type"),
+                        stringValue(project, "group"),
+                        stringValue(project, "folder"),
+                        stringValue(project, "status")));
+            }
+
+            @Override public void onError(String message) {
+                callback.onError(message);
+            }
+        });
     }
 
     public void control(String conversationId, String action, ActionCallback callback) {
@@ -1394,6 +1476,26 @@ public final class AicliClient {
     private static String bytesToHex(byte[] bytes) { StringBuilder builder = new StringBuilder(bytes.length * 2); for (byte value : bytes) builder.append(String.format(Locale.US, "%02X", value & 0xff)); return builder.toString(); }
     private static String safePath(String value) { return value == null ? "" : value.replaceAll("[^A-Za-z0-9_.-]", ""); }
     private static String stringValue(JsonObject object, String name) { return object.has(name) && !object.get(name).isJsonNull() ? object.get(name).getAsString() : ""; }
+    private static long longValue(JsonObject object, String name, long fallback) {
+        try {
+            return object.has(name) && !object.get(name).isJsonNull()
+                    ? object.get(name).getAsLong() : fallback;
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+    private static List<ProjectChoice> parseProjectChoices(JsonObject object, String name) {
+        List<ProjectChoice> result = new ArrayList<>();
+        if (!object.has(name) || !object.get(name).isJsonArray()) return result;
+        for (JsonElement element : object.getAsJsonArray(name)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject value = element.getAsJsonObject();
+            long id = longValue(value, "id", 0L);
+            String label = stringValue(value, "name");
+            if (id > 0L && !label.isEmpty()) result.add(new ProjectChoice(id, label));
+        }
+        return result;
+    }
     private static JsonObject parseObject(String body) { JsonElement element = JsonParser.parseString(body == null || body.isEmpty() ? "{}" : body); return element.isJsonObject() ? element.getAsJsonObject() : new JsonObject(); }
     private static String errorText(String body) { try { return "：" + stringValue(parseObject(body), "error"); } catch (Exception ignored) { return ""; } }
     private static boolean isRetryableSequenceRejection(String body) {

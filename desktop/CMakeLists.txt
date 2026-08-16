@@ -50,6 +50,7 @@ set(AICLI_COMMON_SOURCES
     src/core/text_utils.cpp
     src/data/data_store.cpp
     src/features/git_repository.cpp
+    src/features/mobile_project_creation.cpp
     "F:/deps/aicli/civetweb-1.16/src/civetweb.c"
     "F:/deps/aicli/qrcodegen/qrcodegen.cpp"
     src/terminal/conpty_connection_bridge.cpp

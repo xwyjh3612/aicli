@@ -40,6 +40,7 @@ constexpr std::size_t kMaximumAttachmentBytes = 6 * 1024 * 1024;
 constexpr std::size_t kPackedBatchTargetBytes = 512 * 1024;
 constexpr std::size_t kMaximumQueuedTerminalBytes = 8 * 1024 * 1024;
 constexpr auto kPackedBatchDelay = std::chrono::milliseconds(20);
+constexpr wchar_t kMobileAccessEnabledSetting[] = L"mobile_access_enabled";
 
 std::int64_t Now() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -243,6 +244,14 @@ void SetCertificatePermissions(const std::wstring& path) {
 
 }
 
+bool IsMobileAccessEnabled(DataStore& store) {
+    return store.GetSetting(kMobileAccessEnabledSetting, L"0") == L"1";
+}
+
+void SetMobileAccessEnabled(DataStore& store, bool enabled) {
+    store.SetSetting(kMobileAccessEnabledSetting, enabled ? L"1" : L"0");
+}
+
 struct RemoteAgent::WsClient {
     std::atomic<mg_connection*> connection{};
     std::wstring phone_id;
@@ -263,6 +272,11 @@ RemoteAgent::~RemoteAgent() {
     Stop();
 }
 
+void RemoteAgent::AttachStore(DataStore* store) {
+    std::scoped_lock lock(mutex_);
+    store_ = store;
+}
+
 bool RemoteAgent::Start(DataStore* store, const AgentConfig& config, std::wstring* error) {
     std::scoped_lock lock(mutex_);
     if (online_) return true;
@@ -270,6 +284,10 @@ bool RemoteAgent::Start(DataStore* store, const AgentConfig& config, std::wstrin
     config_ = config;
     if (!store_) {
         if (error) *error = L"Agent 未连接 SQLite";
+        return false;
+    }
+    if (!IsMobileAccessEnabled(*store_)) {
+        if (error) *error = L"手机访问服务已关闭";
         return false;
     }
     if (config_.computer_name.empty()) {
@@ -335,6 +353,8 @@ void RemoteAgent::Stop() {
         tokens_.clear();
         auth_challenges_.clear();
         input_leases_.clear();
+        pending_pairings_.clear();
+        last_pairing_ = {};
         for (const auto& client : websocket_clients_) if (client) client->closed = true;
     }
     RequestWebSocketSenderStop();
@@ -363,6 +383,7 @@ void RemoteAgent::SetInputCallback(InputCallback callback) { std::scoped_lock l(
 void RemoteAgent::SetKeyCallback(KeyCallback callback) { std::scoped_lock l(mutex_); key_callback_=std::move(callback); }
 void RemoteAgent::SetControlCallback(ControlCallback callback) { std::scoped_lock l(mutex_); control_callback_=std::move(callback); }
 void RemoteAgent::SetConversationsCallback(ConversationsCallback callback) { std::scoped_lock l(mutex_); conversations_callback_=std::move(callback); }
+void RemoteAgent::SetCreateProjectCallback(CreateProjectCallback callback) { std::scoped_lock l(mutex_); create_project_callback_=std::move(callback); }
 void RemoteAgent::SetEventsCallback(EventsCallback callback) { std::scoped_lock l(mutex_); events_callback_=std::move(callback); }
 void RemoteAgent::SetTerminalReplayCallback(TerminalReplayCallback callback) { std::scoped_lock l(mutex_); terminal_replay_callback_=std::move(callback); }
 void RemoteAgent::SetTerminalHistoryCallback(TerminalHistoryCallback callback) { std::scoped_lock l(mutex_); terminal_history_callback_=std::move(callback); }
@@ -682,6 +703,53 @@ int RemoteAgent::OnHttp(struct mg_connection* connection) {
             response["computerName"]=Utf8(config_.computer_name);
             WriteJson(connection,200,JsonString(response));return 200;
         }
+        if(path=="/api/project-creation/options"&&method=="GET"){
+            if(!store_){WriteError(connection,503,L"项目数据库未就绪");return 503;}
+            const auto options=mobile_projects::LoadCreationOptions(*store_);
+            json types=json::array();
+            for(const auto& type:options.project_types){
+                types.push_back({{"id",type.id},{"name",Utf8(type.name)}});
+            }
+            json groups=json::array();
+            for(const auto& group:options.groups){
+                groups.push_back({{"id",group.id},{"name",Utf8(group.name)}});
+            }
+            WriteJson(connection,200,JsonString(json{
+                {"ok",true},{"rootDirectory",Utf8(options.root_directory)},
+                {"defaultTypeId",options.default_type_id},
+                {"defaultGroupId",options.default_group_id},
+                {"types",std::move(types)},{"groups",std::move(groups)}}));
+            return 200;
+        }
+        if(path=="/api/projects"&&method=="POST"){
+            const auto value=body.empty()?json::object():json::parse(body);
+            mobile_projects::CreateRequest request;
+            request.name=Wide(value.value("name",std::string{}));
+            request.type_id=value.value("typeId",std::int64_t{});
+            request.group_id=value.value("groupId",std::int64_t{});
+            CreateProjectCallback callback;
+            {std::scoped_lock lock(mutex_);callback=create_project_callback_;}
+            if(!callback){WriteError(connection,503,L"电脑端项目服务未就绪");return 503;}
+            auto result=callback(request);
+            if(!result.success){
+                WriteError(connection,result.http_status,
+                           result.error.empty()?L"项目创建失败":result.error);
+                return result.http_status;
+            }
+            std::string provider=Utf8(result.project.type);
+            std::transform(provider.begin(),provider.end(),provider.begin(),
+                           [](unsigned char character){return static_cast<char>(std::tolower(character));});
+            WriteJson(connection,201,JsonString(json{
+                {"ok",true},{"project",{
+                    {"id",Utf8(result.project.id)},
+                    {"name",Utf8(result.project.name)},
+                    {"provider",provider},
+                    {"type",Utf8(result.project.type)},
+                    {"group",Utf8(result.project.group)},
+                    {"folder",Utf8(result.project.folder)},
+                    {"status",Utf8(result.project.status)}}}}));
+            return 201;
+        }
         constexpr std::string_view prefix="/api/conversations/";
         if(path.rfind(prefix,0)==0){
             const auto rest=path.substr(prefix.size());
@@ -736,8 +804,13 @@ int RemoteAgent::OnHttp(struct mg_connection* connection) {
                     WriteError(connection,400,L"仅支持有效的 JPEG、PNG 或 WebP 图片");return 400;
                 }
                 std::error_code filesystem_error;
-                const auto directory=std::filesystem::path(config_.data_directory)/
-                    L"mobile_uploads"/SafePathSegment(project_id);
+                const auto attachment_root = store_
+                    ? mobile_projects::AttachmentRootDirectory(*store_)
+                    : std::filesystem::path{};
+                if(attachment_root.empty() || !attachment_root.is_absolute()){
+                    WriteError(connection,503,L"请先在电脑端设置有效的手机工作目录");return 503;
+                }
+                const auto directory=attachment_root/SafePathSegment(project_id);
                 std::filesystem::create_directories(directory,filesystem_error);
                 if(filesystem_error){WriteError(connection,500,L"无法创建手机图片目录");return 500;}
                 const auto target=directory/(Wide(upload_id)+extension);

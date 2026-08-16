@@ -3,6 +3,7 @@
 #include "core/models.h"
 #include "data/data_store.h"
 #include "agent/terminal_stream_protocol.h"
+#include "features/mobile_project_creation.h"
 
 #include <windows.h>
 
@@ -22,6 +23,9 @@ struct mg_connection;
 struct mg_context;
 
 namespace aicli::agent {
+
+bool IsMobileAccessEnabled(DataStore& store);
+void SetMobileAccessEnabled(DataStore& store, bool enabled);
 
 struct PairingInfo {
     std::wstring pairing_id;
@@ -64,6 +68,8 @@ public:
                                                const std::wstring& action,
                                                std::wstring* error)>;
     using ConversationsCallback = std::function<std::string()>;
+    using CreateProjectCallback = std::function<mobile_projects::CreateResult(
+        const mobile_projects::CreateRequest& request)>;
     using EventsCallback = std::function<std::string(const std::wstring& project_id,
                                                      std::int64_t after_event_id)>;
     using TerminalReplayCallback =
@@ -82,6 +88,7 @@ public:
     RemoteAgent(const RemoteAgent&) = delete;
     RemoteAgent& operator=(const RemoteAgent&) = delete;
 
+    void AttachStore(DataStore* store);
     bool Start(DataStore* store, const AgentConfig& config, std::wstring* error = nullptr);
     void Stop();
     bool Online() const noexcept;
@@ -91,6 +98,7 @@ public:
     void SetKeyCallback(KeyCallback callback);
     void SetControlCallback(ControlCallback callback);
     void SetConversationsCallback(ConversationsCallback callback);
+    void SetCreateProjectCallback(CreateProjectCallback callback);
     void SetEventsCallback(EventsCallback callback);
     void SetTerminalReplayCallback(TerminalReplayCallback callback);
     void SetTerminalHistoryCallback(TerminalHistoryCallback callback);
@@ -190,6 +198,7 @@ private:
     KeyCallback key_callback_;
     ControlCallback control_callback_;
     ConversationsCallback conversations_callback_;
+    CreateProjectCallback create_project_callback_;
     EventsCallback events_callback_;
     TerminalReplayCallback terminal_replay_callback_;
     TerminalHistoryCallback terminal_history_callback_;

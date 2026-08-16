@@ -6,12 +6,14 @@
 #include "ui/layout_metrics.h"
 #include "ui/modal_host.h"
 #include "core/text_utils.h"
+#include "features/mobile_project_creation.h"
 
 #include <windows.h>
 #include <windowsx.h>
 #include <dwmapi.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <uxtheme.h>
 
 #include <algorithm>
@@ -77,6 +79,9 @@ enum : int {
     kTaskbarScopeAll = 2326,
     kTaskbarStyleProgress = 2327,
     kTaskbarStyleOverlay = 2328,
+    kMobileWorkspaceRoot = 2329,
+    kMobileWorkspaceBrowse = 2330,
+    kMobileAccess = 2331,
 };
 
 enum : int {
@@ -141,6 +146,9 @@ struct State {
     HWND port{};
     HWND local{};
     HWND remote{};
+    HWND mobile_workspace_root{};
+    HWND mobile_workspace_browse{};
+    HWND mobile_access{};
     HWND theme{};
     HWND theme_light{};
     HWND taskbar_working{};
@@ -168,6 +176,7 @@ struct State {
     std::vector<DeviceRecord> devices;
     ThemePalette palette;
     bool light_theme{};
+    bool mobile_access_enabled{};
     SettingsPage settings_page{SettingsPage::Appearance};
     int content_scroll{};
     int content_extent{};
@@ -394,7 +403,7 @@ void ApplyTheme(State& state, bool light) {
     state.field_focus_brush = CreateSolidBrush(state.field_focus_color);
     state.list_brush = CreateSolidBrush(state.palette.list_surface);
     for (HWND field : {state.name, state.command, state.computer_name, state.listen, state.port,
-                       state.local, state.remote}) {
+                       state.local, state.remote, state.mobile_workspace_root}) {
         if (field) SetStyledInputTheme(field, state.palette);
     }
     if (state.content) {
@@ -1005,7 +1014,8 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
          (item->CtlID == kTaskbarScopeCurrent &&
           state->store->GetSetting(L"taskbar_working_scope", L"all") == L"current") ||
          (item->CtlID == kTaskbarScopeAll &&
-          state->store->GetSetting(L"taskbar_working_scope", L"all") != L"current"));
+          state->store->GetSetting(L"taskbar_working_scope", L"all") != L"current") ||
+         (item->CtlID == kMobileAccess && state->mobile_access_enabled));
     const bool active = active_navigation || active_theme;
     RECT rect = item->rcItem;
     const bool light = state && state->light_theme;
@@ -1408,7 +1418,7 @@ void Paint(State& state, HDC dc) {
 int SettingsContentExtent(SettingsPage page) {
     switch (page) {
     case SettingsPage::Appearance: return 370;
-    case SettingsPage::Connection: return 500;
+    case SettingsPage::Connection: return 635;
     case SettingsPage::ProjectTypes: return 590;
     case SettingsPage::Groups: return 590;
     }
@@ -1464,9 +1474,13 @@ void LayoutSettingsContent(State& state) {
     const int right = std::max(x + S(160), width - S(20));
     const int available = right - x;
     const int offset = state.content_scroll;
-    auto field = [&](HWND control, int left, int y, int h = 40) {
+    auto field = [&](HWND control, int left, int y, int h = 40,
+                     int field_right = -1) {
         if (!control) return;
-        LayoutStyledInput(control, RECT{left, S(y) - offset, right, S(y + h) - offset}, S(2), S(8));
+        if (field_right < 0) field_right = right;
+        LayoutStyledInput(control,
+                          RECT{left, S(y) - offset, field_right,
+                               S(y + h) - offset}, S(2), S(8));
     };
     auto button = [&](HWND control, int bx, int y, int w, int h = 38) {
         if (!control) return;
@@ -1512,8 +1526,15 @@ void LayoutSettingsContent(State& state) {
         field(state.port, field_x, 212);
         field(state.local, field_x, 266);
         field(state.remote, field_x, 320);
-        button(state.firewall, x, 390, S(158));
-        button(state.save, right - S(174), 390, S(174));
+        const int browse_width = S(86);
+        const int browse_gap = S(8);
+        field(state.mobile_workspace_root, field_x, 374, 40,
+              right - browse_width - browse_gap);
+        button(state.mobile_workspace_browse, right - browse_width, 375,
+               browse_width, 38);
+        button(state.mobile_access, field_x, 429, S(112), 36);
+        button(state.firewall, x, 484, S(158));
+        button(state.save, right - S(174), 484, S(174));
     } else if (state.settings_page == SettingsPage::ProjectTypes) {
         list(state.list, 126, 330);
         button(state.add, x, 492, S(122));
@@ -1548,7 +1569,7 @@ void PaintSettingsContent(State& state, HDC dc) {
     const wchar_t* subtitle = L"";
     if (state.settings_page == SettingsPage::Connection) {
         title = L"本机与网络";
-        subtitle = L"本机名称显示在手机端；保存名称或网络设置时重启 HTTPS/WSS Agent。";
+        subtitle = L"配置手机访问服务、访问地址和手机工作目录。";
     } else if (state.settings_page == SettingsPage::ProjectTypes) {
         title = L"项目类型";
         subtitle = L"Codex 和 Claude 为预置类型；所有类型都可在这里维护名称和启动方式。";
@@ -1622,10 +1643,12 @@ void PaintSettingsContent(State& state, HDC dc) {
         row_label(L"HTTPS/WSS 端口", 212);
         row_label(L"内网访问地址", 266);
         row_label(L"公网/Relay 地址", 320);
+        row_label(L"手机工作目录", 374);
+        row_label(L"手机访问服务", 428);
         SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
         SetTextColor(dc, state.muted_color);
-        RECT hint{x, S(448), right, S(484)};
-        DrawTextW(dc, L"本机和公网地址必须使用 https://。端口变化后请重新允许手机访问。", -1,
+        RECT hint{x, S(538), right, S(610)};
+        DrawTextW(dc, L"开启后才会监听 HTTPS/WSS 端口；关闭会断开手机连接并清理临时授权。手机项目和附件分别保存在工作目录下。", -1,
                   &hint, DT_LEFT | DT_TOP | DT_WORDBREAK);
     } else if (state.settings_page == SettingsPage::ProjectTypes) {
         label(L"项目类型列表", 96);
@@ -1668,6 +1691,9 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     visible(state.port, connection);
     visible(state.local, connection);
     visible(state.remote, connection);
+    visible(state.mobile_workspace_root, connection);
+    visible(state.mobile_workspace_browse, connection);
+    visible(state.mobile_access, connection);
     visible(state.firewall, connection);
     visible(state.save, connection || project_types || groups);
     visible(state.list, project_types || groups);
@@ -1684,7 +1710,7 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
         RefreshList(state);
         ReadSelection(state);
     } else if (connection) {
-        SetWindowTextW(state.save, L"保存并重启 Agent");
+        SetWindowTextW(state.save, L"保存设置");
     } else if (groups) {
         SetWindowTextW(state.add, L"添加分组");
         SetWindowTextW(state.save, L"修改名称");
@@ -1911,6 +1937,14 @@ void CreateControls(State& state) {
         state.port = MakeField(state, kPort, L"例如 4280", state.content);
         state.local = MakeField(state, kLocal, L"二维码优先使用，例如：https://192.168.1.10:4280", state.content);
         state.remote = MakeField(state, kRemote, L"可留空，例如：https://relay.example.com/aicli", state.content);
+        state.mobile_workspace_root = MakeField(
+            state, kMobileWorkspaceRoot, L"选择手机工作目录", state.content);
+        state.mobile_workspace_browse = MakeButton(
+            state, L"选择", kMobileWorkspaceBrowse, state.content);
+        state.mobile_access_enabled = agent::IsMobileAccessEnabled(*state.store);
+        state.mobile_access = MakeButton(
+            state, state.mobile_access_enabled ? L"开启" : L"关闭",
+            kMobileAccess, state.content);
         const auto theme = state.store->GetSetting(L"theme", L"dark");
         state.light_theme = theme == L"light";
         state.theme = MakeButton(state, L"夜间模式", kTheme, state.content);
@@ -1923,10 +1957,12 @@ void CreateControls(State& state) {
         state.taskbar_style_overlay = MakeButton(state, L"图标转圈", kTaskbarStyleOverlay, state.content);
         state.taskbar_scope_current = MakeButton(state, L"当前项目", kTaskbarScopeCurrent, state.content);
         state.taskbar_scope_all = MakeButton(state, L"所有项目", kTaskbarScopeAll, state.content);
-        state.save = MakeButton(state, L"保存并重启 Agent", kSave, state.content);
-        state.firewall = MakeButton(state, L"允许手机访问", kFirewall, state.content);
+        state.save = MakeButton(state, L"保存设置", kSave, state.content);
+        state.firewall = MakeButton(state, L"配置防火墙", kFirewall, state.content);
         for (HWND control : {state.computer_name, state.listen, state.port, state.local,
-                              state.remote, state.theme, state.theme_light,
+                              state.remote, state.mobile_workspace_root,
+                              state.mobile_workspace_browse, state.mobile_access,
+                              state.theme, state.theme_light,
                               state.taskbar_working, state.taskbar_style_progress,
                               state.taskbar_style_overlay, state.taskbar_scope_current,
                               state.taskbar_scope_all, state.save,
@@ -1949,7 +1985,8 @@ void CreateControls(State& state) {
         state.remove = MakeButton(state, L"删除", kDelete, state.content);
         state.title_close = MakeButton(state, L"\x00D7", kClose);
         for (HWND control : {state.computer_name, state.listen, state.port,
-                              state.local, state.remote, state.theme,
+                              state.local, state.remote, state.mobile_workspace_root,
+                              state.mobile_workspace_browse, state.mobile_access, state.theme,
                               state.theme_light, state.taskbar_working,
                               state.taskbar_style_progress, state.taskbar_style_overlay,
                               state.taskbar_scope_current, state.taskbar_scope_all,
@@ -2017,6 +2054,8 @@ void PopulateControls(State& state) {
         if (port_value.empty()) port_value = L"4280";
         SetField(state.local, state.store->GetSetting(L"local_address"));
         SetField(state.remote, state.store->GetSetting(L"remote_address"));
+        SetField(state.mobile_workspace_root,
+                 mobile_projects::WorkspaceDirectory(*state.store).wstring());
         SetField(state.listen, listen_value);
         SetField(state.port, port_value);
     } else {
@@ -2168,6 +2207,13 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                 if (state->appearance_changed) state->appearance_changed();
                 return 0;
             }
+            if (state->settings_page == SettingsPage::Connection && id == kMobileAccess) {
+                state->mobile_access_enabled = !state->mobile_access_enabled;
+                SetWindowTextW(state->mobile_access,
+                               state->mobile_access_enabled ? L"开启" : L"关闭");
+                InvalidateRect(state->mobile_access, nullptr, FALSE);
+                return 0;
+            }
             if (state->settings_page == SettingsPage::Connection && id == kFirewall) {
                 const std::wstring port = Field(state->port).empty() ? L"4280" : Field(state->port);
                 try {
@@ -2189,12 +2235,40 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                             L"AI CLI", MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
+            if (state->settings_page == SettingsPage::Connection &&
+                id == kMobileWorkspaceBrowse) {
+                IFileDialog* dialog = nullptr;
+                if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                                               CLSCTX_INPROC_SERVER,
+                                               IID_PPV_ARGS(&dialog))) && dialog) {
+                    DWORD options = 0;
+                    dialog->GetOptions(&options);
+                    dialog->SetOptions(options | FOS_PICKFOLDERS |
+                                      FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+                    if (SUCCEEDED(dialog->Show(h))) {
+                        IShellItem* item = nullptr;
+                        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+                            PWSTR value = nullptr;
+                            if (SUCCEEDED(item->GetDisplayName(
+                                    SIGDN_FILESYSPATH, &value)) && value) {
+                                SetField(state->mobile_workspace_root, value);
+                                CoTaskMemFree(value);
+                            }
+                            item->Release();
+                        }
+                    }
+                    dialog->Release();
+                }
+                return 0;
+            }
             if (state->settings_page == SettingsPage::Connection && id == kSave) {
                 const std::wstring computer_name = Field(state->computer_name);
                 const std::wstring listen = Field(state->listen).empty() ? L"0.0.0.0" : Field(state->listen);
                 const std::wstring port = Field(state->port).empty() ? L"4280" : Field(state->port);
                 const std::wstring local = Field(state->local);
                 const std::wstring remote = Field(state->remote);
+                const std::wstring mobile_workspace_root =
+                    Field(state->mobile_workspace_root);
                 if (computer_name.empty()) {
                     ShowError(h, L"本机名称不能为空");
                     return 0;
@@ -2218,11 +2292,25 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                     ShowError(h, L"本机地址和公网/Relay 地址必须使用 https://");
                     return 0;
                 }
+                const std::filesystem::path mobile_root_path(mobile_workspace_root);
+                if ((!mobile_workspace_root.empty() && !mobile_root_path.is_absolute()) ||
+                    (state->mobile_access_enabled && mobile_workspace_root.empty())) {
+                    ShowError(h, state->mobile_access_enabled && mobile_workspace_root.empty()
+                                     ? L"开启手机访问前请选择手机工作目录"
+                                     : L"手机工作目录必须是有效的绝对路径");
+                    return 0;
+                }
                 state->store->SetSetting(L"computer_name", computer_name);
                 state->store->SetSetting(L"listen_address", listen);
                 state->store->SetSetting(L"listen_port", port);
                 state->store->SetSetting(L"local_address", local);
                 state->store->SetSetting(L"remote_address", remote);
+                state->store->SetSetting(
+                    L"mobile_workspace_root",
+                    mobile_workspace_root.empty()
+                        ? L"" : mobile_root_path.lexically_normal().wstring());
+                agent::SetMobileAccessEnabled(*state->store,
+                                              state->mobile_access_enabled);
                 agent::AgentConfig config;
                 config.computer_name = computer_name;
                 config.bind_address = listen;

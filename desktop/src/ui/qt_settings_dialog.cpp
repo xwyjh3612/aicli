@@ -2,6 +2,8 @@
 
 #include <QDialogButtonBox>
 #include <QButtonGroup>
+#include <QDir>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -18,6 +20,7 @@
 #include <initializer_list>
 
 #include "core/text_utils.h"
+#include "features/mobile_project_creation.h"
 #include "ui/qt_widgets.h"
 
 namespace aicli::ui::qt {
@@ -402,7 +405,7 @@ QWidget* SettingsDialog::buildNetworkPage() {
     QVBoxLayout* layout{};
     auto* page = PageWithHeading(
         QStringLiteral("本机与访问地址"),
-        QStringLiteral("本机名称会显示在手机端；访问地址用于 HTTPS/WSS 连接。保存后 Agent 会自动重启。"),
+        QStringLiteral("配置手机访问服务、访问地址和手机工作目录。"),
         layout, pages_);
     auto* form = new QFormLayout();
     form->setVerticalSpacing(12);
@@ -412,7 +415,11 @@ QWidget* SettingsDialog::buildNetworkPage() {
     listen_port_ = new QLineEdit(ToQString(controller_.store().GetSetting(L"listen_port", L"4280")), page);
     local_address_ = new QLineEdit(ToQString(controller_.store().GetSetting(L"local_address")), page);
     remote_address_ = new QLineEdit(ToQString(controller_.store().GetSetting(L"remote_address")), page);
-    for (auto* field : {computer_name_, listen_address_, listen_port_, local_address_, remote_address_}) {
+    mobile_workspace_root_ = new QLineEdit(ToQString(
+        mobile_projects::WorkspaceDirectory(controller_.store()).wstring()), page);
+    mobile_workspace_root_->setPlaceholderText(QStringLiteral("选择手机工作目录"));
+    for (auto* field : {computer_name_, listen_address_, listen_port_, local_address_,
+                        remote_address_, mobile_workspace_root_}) {
         field->setMinimumHeight(42);
     }
     computer_name_->setMaxLength(64);
@@ -421,9 +428,26 @@ QWidget* SettingsDialog::buildNetworkPage() {
     form->addRow(QStringLiteral("监听端口"), listen_port_);
     form->addRow(QStringLiteral("本地访问地址"), local_address_);
     form->addRow(QStringLiteral("远程访问地址"), remote_address_);
+    auto* mobileRootRow = new QWidget(page);
+    auto* mobileRootLayout = new QHBoxLayout(mobileRootRow);
+    mobileRootLayout->setContentsMargins(0, 0, 0, 0);
+    mobileRootLayout->setSpacing(8);
+    auto* browseMobileRoot = new QPushButton(QStringLiteral("选择"), mobileRootRow);
+    browseMobileRoot->setMinimumSize(86, 42);
+    mobileRootLayout->addWidget(mobile_workspace_root_, 1);
+    mobileRootLayout->addWidget(browseMobileRoot);
+    form->addRow(QStringLiteral("手机工作目录"), mobileRootRow);
+    mobile_access_ = new QPushButton(page);
+    mobile_access_->setCheckable(true);
+    mobile_access_->setChecked(aicli::agent::IsMobileAccessEnabled(controller_.store()));
+    mobile_access_->setText(mobile_access_->isChecked()
+        ? QStringLiteral("开启") : QStringLiteral("关闭"));
+    mobile_access_->setCursor(Qt::PointingHandCursor);
+    mobile_access_->setMinimumSize(96, 40);
+    form->addRow(QStringLiteral("手机访问服务"), mobile_access_);
     layout->addLayout(form);
     auto* row = new QHBoxLayout();
-    auto* save = new QPushButton(QStringLiteral("保存并重启 Agent"), page);
+    auto* save = new QPushButton(QStringLiteral("保存设置"), page);
     save->setObjectName(QStringLiteral("primaryButton"));
     save->setMinimumSize(180, 40);
     network_status_ = new QLabel(page);
@@ -434,6 +458,18 @@ QWidget* SettingsDialog::buildNetworkPage() {
     layout->addLayout(row);
     layout->addStretch(1);
     connect(save, &QPushButton::clicked, this, &SettingsDialog::saveNetwork);
+    connect(mobile_access_, &QPushButton::toggled, this, [this](bool enabled) {
+        mobile_access_->setText(enabled ? QStringLiteral("开启")
+                                        : QStringLiteral("关闭"));
+    });
+    connect(browseMobileRoot, &QPushButton::clicked, this, [this] {
+        const QString selected = QFileDialog::getExistingDirectory(
+            this, QStringLiteral("选择手机工作目录"),
+            mobile_workspace_root_->text().trimmed());
+        if (!selected.isEmpty()) {
+            mobile_workspace_root_->setText(QDir::toNativeSeparators(selected));
+        }
+    });
     return page;
 }
 
@@ -547,17 +583,38 @@ void SettingsDialog::saveNetwork() {
         listen_port_->setFocus();
         return;
     }
+    QString mobileWorkspaceRoot = mobile_workspace_root_->text().trimmed();
+    if (!mobileWorkspaceRoot.isEmpty()) {
+        mobileWorkspaceRoot = QDir::cleanPath(mobileWorkspaceRoot);
+    }
+    if ((!mobileWorkspaceRoot.isEmpty() &&
+         !QDir::isAbsolutePath(mobileWorkspaceRoot)) ||
+        (mobile_access_->isChecked() && mobileWorkspaceRoot.isEmpty())) {
+        network_status_->setText(
+            mobile_access_->isChecked() && mobileWorkspaceRoot.isEmpty()
+                ? QStringLiteral("开启手机访问前请选择手机工作目录")
+                : QStringLiteral("手机工作目录必须是有效的绝对路径"));
+        mobile_workspace_root_->setFocus();
+        return;
+    }
     controller_.store().SetSetting(L"computer_name", ToWideString(computerName));
     controller_.store().SetSetting(L"listen_address", ToWideString(listen_address_->text().trimmed()));
     controller_.store().SetSetting(L"listen_port", ToWideString(listen_port_->text().trimmed()));
     controller_.store().SetSetting(L"local_address", ToWideString(local_address_->text().trimmed()));
     controller_.store().SetSetting(L"remote_address", ToWideString(remote_address_->text().trimmed()));
+    controller_.store().SetSetting(
+        L"mobile_workspace_root",
+        mobileWorkspaceRoot.isEmpty()
+            ? L"" : ToWideString(QDir::toNativeSeparators(mobileWorkspaceRoot)));
+    aicli::agent::SetMobileAccessEnabled(controller_.store(), mobile_access_->isChecked());
     std::wstring error;
     if (!controller_.RestartAgent(controller_.CurrentAgentConfig(), &error)) {
         network_status_->setText(QStringLiteral("保存失败：") + ToQString(error));
         return;
     }
-    network_status_->setText(QStringLiteral("已保存，Agent 已重启"));
+    network_status_->setText(mobile_access_->isChecked()
+        ? QStringLiteral("已保存，手机访问服务已启动")
+        : QStringLiteral("已保存，手机访问服务已关闭"));
 }
 
 void SettingsDialog::reloadProjectTypes() {
