@@ -97,15 +97,6 @@ void PaintProjectDialogSurface(HDC dc,RECT client){
     // visible unfilled rim shown around these two controls.
     outline(g_d_folder_rect,g_d_folder);outline(g_d_command_rect,g_d_command);
 }
-void DrawProjectDropdownItem(const DRAWITEMSTRUCT* item){
-    const auto* entry=reinterpret_cast<const ProjectDropdownEntry*>(item->itemData);if(!entry)return;
-    RECT r=item->rcItem;const bool hover=(item->itemState&ODS_SELECTED)!=0;
-    HBRUSH fill=CreateSolidBrush(hover?g_theme.selection:g_theme.list_surface);FillRect(item->hDC,&r,fill);DeleteObject(fill);
-    SetBkMode(item->hDC,TRANSPARENT);SelectObject(item->hDC,g_font);
-    SetTextColor(item->hDC,entry->selected?accent:fg);
-    RECT mark{r.left+ScaleUi(10),r.top,r.left+ScaleUi(34),r.bottom};DrawTextW(item->hDC,entry->selected?L"✓":L"",-1,&mark,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-    RECT textRect{r.left+ScaleUi(38),r.top,r.right-ScaleUi(12),r.bottom};DrawTextW(item->hDC,entry->label.c_str(),-1,&textRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
-}
 void ShowProjectDropdown(HWND dialog,HWND anchor,bool projectType){
     std::vector<std::wstring> options;
     if(projectType){for(const auto& type:g_project_types)options.push_back(type.name);}
@@ -114,13 +105,31 @@ void ShowProjectDropdown(HWND dialog,HWND anchor,bool projectType){
         if(!g_project_draft.group.empty()&&std::find(options.begin(),options.end(),g_project_draft.group)==options.end())options.push_back(g_project_draft.group);
     }
     wchar_t currentText[256]{};GetWindowTextW(anchor,currentText,256);const std::wstring current=currentText;
-    std::vector<ProjectDropdownEntry> entries;entries.reserve(options.size());for(const auto& option:options)entries.push_back({option,option==current});
-    HMENU menu=CreatePopupMenu();if(!menu)return;HBRUSH background=CreateSolidBrush(g_theme.list_surface);MENUINFO info{sizeof(info)};info.fMask=MIM_BACKGROUND|MIM_STYLE;info.hbrBack=background;info.dwStyle=MNS_NOCHECK;SetMenuInfo(menu,&info);
-    constexpr UINT base=2400;for(size_t i=0;i<entries.size();++i)AppendMenuW(menu,MF_OWNERDRAW|MF_ENABLED,base+(UINT)i,reinterpret_cast<LPCWSTR>(&entries[i]));
-    RECT anchorRect{};GetWindowRect(anchor,&anchorRect);g_project_dropdown_width=anchorRect.right-anchorRect.left;
-    SetFocus(anchor);const UINT selected=TrackPopupMenuEx(menu,TPM_RETURNCMD|TPM_NONOTIFY|TPM_LEFTALIGN|TPM_TOPALIGN|TPM_RIGHTBUTTON,anchorRect.left,anchorRect.bottom+ScaleUi(2),dialog,nullptr);
-    if(selected>=base&&selected<base+entries.size()){
-        const std::wstring value=entries[selected-base].label;
+    std::vector<aicli::ui::RoundedSelectEntry> entries;
+    entries.reserve(options.size());
+    const wchar_t* icon=projectType?L"\xE756":L"\xE8B7";
+    for(const auto& option:options)
+        entries.push_back({option,option,L"",icon,option==current,false});
+
+    aicli::ui::RoundedSelectPopupOptions popup;
+    popup.owner=dialog;
+    popup.anchor=anchor;
+    popup.palette=g_theme;
+    popup.text_font=g_font;
+    popup.detail_font=g_font_small;
+    popup.icon_font=g_font_header_icon;
+    popup.dpi=std::max(96,static_cast<int>(GetDpiForWindow(dialog)));
+    popup.maximum_visible_rows=8;
+    popup.match_anchor_width=true;
+    popup.open_state_changed=[anchor](bool open){
+        g_project_dropdown_open_control=open?anchor:nullptr;
+        if(anchor)InvalidateRect(anchor,nullptr,FALSE);
+    };
+    SetFocus(anchor);
+    const auto selected=aicli::ui::ShowRoundedSelectPopup(
+        popup,std::move(entries));
+    if(selected){
+        const std::wstring& value=*selected;
         wchar_t previousType[256]{}; GetWindowTextW(anchor, previousType, 256);
         SetWindowTextW(anchor,value.c_str());
         if(projectType){
@@ -131,7 +140,6 @@ void ShowProjectDropdown(HWND dialog,HWND anchor,bool projectType){
             if(useDefault) SetWindowTextW(g_d_command,DefaultProjectCommand(value).c_str());
         }
     }
-    DestroyMenu(menu);DeleteObject(background);
     InvalidateRect(anchor,nullptr,FALSE);
 }
 LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
@@ -168,8 +176,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
     }
     case WM_CTLCOLOREDIT:{HDC dc=(HDC)w;HWND control=(HWND)l;const bool active=GetFocus()==control;const COLORREF color=active?g_theme.field_focus:g_theme.field;SetTextColor(dc,fg);SetBkColor(dc,color);return (LRESULT)(active?g_focus_brush:g_edit_brush);}
     case WM_CTLCOLORLISTBOX:{HDC dc=(HDC)w;SetTextColor(dc,fg);SetBkColor(dc,g_theme.list_surface);return (LRESULT)g_list_brush;}
-    case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){item->itemWidth=std::max(ScaleUi(160),g_project_dropdown_width-ScaleUi(21));item->itemHeight=ScaleUi(34);return TRUE;}}break;
-    case WM_DRAWITEM: {auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_MENU){DrawProjectDropdownItem(item);return TRUE;}if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}} break;
+    case WM_DRAWITEM: {auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}} break;
     case WM_COMMAND:
         if((HIWORD(w)==EN_SETFOCUS||HIWORD(w)==EN_KILLFOCUS||HIWORD(w)==BN_SETFOCUS||HIWORD(w)==BN_KILLFOCUS)&&
            (LOWORD(w)==ID_D_NAME||LOWORD(w)==ID_D_NOTE||LOWORD(w)==ID_D_TYPE||LOWORD(w)==ID_D_GROUP||LOWORD(w)==ID_D_FOLDER||LOWORD(w)==ID_D_COMMAND)){
@@ -196,7 +203,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
             g_project_dialog_ok=true;DestroyWindow(h);return 0;
         } break;
     case WM_KEYDOWN:if(w==VK_ESCAPE){DestroyWindow(h);return 0;}break;
-    case WM_DESTROY:g_project_dialog=nullptr;g_d_name=g_d_note=g_d_type=g_d_group=g_d_folder=g_d_folder_browse=g_d_command=nullptr;return 0;
+    case WM_DESTROY:g_project_dropdown_open_control=nullptr;g_project_dialog=nullptr;g_d_name=g_d_note=g_d_type=g_d_group=g_d_folder=g_d_folder_browse=g_d_command=nullptr;return 0;
     case WM_CLOSE:DestroyWindow(h);return 0; }
     return DefWindowProcW(h,m,w,l);
 }

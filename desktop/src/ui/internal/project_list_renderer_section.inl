@@ -17,7 +17,30 @@ void InvalidateProjectRow(HWND list,int row){
 }
 LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
                                          UINT_PTR,DWORD_PTR){
-    if(m==WM_ERASEBKGND){
+    if(m==WM_SIZE){
+        const LRESULT result=DefSubclassProc(h,m,w,l);
+        g_project_scrollbar.Layout();
+        return result;
+    }else if(m==WM_MOUSEWHEEL){
+        g_project_wheel_remainder+=GET_WHEEL_DELTA_WPARAM(w);
+        const int steps=g_project_wheel_remainder/WHEEL_DELTA;
+        g_project_wheel_remainder%=WHEEL_DELTA;
+        if(steps!=0){
+            UINT lines=3;
+            SystemParametersInfoW(SPI_GETWHEELSCROLLLINES,0,&lines,0);
+            const auto metrics=ProjectListScrollMetrics();
+            const int amount=lines==WHEEL_PAGESCROLL
+                ?std::max(1,metrics.viewport_extent)
+                :std::max(1,static_cast<int>(lines));
+            SetProjectListScrollPosition(metrics.position-steps*amount);
+            g_project_scrollbar.NotifyActivity();
+        }
+        return 0;
+    }else if(m==WM_KEYDOWN){
+        const LRESULT result=DefSubclassProc(h,m,w,l);
+        g_project_scrollbar.Sync();
+        return result;
+    }else if(m==WM_ERASEBKGND){
         // Owner-drawn rows paint their complete cards.  Hover invalidations
         // use erase=FALSE, so they never pass through a blank frame.  A real
         // background erase (initial show/resize) still has to fill the empty
@@ -171,16 +194,33 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         SelectObject(item->hDC,old_pen);DeleteObject(glyph_pen);return;
     }
     if(projectDropDown){
+        const bool open=g_project_dropdown_open_control==item->hwndItem;
         const COLORREF fill=down?g_theme.pressed:
-            (focused?g_theme.field_focus:(hover?g_theme.hover:g_theme.field));
-        // Fill the entire rounded child region first. A fill made only through
-        // RoundRect leaves its antialiased/exclusive edge showing the modal
-        // background, which looked like the dropdown did not reach its frame.
+            ((focused||open)?g_theme.field_focus:(hover?g_theme.hover:g_theme.field));
+        const COLORREF stroke=(focused||open)?accent:border;
         HBRUSH brush=CreateSolidBrush(fill);FillRect(item->hDC,&r,brush);DeleteObject(brush);
-        const COLORREF stroke=focused?accent:border;
-        HPEN pen=CreatePen(PS_SOLID,1,stroke);auto oldPen=SelectObject(item->hDC,pen);auto oldBrush=SelectObject(item->hDC,GetStockObject(HOLLOW_BRUSH));RoundRect(item->hDC,r.left,r.top,r.right,r.bottom,7,7);SelectObject(item->hDC,oldBrush);SelectObject(item->hDC,oldPen);DeleteObject(pen);
-        SetTextColor(item->hDC,fg);SelectObject(item->hDC,g_font);RECT textRect{r.left+ScaleUi(10),r.top,r.right-ScaleUi(34),r.bottom};DrawTextW(item->hDC,text,-1,&textRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
-        SetTextColor(item->hDC,focused?accent:muted);SelectObject(item->hDC,g_icon_font?g_icon_font:g_font);RECT arrow{r.right-ScaleUi(30),r.top,r.right-ScaleUi(7),r.bottom};DrawTextW(item->hDC,L"\xE70D",-1,&arrow,DT_CENTER|DT_VCENTER|DT_SINGLELINE);return;
+        DrawSmoothRoundedRect(item->hDC,r,ScaleUiF(6.0f),fill,stroke,1.0f);
+
+        const wchar_t* fieldIcon=item->CtlID==ID_D_TYPE?L"\xE756":L"\xE8B7";
+        RECT iconRect{r.left+ScaleUi(9),r.top,r.left+ScaleUi(28),r.bottom};
+        SetTextColor(item->hDC,(focused||open)?accent:muted);
+        SelectObject(item->hDC,g_font_header_icon);
+        DrawTextW(item->hDC,fieldIcon,-1,&iconRect,
+                  DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+
+        SetTextColor(item->hDC,fg);
+        SelectObject(item->hDC,g_font);
+        RECT textRect{iconRect.right+ScaleUi(6),r.top,
+                      r.right-ScaleUi(34),r.bottom};
+        DrawTextW(item->hDC,text,-1,&textRect,
+                  DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+
+        SetTextColor(item->hDC,(focused||open)?accent:muted);
+        SelectObject(item->hDC,g_font_header_icon);
+        RECT arrow{r.right-ScaleUi(28),r.top,r.right-ScaleUi(8),r.bottom};
+        DrawTextW(item->hDC,open?L"\xE70E":L"\xE70D",-1,&arrow,
+                  DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+        return;
     }
     COLORREF fill=under,stroke=RGB(52,59,70);
     if(projectButton){

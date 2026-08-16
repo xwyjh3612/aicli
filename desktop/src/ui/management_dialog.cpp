@@ -5,6 +5,7 @@
 #include "ui/theme.h"
 #include "ui/layout_metrics.h"
 #include "ui/modal_host.h"
+#include "ui/overlay_scrollbar.h"
 #include "core/text_utils.h"
 #include "features/mobile_project_creation.h"
 
@@ -178,6 +179,7 @@ struct State {
     bool light_theme{};
     bool mobile_access_enabled{};
     SettingsPage settings_page{SettingsPage::Appearance};
+    OverlayScrollbar content_scrollbar;
     int content_scroll{};
     int content_extent{};
     bool content_layout_active{};
@@ -406,13 +408,10 @@ void ApplyTheme(State& state, bool light) {
                        state.local, state.remote, state.mobile_workspace_root}) {
         if (field) SetStyledInputTheme(field, state.palette);
     }
+    state.content_scrollbar.SetTheme(state.palette, state.background_color);
     if (state.content) {
-        // Keep the native scrollbar consistent with the settings surface.
-        // DarkMode_Explorer uses the system's near-black scrollbar track and
-        // preserves native wheel, thumb and accessibility behavior.
-        SetWindowTheme(state.content, light ? L"Explorer" : L"DarkMode_Explorer", nullptr);
         RedrawWindow(state.content, nullptr, nullptr,
-                     RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+                     RDW_INVALIDATE | RDW_ALLCHILDREN);
     }
 }
 
@@ -1439,9 +1438,6 @@ void SetSettingsScroll(State& state, int position) {
 
 void LayoutSettingsContent(State& state) {
     if (!state.content || state.mode != ManagementMode::Settings) return;
-    // SetScrollInfo/ShowScrollBar can synchronously change the client width
-    // and send WM_SIZE. Ignore that nested layout; this invocation re-reads
-    // the final client rectangle after the scrollbar state has settled.
     if (state.content_layout_active) return;
     state.content_layout_active = true;
     RECT client{};
@@ -1451,24 +1447,7 @@ void LayoutSettingsContent(State& state) {
     state.content_extent = S(SettingsContentExtent(state.settings_page));
     state.content_scroll = std::clamp(state.content_scroll, 0,
         std::max(0, state.content_extent - height));
-    const bool needs_scrollbar = state.content_extent > height;
-
-    SCROLLINFO scroll{sizeof(scroll)};
-    scroll.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
-    scroll.nMin = 0;
-    scroll.nMax = std::max(0, state.content_extent - 1);
-    scroll.nPage = static_cast<UINT>(height);
-    scroll.nPos = state.content_scroll;
-    SetScrollInfo(state.content, SB_VERT, &scroll, TRUE);
-    ShowScrollBar(state.content, SB_VERT, needs_scrollbar ? TRUE : FALSE);
-
-    // A vertical scrollbar consumes client width. Always calculate child
-    // geometry from the post-scrollbar rectangle, never from the stale width
-    // captured before SetScrollInfo. This keeps the initial frame identical
-    // to every later scroll/drag frame.
-    GetClientRect(state.content, &client);
     const int width = std::max(1L, client.right - client.left);
-    height = std::max(1L, client.bottom - client.top);
 
     const int x = S(20);
     const int right = std::max(x + S(160), width - S(20));
@@ -1546,6 +1525,7 @@ void LayoutSettingsContent(State& state) {
         button(state.save, x + S(134), 492, S(118));
         button(state.remove, x + S(264), 492, S(104));
     }
+    state.content_scrollbar.Layout();
     InvalidateRect(state.content, nullptr, FALSE);
     state.content_layout_active = false;
 }
@@ -1740,6 +1720,7 @@ LRESULT CALLBACK SettingsContentProc(HWND h, UINT message, WPARAM wparam, LPARAM
         return 0;
     case WM_MOUSEWHEEL: {
         const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+        state->content_scrollbar.NotifyActivity();
         SetSettingsScroll(*state, state->content_scroll - (delta / WHEEL_DELTA) * 52);
         return 0;
     }
@@ -1924,10 +1905,20 @@ void CreateControls(State& state) {
     if (state.mode == ManagementMode::Settings) {
         state.content = CreateWindowExW(
             WS_EX_CONTROLPARENT, kSettingsContentClassName, L"",
-            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_VSCROLL,
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
             0, 0, 1, 1, state.window, nullptr, GetModuleHandleW(nullptr), &state);
-        SetWindowTheme(state.content,
-                       state.light_theme ? L"Explorer" : L"DarkMode_Explorer", nullptr);
+        state.content_scrollbar.Attach(
+            state.content,
+            [&state] {
+                RECT client{};
+                GetClientRect(state.content, &client);
+                return OverlayScrollMetrics{
+                    state.content_extent,
+                    static_cast<int>(std::max(1L, client.bottom - client.top)),
+                    state.content_scroll};
+            },
+            [&state](int position) { SetSettingsScroll(state, position); });
+        state.content_scrollbar.SetTheme(state.palette, state.background_color);
         state.settings_appearance = MakeButton(state, L"外观", kSettingsAppearance);
         state.settings_connection = MakeButton(state, L"本机与网络", kSettingsConnection);
         state.settings_project_types = MakeButton(state, L"项目类型", kSettingsProjectTypes);
@@ -2485,6 +2476,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         DestroyWindow(h);
         return 0;
     case WM_DESTROY:
+        state->content_scrollbar.Detach();
         return 0;
     }
     return DefWindowProcW(h, message, wparam, lparam);
