@@ -30,6 +30,7 @@
 #include <cctype>
 #include <cstring>
 #include <deque>
+#include <unordered_set>
 
 namespace aicli::agent {
 namespace {
@@ -376,6 +377,26 @@ void RemoteAgent::Stop() {
 bool RemoteAgent::Online() const noexcept {
     std::scoped_lock lock(mutex_);
     return online_;
+}
+
+std::size_t RemoteAgent::OnlineDeviceCount() const noexcept {
+    std::scoped_lock lock(mutex_);
+    std::unordered_set<std::wstring> phone_ids;
+    for(const auto& client:websocket_clients_){
+        if(client&&!client->closed&&client->connection.load()&&!client->phone_id.empty())
+            phone_ids.insert(client->phone_id);
+    }
+    return phone_ids.size();
+}
+
+bool RemoteAgent::IsDeviceOnline(const std::wstring& phone_id) const noexcept {
+    if(phone_id.empty())return false;
+    std::scoped_lock lock(mutex_);
+    return std::any_of(websocket_clients_.begin(),websocket_clients_.end(),
+        [&](const auto& client){
+            return client&&client->phone_id==phone_id&&!client->closed&&
+                   client->connection.load()!=nullptr;
+        });
 }
 
 void RemoteAgent::SetPairingCallback(PairingCallback callback) { std::scoped_lock l(mutex_); pairing_callback_=std::move(callback); }

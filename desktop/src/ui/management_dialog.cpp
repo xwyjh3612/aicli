@@ -38,6 +38,7 @@ constexpr wchar_t kGroupNameClassName[] = L"AicliGroupNameDialog";
 constexpr wchar_t kProjectTypeEditorClassName[] = L"AicliProjectTypeEditorDialog";
 constexpr UINT kPopulateMessage = WM_APP + 60;
 constexpr int kSettingsHeaderHeight = 40;
+constexpr UINT_PTR kDevicePresenceTimerId = 0xA1C32;
 
 int DpiFor(HWND window) noexcept {
     return window ? std::max(96, static_cast<int>(GetDpiForWindow(window))) : 96;
@@ -1271,7 +1272,9 @@ void DrawListItem(const DRAWITEMSTRUCT* item) {
         (state->mode==ManagementMode::Settings&&state->settings_page==SettingsPage::Devices))&&
        data_index<state->devices.size()){
         const auto& device=state->devices[data_index];
-        const COLORREF status=device.active?state->palette.success:state->palette.muted;
+        const bool online=state->agent&&state->agent->IsDeviceOnline(device.phone_id);
+        const COLORREF status=online?state->palette.success:
+            (device.active?state->palette.muted:state->palette.danger);
         HBRUSH dot=CreateSolidBrush(status);
         const int dot_size=DpiScale(state->window,7);
         const int dot_top=(rect.top+rect.bottom-dot_size)/2;
@@ -1810,7 +1813,8 @@ void PaintSettingsContent(State& state, HDC dc) {
             row(L"设备 ID",device.phone_id,208);
             row(L"绑定时间",FormatDeviceTime(device.paired_at),246);
             row(L"最近在线",FormatDeviceTime(device.last_seen),284);
-            row(L"授权状态",device.active?L"已授权":L"已解绑",322);
+            row(L"连接状态",state.agent&&state.agent->IsDeviceOnline(device.phone_id)?L"在线":L"离线",322);
+            row(L"授权状态",device.active?L"已授权":L"已解绑",360);
         }
     }
     SetViewportOrgEx(dc, previous_origin.x, previous_origin.y, nullptr);
@@ -2247,6 +2251,8 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
     switch (message) {
     case WM_CREATE:
         CreateControls(*state);
+        if(state->mode==ManagementMode::Settings)
+            SetTimer(h,kDevicePresenceTimerId,2000,nullptr);
         return 0;
     case WM_SIZE:
         Layout(*state);
@@ -2254,6 +2260,16 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
     case kPopulateMessage:
         PopulateControls(*state);
         return 0;
+    case WM_TIMER:
+        if(wparam==kDevicePresenceTimerId){
+            if(state->mode==ManagementMode::Settings&&
+               state->settings_page==SettingsPage::Devices){
+                if(state->list)InvalidateRect(state->list,nullptr,FALSE);
+                if(state->content)InvalidateRect(state->content,nullptr,FALSE);
+            }
+            return 0;
+        }
+        break;
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT: {
@@ -2687,6 +2703,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         DestroyWindow(h);
         return 0;
     case WM_DESTROY:
+        KillTimer(h,kDevicePresenceTimerId);
         state->content_scrollbar.Detach();
         return 0;
     }

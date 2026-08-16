@@ -374,7 +374,7 @@ HFONT CreateMainFont(int logical_height, int weight, const wchar_t* face,
 }
 
 void ApplyMainFontsToControls() {
-    for (HWND control : {g_group, g_group_add, g_bind, g_devices, g_settings}) {
+    for (HWND control : {g_group, g_group_add, g_bind, g_settings}) {
         if (control) SendMessageW(control, WM_SETFONT,
                                   reinterpret_cast<WPARAM>(g_font_header), TRUE);
     }
@@ -766,16 +766,13 @@ void Layout(){
     // windows even though the cluster as a whole still had enough room.
     const int headerGap=S(8);
     const int bindWidth=S(104);
-    const int devicesWidth=S(116);
     const int settingsWidth=S(72);
     const int captionReserve=g_layout_metrics.caption_button_width*3;
     const int clusterRight=(int)r.right-captionReserve-S(8);
     const int settingsX=clusterRight-settingsWidth;
-    const int devicesX=settingsX-headerGap-devicesWidth;
-    const int bindX=devicesX-headerGap-bindWidth;
+    const int bindX=settingsX-headerGap-bindWidth;
     const bool headerControlsMoved =
         MoveMainChild(g_bind,bindX,headerButtonTop,bindWidth,headerButtonHeight) |
-        MoveMainChild(g_devices,devicesX,headerButtonTop,devicesWidth,headerButtonHeight) |
         MoveMainChild(g_settings,settingsX,headerButtonTop,settingsWidth,headerButtonHeight);
     if(headerControlsMoved){
         // During interactive horizontal resizing USER32 otherwise preserves
@@ -997,13 +994,15 @@ bool SelectProjectById(const std::wstring& project_id){const int index=ProjectIn
 void RefreshConversationsCache(){g_conversation_bridge.RefreshConversations(g_projects);}
 std::string ConversationsJson(){return g_conversation_bridge.ConversationsJson();}
 std::string EventsJson(const std::wstring& project_id,std::int64_t after){return g_conversation_bridge.EventsJson(project_id,after);}
-void UpdateDeviceHeader(){if(!g_devices)return;const auto count=g_store.LoadDevices().size();SetText(g_devices,L"已绑定 "+std::to_wstring(count)+L" 台");InvalidateRect(g_hwnd,nullptr,FALSE);}
+void UpdateDeviceHeader(){UpdateHeaderTelemetry();}
 void UpdateHeaderTelemetry(){
+    const auto authorized_devices=g_store.LoadDevices().size();
     g_footer_status.UpdateTelemetry(
         aicli::agent::IsMobileAccessEnabled(g_store),
         g_remote_agent.Online(),
         WorkingSetMegabytes(),
-        !g_store.GetSetting(L"remote_address").empty());
+        g_remote_agent.OnlineDeviceCount(),
+        authorized_devices);
 }
 void ConfigureRemoteAgent(){
     g_terminal_streams.SetBroadcastCallback([](const std::wstring& project,
@@ -1204,7 +1203,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     if(g_taskbar_button_created_message&&m==g_taskbar_button_created_message){g_taskbar_working_indicator.OnTaskbarButtonCreated();return 0;}
     switch(m){
     case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY);g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);RecreateMainFontsForDpi();
-        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,170,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,344,8,30,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,381,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,486,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"\xE710",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)(b==g_new_project?g_font:g_font_header),TRUE);EnableButtonHover(b);}
+        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,170,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,344,8,30,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,381,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"\xE710",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)(b==g_new_project?g_font:g_font_header),TRUE);EnableButtonHover(b);}
         g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE|SS_LEFT|SS_CENTERIMAGE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font_search,L"输入项目名、路径或备注搜索");aicli::ui::SetStyledInputLeadingIcon(g_search,L"\xE721");aicli::ui::SetStyledInputTheme(g_search,SearchInputPalette());aicli::ui::SetStyledInputFocusBorderOnly(g_search);aicli::ui::SetStyledInputParentFrame(g_search,true,2);
         g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_TABSTOP|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SendMessageW(g_list,LB_SETITEMHEIGHT,0,ScaleUi(kProjectListItemHeight));g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);g_project_scrollbar.Attach(g_list,ProjectListScrollMetrics,SetProjectListScrollPosition);g_project_scrollbar.SetTheme(g_theme,SidebarBackground());RefreshProjectList();
         auto detailStatic=[&](const wchar_t* text){return CreateWindowW(L"STATIC",text,WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);};
@@ -1262,7 +1261,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_MOUSEMOVE:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const bool over_git=g_footer_status.OnMouseMove(point,g_theme);const bool over_chrome=g_window_chrome.OnMouseMove(h,point);if(over_git||over_chrome)return 0;break;}
     case WM_MOUSELEAVE:g_footer_status.OnMouseLeave();g_window_chrome.OnMouseLeave(h);return 0;
     case WM_LBUTTONDOWN:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(g_window_chrome.OnLeftButtonDown(h,point))return 0;break;}
-    case WM_LBUTTONUP:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const auto action=g_window_chrome.OnLeftButtonUp(h,point);if(action.has_value()){if(*action)ExecuteTitleButton(h,*action);return 0;}break;}
+    case WM_LBUTTONUP:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const auto action=g_window_chrome.OnLeftButtonUp(h,point);if(action.has_value()){if(*action)ExecuteTitleButton(h,*action);return 0;}if(g_footer_status.IsPhonePoint(point)){OpenDevicesDialog();UpdateHeaderTelemetry();return 0;}break;}
     case WM_CAPTURECHANGED:g_window_chrome.OnCaptureChanged(h);break;
     case WM_MEASUREITEM:{auto* item=(MEASUREITEMSTRUCT*)l;if(item->CtlID==ID_PROJECT_LIST){item->itemHeight=ScaleUi(kProjectListItemHeight);return TRUE;}}break;
     case WM_DRAWITEM:{auto* item=(DRAWITEMSTRUCT*)l;if(item->CtlType==ODT_BUTTON){DrawModernButton(item);return TRUE;}if(item->CtlID==ID_PROJECT_LIST){DrawProjectItem(item);return TRUE;}}break;

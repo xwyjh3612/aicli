@@ -113,6 +113,14 @@ void FooterStatusController::Layout(const RECT& client, int footer_height) {
         git_bounds_ = next;
         UpdateTooltip();
     }
+    phone_bounds_={telemetry_left_+scale(224),footer_top,
+                   std::max(telemetry_left_+scale(224),
+                            static_cast<int>(client.right)-scale(10)),
+                   client.bottom};
+}
+
+bool FooterStatusController::IsPhonePoint(POINT client_point) const noexcept {
+    return PtInRect(&phone_bounds_,client_point)!=FALSE;
 }
 
 bool FooterStatusController::RefreshRepository(
@@ -174,18 +182,21 @@ bool FooterStatusController::AdvanceRepositorySpinner() {
 bool FooterStatusController::UpdateTelemetry(bool mobile_access_enabled,
                                              bool agent_online,
                                              std::size_t memory_megabytes,
-                                             bool remote_configured) {
+                                             std::size_t online_devices,
+                                             std::size_t authorized_devices) {
     const bool changed = !telemetry_initialized_ ||
                          mobile_access_enabled_ != mobile_access_enabled ||
                          agent_online_ != agent_online ||
                          memory_megabytes_ != memory_megabytes ||
-                         remote_configured_ != remote_configured;
+                         online_devices_ != online_devices ||
+                         authorized_devices_ != authorized_devices;
     if (!changed) return false;
     telemetry_initialized_ = true;
     mobile_access_enabled_ = mobile_access_enabled;
     agent_online_ = agent_online;
     memory_megabytes_ = memory_megabytes;
-    remote_configured_ = remote_configured;
+    online_devices_ = std::min(online_devices,authorized_devices);
+    authorized_devices_ = authorized_devices;
     InvalidateFooter();
     return true;
 }
@@ -575,15 +586,14 @@ void FooterStatusController::Draw(HDC dc,
         : (agent_online_ ? L"● Agent 在线" : L"○ Agent 离线");
     const std::wstring memory_label =
         L"内存 " + std::to_wstring(memory_megabytes_) + L" MB";
-    const std::wstring relay_label = remote_configured_
-        ? L"公网已配置"
-        : L"公网未配置";
+    const std::wstring phone_label = L"手机 " +
+        std::to_wstring(online_devices_) + L"/" +
+        std::to_wstring(authorized_devices_);
     RECT agent_rect{
         telemetry_left_, telemetry_top, telemetry_left_ + scale(116), client.bottom};
     RECT memory_rect{
         agent_rect.right, telemetry_top, agent_rect.right + scale(108), client.bottom};
-    RECT relay_rect{
-        memory_rect.right, telemetry_top, client.right - scale(10), client.bottom};
+    RECT phone_rect=phone_bounds_;
     SetTextColor(dc, !mobile_access_enabled_
         ? theme.muted
         : (agent_online_ ? RGB(83, 203, 146) : RGB(225, 101, 112)));
@@ -592,8 +602,11 @@ void FooterStatusController::Draw(HDC dc,
     SetTextColor(dc, theme.muted);
     DrawTextW(dc, memory_label.c_str(), -1, &memory_rect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    DrawTextW(dc, relay_label.c_str(), -1, &relay_rect,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    SetTextColor(dc,!mobile_access_enabled_||!agent_online_
+        ? (authorized_devices_>0?theme.danger:theme.muted)
+        : (online_devices_>0?RGB(83,203,146):theme.muted));
+    DrawTextW(dc,phone_label.c_str(),-1,&phone_rect,
+              DT_LEFT|DT_VCENTER|DT_SINGLELINE);
 
     if (previous_font) SelectObject(dc, previous_font);
 }

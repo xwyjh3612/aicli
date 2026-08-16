@@ -29,7 +29,9 @@ public:
     void Layout(const RECT& client, int footer_height);
 
     const RECT& git_bounds() const noexcept { return git_bounds_; }
+    const RECT& phone_bounds() const noexcept { return phone_bounds_; }
     int telemetry_left() const noexcept { return telemetry_left_; }
+    bool IsPhonePoint(POINT client_point) const noexcept;
 
     bool OnMouseMove(POINT client_point, const ThemePalette& theme);
     void OnMouseLeave();
@@ -45,7 +47,8 @@ public:
     bool UpdateTelemetry(bool mobile_access_enabled,
                          bool agent_online,
                          std::size_t memory_megabytes,
-                         bool remote_configured);
+                         std::size_t online_devices,
+                         std::size_t authorized_devices);
 
     void Draw(HDC dc,
               const RECT& client,
@@ -74,6 +77,7 @@ private:
     HWND owner_{};
     HWND hover_card_{};
     RECT git_bounds_{};
+    RECT phone_bounds_{};
     int telemetry_left_{14};
     int footer_height_{30};
     // RepositoryStatus::root is empty for non-Git folders. Keep the selected
@@ -95,7 +99,8 @@ private:
     bool mobile_access_enabled_{};
     bool agent_online_{};
     std::size_t memory_megabytes_{};
-    bool remote_configured_{};
+    std::size_t online_devices_{};
+    std::size_t authorized_devices_{};
 };
 
 } // namespace aicli::ui

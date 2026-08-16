@@ -92,6 +92,8 @@ public:
     bool Start(DataStore* store, const AgentConfig& config, std::wstring* error = nullptr);
     void Stop();
     bool Online() const noexcept;
+    std::size_t OnlineDeviceCount() const noexcept;
+    bool IsDeviceOnline(const std::wstring& phone_id) const noexcept;
 
     void SetPairingCallback(PairingCallback callback);
     void SetInputCallback(InputCallback callback);
