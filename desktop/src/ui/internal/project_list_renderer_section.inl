@@ -210,6 +210,10 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
             fill=disabled?RGB(12,15,30):(down?RGB(29,35,61):(hover?RGB(22,28,51):RGB(14,18,39)));
             stroke=disabled?RGB(35,41,62):(hover?RGB(67,79,108):RGB(42,49,75));
         }
+        if(item->CtlID==ID_GROUP_DEFAULT&&g_group_dropdown_open&&!disabled){
+            fill=g_light_theme?RGB(232,241,253):RGB(27,44,75);
+            stroke=g_light_theme?RGB(83,156,255):RGB(83,156,255);
+        }
     }
     if(item->CtlID==ID_NEW_PROJECT){
         RECT shell{r.left,r.top,r.right-1,r.bottom-1};
@@ -242,6 +246,58 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         if(item->CtlID==ID_GROUP_ADD){
             SelectObject(item->hDC,g_font_header_icon);
             DrawTextW(item->hDC,icon,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+            return;
+        }
+
+        if(item->CtlID==ID_GROUP_DEFAULT){
+            const int leftPadding=ScaleUi(10);
+            const int rightPadding=ScaleUi(7);
+            const int iconWidth=ScaleUi(16);
+            const int iconGap=ScaleUi(6);
+            const int countGap=ScaleUi(5);
+            const int arrowGap=ScaleUi(4);
+            const int arrowWidth=ScaleUi(14);
+            const std::wstring count=L"("+std::to_wstring(g_group_project_count)+L")";
+
+            SIZE countSize{};
+            auto previousFont=SelectObject(item->hDC,g_font_header);
+            GetTextExtentPoint32W(item->hDC,count.c_str(),
+                                  static_cast<int>(count.size()),&countSize);
+
+            RECT arrowRect{r.right-rightPadding-arrowWidth,r.top,
+                           r.right-rightPadding,r.bottom};
+            RECT countRect{std::max(r.left+leftPadding,
+                                    arrowRect.left-arrowGap-countSize.cx),
+                           r.top,arrowRect.left-arrowGap,r.bottom};
+            RECT iconRect{r.left+leftPadding,r.top,
+                          r.left+leftPadding+iconWidth,r.bottom};
+            RECT nameRect{iconRect.right+iconGap,r.top,
+                          std::max(iconRect.right+iconGap,
+                                   countRect.left-countGap),r.bottom};
+
+            SetTextColor(item->hDC,text_color);
+            SelectObject(item->hDC,g_font_header_icon);
+            DrawTextW(item->hDC,icon,-1,&iconRect,
+                      DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+
+            SelectObject(item->hDC,g_font_header);
+            DrawTextW(item->hDC,text,-1,&nameRect,
+                      DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+
+            const COLORREF countColor=disabled?muted:
+                ((!g_window_chrome.active()&&!hover&&!down)
+                     ?TitleBarText()
+                     :(g_light_theme?RGB(108,121,140):RGB(129,144,168)));
+            SetTextColor(item->hDC,countColor);
+            DrawTextW(item->hDC,count.c_str(),-1,&countRect,
+                      DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
+
+            SetTextColor(item->hDC,
+                         g_group_dropdown_open?accent:text_color);
+            SelectObject(item->hDC,g_font_header_icon);
+            DrawTextW(item->hDC,g_group_dropdown_open?L"\xE70E":L"\xE70D",
+                      -1,&arrowRect,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+            SelectObject(item->hDC,previousFont);
             return;
         }
 

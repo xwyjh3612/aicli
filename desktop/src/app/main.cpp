@@ -193,6 +193,8 @@ std::vector<ProjectType> g_project_types;
 std::vector<ProjectGroup> g_groups;
 std::vector<int> g_visible_project_indices;
 std::wstring g_group_name=L"默认分组";
+std::size_t g_group_project_count{};
+bool g_group_dropdown_open{};
 std::wstring g_last_project_id;
 std::wstring g_startup_project_id;
 aicli::ui::ThemeManager g_theme_manager;
@@ -682,8 +684,15 @@ bool InitializePersistentState() {
 }
 void UpdateGroupButton(){
     if(!g_group)return;
-    const auto count=g_group_name==kAllGroupsName?g_projects.size():std::count_if(g_projects.begin(),g_projects.end(),[](const Project& project){if(g_group_name==kStartedProjectsName)return g_island.HasSession(project.id);const std::wstring group=project.group.empty()?L"默认分组":project.group;return group==g_group_name;});
-    SetText(g_group,g_group_name+L" ("+std::to_wstring(count)+L")  ▾");
+    g_group_project_count=g_group_name==kAllGroupsName?g_projects.size():
+        static_cast<std::size_t>(std::count_if(
+            g_projects.begin(),g_projects.end(),[](const Project& project){
+                if(g_group_name==kStartedProjectsName)return g_island.HasSession(project.id);
+                const std::wstring group=project.group.empty()?L"默认分组":project.group;
+                return group==g_group_name;
+            }));
+    SetText(g_group,g_group_name);
+    InvalidateRect(g_group,nullptr,FALSE);
 }
 void RefreshProjectList(){
     const int selected=SelectedProjectIndex();
@@ -726,8 +735,8 @@ void Layout(){
     const auto S=[](int value){return ScaleUi(value);};
     const int headerButtonTop=S(5);
     const int headerButtonHeight=S(30);
-    MoveMainChild(g_group,S(168),headerButtonTop,S(154),headerButtonHeight);
-    MoveMainChild(g_group_add,S(328),headerButtonTop,S(30),headerButtonHeight);
+    MoveMainChild(g_group,S(168),headerButtonTop,S(170),headerButtonHeight);
+    MoveMainChild(g_group_add,S(344),headerButtonTop,S(30),headerButtonHeight);
     // Anchor the complete phone/settings cluster from the native caption
     // buttons and lay each control out sequentially. Clamping every button to
     // its own minimum X made the first two overlap on narrower/high-DPI
@@ -900,6 +909,7 @@ void DeleteProject(){
     Layout();
     SetStatusText(L"项目“"+project.name+L"”已删除，项目文件夹未受影响");
 }
+#include "ui/internal/group_dropdown_section.inl"
 #include "ui/internal/project_context_menu_section.inl"
 bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const std::wstring& title,const std::wstring& sessionAgent,const std::wstring& project_id){
     SetProjectWorkingState(project_id,false);
@@ -1168,7 +1178,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     if(g_taskbar_button_created_message&&m==g_taskbar_button_created_message){g_taskbar_working_indicator.OnTaskbarButtonCreated();return 0;}
     switch(m){
     case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY);g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);RecreateMainFontsForDpi();
-        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,154,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,328,8,30,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,365,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,470,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"\xE710",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)(b==g_new_project?g_font:g_font_header),TRUE);EnableButtonHover(b);}
+        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,170,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,344,8,30,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,381,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_devices=CreateWindowW(L"BUTTON",L"已绑定 0 台",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,486,8,112,32,h,(HMENU)(INT_PTR)ID_DEVICES,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"\xE710",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_devices,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)(b==g_new_project?g_font:g_font_header),TRUE);EnableButtonHover(b);}
         g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE|SS_LEFT|SS_CENTERIMAGE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font_search,L"输入项目名、路径或备注搜索");aicli::ui::SetStyledInputLeadingIcon(g_search,L"\xE721");aicli::ui::SetStyledInputTheme(g_search,SearchInputPalette());aicli::ui::SetStyledInputFocusBorderOnly(g_search);aicli::ui::SetStyledInputParentFrame(g_search,true,2);
         g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SendMessageW(g_list,LB_SETITEMHEIGHT,0,ScaleUi(kProjectListItemHeight));g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);RefreshProjectList();
         auto detailStatic=[&](const wchar_t* text){return CreateWindowW(L"STATIC",text,WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);};
