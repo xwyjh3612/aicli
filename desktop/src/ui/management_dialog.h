@@ -18,6 +18,7 @@ enum class ManagementMode {
 struct ManagementDialogResult {
     bool accepted{};
     std::wstring selected_group;
+    bool open_binding{};
 };
 
 using AgentRestartCallback =

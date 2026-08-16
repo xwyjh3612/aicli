@@ -1161,6 +1161,7 @@ void OpenSettingsDialog() {
     // without pressing another save button. Repaint the complete workspace
     // only after the modal child has gone away.
     ApplyLiveTheme();
+    if(result.open_binding)ShowBindingDialog(g_hwnd);
 }
 
 void OpenGroupsDialog() {
@@ -1174,8 +1175,9 @@ void OpenGroupsDialog() {
 }
 
 void OpenDevicesDialog() {
-    aicli::ui::ShowManagementDialog(g_hwnd, aicli::ui::ManagementMode::Devices,
-                                    g_store, g_remote_agent);
+    const auto result=aicli::ui::ShowManagementDialog(
+        g_hwnd,aicli::ui::ManagementMode::Devices,g_store,g_remote_agent);
+    if(result.open_binding)ShowBindingDialog(g_hwnd);
     UpdateDeviceHeader();
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }

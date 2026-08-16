@@ -18,6 +18,7 @@
 #include <uxtheme.h>
 
 #include <algorithm>
+#include <ctime>
 #include <filesystem>
 #include <memory>
 #include <sstream>
@@ -52,6 +53,11 @@ HFONT CreateDialogFont(HWND owner, int height, int weight) {
                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                        CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 }
+HFONT CreateDialogIconFont(HWND owner, int height) {
+    return CreateFontW(-DpiScale(owner,height),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,
+                       DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,
+                       CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe MDL2 Assets");
+}
 enum : int {
     kList = 2301,
     kName = 2302,
@@ -83,6 +89,8 @@ enum : int {
     kMobileWorkspaceRoot = 2329,
     kMobileWorkspaceBrowse = 2330,
     kMobileAccess = 2331,
+    kSettingsDevices = 2332,
+    kBindEmpty = 2333,
 };
 
 enum : int {
@@ -105,6 +113,7 @@ enum class SettingsPage {
     Connection,
     ProjectTypes,
     Groups,
+    Devices,
 };
 
 COLORREF BlendBackdrop(COLORREF base, COLORREF overlay, BYTE alpha) {
@@ -115,6 +124,16 @@ COLORREF BlendBackdrop(COLORREF base, COLORREF overlay, BYTE alpha) {
     return RGB(blend(GetRValue(base), GetRValue(overlay)),
                blend(GetGValue(base), GetGValue(overlay)),
                blend(GetBValue(base), GetBValue(overlay)));
+}
+
+std::wstring FormatDeviceTime(std::int64_t timestamp) {
+    if(timestamp<=0)return L"从未";
+    const std::time_t value=static_cast<std::time_t>(timestamp);
+    std::tm local{};
+    if(localtime_s(&local,&value)!=0)return L"未知";
+    wchar_t text[32]{};
+    if(wcsftime(text,std::size(text),L"%Y-%m-%d %H:%M",&local)==0)return L"未知";
+    return text;
 }
 
 const ThemePalette& DarkPalette() {
@@ -140,6 +159,7 @@ struct State {
     HFONT settings_nav_font{};
     HFONT settings_content_font{};
     HFONT settings_small_font{};
+    HFONT settings_icon_font{};
     HFONT small_font{};
     HWND list{};
     HWND name{};
@@ -172,6 +192,8 @@ struct State {
     HWND settings_connection{};
     HWND settings_project_types{};
     HWND settings_groups{};
+    HWND settings_devices{};
+    HWND bind_empty{};
     HWND title_close{};
     HWND hovered_control{};
     std::vector<ProjectGroup> groups;
@@ -297,7 +319,8 @@ bool IsSettingsGroups(const State& state) {
 
 bool IsSettingsNavigationId(int id) {
     return id == kSettingsAppearance || id == kSettingsConnection ||
-           id == kSettingsProjectTypes || id == kSettingsGroups;
+           id == kSettingsProjectTypes || id == kSettingsGroups ||
+           id == kSettingsDevices;
 }
 
 bool IsActiveSettingsNavigation(const State& state, int id) {
@@ -306,6 +329,7 @@ bool IsActiveSettingsNavigation(const State& state, int id) {
     if (id == kSettingsConnection) return state.settings_page == SettingsPage::Connection;
     if (id == kSettingsProjectTypes) return state.settings_page == SettingsPage::ProjectTypes;
     if (id == kSettingsGroups) return state.settings_page == SettingsPage::Groups;
+    if (id == kSettingsDevices) return state.settings_page == SettingsPage::Devices;
     return false;
 }
 
@@ -1120,25 +1144,20 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         wchar_t text[256]{};
         GetWindowTextW(item->hwndItem, text,
                        static_cast<int>(std::size(text)));
-        const wchar_t* subtitle = item->CtlID == kSettingsAppearance
-            ? L"主题与显示"
-            : item->CtlID == kSettingsConnection
-                ? L"地址与 Agent"
-                : item->CtlID == kSettingsProjectTypes
-                    ? L"CLI 启动配置"
-                    : L"项目归类管理";
+        const wchar_t* icon = item->CtlID == kSettingsAppearance ? L"\xE790" :
+            item->CtlID == kSettingsConnection ? L"\xE774" :
+            item->CtlID == kSettingsProjectTypes ? L"\xE756" :
+            item->CtlID == kSettingsGroups ? L"\xE8B7" : L"\xE8EA";
         SetBkMode(item->hDC, TRANSPARENT);
+        SelectObject(item->hDC,state->settings_icon_font?state->settings_icon_font:state->settings_nav_font);
+        SetTextColor(item->hDC,active_navigation?state->accent_color:muted_color);
+        RECT icon_rect{rect.left+S(13),rect.top,rect.left+S(37),rect.bottom};
+        DrawTextW(item->hDC,icon,-1,&icon_rect,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
         SelectObject(item->hDC, state->settings_nav_font ? state->settings_nav_font : state->font);
         SetTextColor(item->hDC, disabled ? muted_color : text_color);
-        RECT title_rect{rect.left + S(16), rect.top + S(7),
-                        rect.right - S(28), rect.top + S(29)};
+        RECT title_rect{rect.left + S(44), rect.top,
+                        rect.right - S(28), rect.bottom};
         DrawTextW(item->hDC, text, -1, &title_rect,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        SelectObject(item->hDC, state->settings_small_font ? state->settings_small_font : state->small_font);
-        SetTextColor(item->hDC, muted_color);
-        RECT subtitle_rect{rect.left + S(16), rect.top + S(27),
-                           rect.right - S(28), rect.bottom - S(4)};
-        DrawTextW(item->hDC, subtitle, -1, &subtitle_rect,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         SetTextColor(item->hDC, active_navigation
                                   ? state->accent_color : muted_color);
@@ -1248,7 +1267,9 @@ void DrawListItem(const DRAWITEMSTRUCT* item) {
     RECT rect{item->rcItem.left + inset, item->rcItem.top, item->rcItem.right - inset, item->rcItem.bottom};
     const size_t data_index=static_cast<size_t>(SendMessageW(
         item->hwndItem,LB_GETITEMDATA,item->itemID,0));
-    if(state->mode==ManagementMode::Devices&&data_index<state->devices.size()){
+    if((state->mode==ManagementMode::Devices||
+        (state->mode==ManagementMode::Settings&&state->settings_page==SettingsPage::Devices))&&
+       data_index<state->devices.size()){
         const auto& device=state->devices[data_index];
         const COLORREF status=device.active?state->palette.success:state->palette.muted;
         HBRUSH dot=CreateSolidBrush(status);
@@ -1320,6 +1341,7 @@ void Layout(State& state) {
          button(state.settings_connection, nav_x, top + S(110), nav_width, S(46));
          button(state.settings_project_types, nav_x, top + S(158), nav_width, S(46));
          button(state.settings_groups, nav_x, top + S(206), nav_width, S(46));
+         button(state.settings_devices, nav_x, top + S(254), nav_width, S(46));
          button(state.title_close, state.panel.right - S(54), top + S(4), S(32), S(32));
 
         // The content surface owns the full right pane.  Its painted content
@@ -1335,7 +1357,9 @@ void Layout(State& state) {
             SetWindowRgn(state.content, nullptr, TRUE);
             LayoutSettingsContent(state);
         }
-    } else if (state.mode == ManagementMode::Devices) {
+    } else if (state.mode == ManagementMode::Devices ||
+               (state.mode==ManagementMode::Settings&&
+                state.settings_page==SettingsPage::Devices)) {
         const int list_width=S(280);
         if (state.list) MoveWindow(state.list, x, top + S(104), list_width, S(334), TRUE);
         button(state.unbind, right - S(126), button_y, S(126), S(36));
@@ -1504,8 +1528,8 @@ void Paint(State& state, HDC dc) {
             };
             detail_row(L"设备型号",device.model,158);
             detail_row(L"设备 ID",device.phone_id,196);
-            detail_row(L"绑定时间",std::to_wstring(device.paired_at),234);
-            detail_row(L"最近在线",std::to_wstring(device.last_seen),272);
+            detail_row(L"绑定时间",FormatDeviceTime(device.paired_at),234);
+            detail_row(L"最近在线",FormatDeviceTime(device.last_seen),272);
             detail_row(L"授权状态",device.active?L"已授权":L"已解绑",310);
         }
     }
@@ -1517,6 +1541,7 @@ int SettingsContentExtent(SettingsPage page) {
     case SettingsPage::Connection: return 635;
     case SettingsPage::ProjectTypes: return 590;
     case SettingsPage::Groups: return 590;
+    case SettingsPage::Devices: return 520;
     }
     return 390;
 }
@@ -1616,11 +1641,21 @@ void LayoutSettingsContent(State& state) {
         button(state.add, x, 492, S(122));
         button(state.save, x + S(134), 492, S(118));
         button(state.remove, x + S(264), 492, S(104));
-    } else {
+    } else if(state.settings_page==SettingsPage::Groups) {
         list(state.list, 126, 330);
         button(state.add, x, 492, S(122));
         button(state.save, x + S(134), 492, S(118));
         button(state.remove, x + S(264), 492, S(104));
+    } else {
+        const int list_width=std::min(S(300),available/2);
+        if(state.list){
+            SetWindowPos(state.list,nullptr,x,S(126)-offset,list_width,S(300),
+                         SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_NOREDRAW);
+            ApplyRoundedRegion(state.list,list_width,S(300),S(8));
+        }
+        button(state.select,right-S(122),80,S(122),36);
+        button(state.unbind,right-S(122),390,S(122),36);
+        button(state.bind_empty,x+list_width+S(70),270,S(150),36);
     }
     state.content_scrollbar.Layout();
     InvalidateRect(state.content, nullptr, FALSE);
@@ -1653,6 +1688,9 @@ void PaintSettingsContent(State& state, HDC dc) {
     } else if (state.settings_page == SettingsPage::Groups) {
         title = L"分组管理";
         subtitle = L"用一个名称输入框新建或修改分组；默认分组始终保留。";
+    } else if(state.settings_page==SettingsPage::Devices){
+        title=L"设备管理";
+        subtitle=L"查看已授权手机、最近连接状态，或撤销设备访问权限。";
     }
 
     SelectObject(dc, state.settings_content_font ? state.settings_content_font : state.title_font);
@@ -1734,13 +1772,46 @@ void PaintSettingsContent(State& state, HDC dc) {
         RECT hint{x, S(548), right, S(578)};
         DrawTextW(dc, L"新增和修改会打开独立模态框；Codex 和 Claude 虽为预置类型，也可手工调整，但不能删除。", -1,
                   &hint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    } else {
+    } else if(state.settings_page==SettingsPage::Groups) {
         label(L"分组列表", 96);
         SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
         SetTextColor(dc, state.muted_color);
         RECT hint{x, S(548), right, S(578)};
         DrawTextW(dc, L"添加和修改名称会打开独立输入模态层；非空分组不能删除。", -1,
                   &hint, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }else{
+        label(L"已授权设备",96);
+        const int list_width=std::min(S(300),(right-x)/2);
+        const int detail_x=x+list_width+S(26);
+        size_t index{};
+        const bool has_device=SelectedIndex(state.list,index)&&index<state.devices.size();
+        if(!has_device){
+            SelectObject(dc,state.settings_content_font?state.settings_content_font:state.font);
+            SetTextColor(dc,state.muted_color);
+            RECT empty{detail_x,S(186),right,S(266)};
+            DrawTextW(dc,state.devices.empty()?L"当前没有已绑定手机":L"选择一台设备查看详细信息",
+                      -1,&empty,DT_CENTER|DT_VCENTER|DT_WORDBREAK);
+        }else{
+            const auto& device=state.devices[index];
+            SelectObject(dc,state.settings_content_font?state.settings_content_font:state.font);
+            SetTextColor(dc,state.text_color);
+            RECT device_name{detail_x,S(126),right,S(158)};
+            DrawTextW(dc,device.name.c_str(),-1,&device_name,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+            SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
+            auto row=[&](const wchar_t* key,const std::wstring& value,int y){
+                SetTextColor(dc,state.muted_color);
+                RECT key_rect{detail_x,S(y),detail_x+S(88),S(y+28)};
+                DrawTextW(dc,key,-1,&key_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+                SetTextColor(dc,state.text_color);
+                RECT value_rect{detail_x+S(92),S(y),right,S(y+28)};
+                DrawTextW(dc,value.c_str(),-1,&value_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+            };
+            row(L"设备型号",device.model,170);
+            row(L"设备 ID",device.phone_id,208);
+            row(L"绑定时间",FormatDeviceTime(device.paired_at),246);
+            row(L"最近在线",FormatDeviceTime(device.last_seen),284);
+            row(L"授权状态",device.active?L"已授权":L"已解绑",322);
+        }
     }
     SetViewportOrgEx(dc, previous_origin.x, previous_origin.y, nullptr);
 }
@@ -1753,6 +1824,7 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     const bool connection = page == SettingsPage::Connection;
     const bool project_types = page == SettingsPage::ProjectTypes;
     const bool groups = page == SettingsPage::Groups;
+    const bool devices = page == SettingsPage::Devices;
     auto visible = [](HWND control, bool show) {
         if (control) ShowWindow(control, show ? SW_SHOW : SW_HIDE);
     };
@@ -1773,11 +1845,14 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     visible(state.mobile_access, connection);
     visible(state.firewall, connection);
     visible(state.save, connection || project_types || groups);
-    visible(state.list, project_types || groups);
+    visible(state.list, project_types || groups || devices);
     visible(state.name, false);
     visible(state.command, false);
     visible(state.add, project_types || groups);
     visible(state.remove, project_types || groups);
+    visible(state.select,devices);
+    visible(state.unbind,devices);
+    visible(state.bind_empty,devices&&state.devices.empty());
     if (state.save) EnableWindow(state.save, TRUE);
     if (state.remove) EnableWindow(state.remove, TRUE);
     if (project_types) {
@@ -1794,12 +1869,15 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
         SetWindowTextW(state.remove, L"删除");
         RefreshList(state);
         ReadSelection(state);
+    }else if(devices){
+        RefreshList(state);
     }
     LayoutSettingsContent(state);
     InvalidateRect(state.settings_appearance, nullptr, FALSE);
     InvalidateRect(state.settings_connection, nullptr, FALSE);
     InvalidateRect(state.settings_project_types, nullptr, FALSE);
     InvalidateRect(state.settings_groups, nullptr, FALSE);
+    InvalidateRect(state.settings_devices, nullptr, FALSE);
     InvalidateRect(state.content, nullptr, FALSE);
 }
 
@@ -1901,6 +1979,8 @@ void RefreshList(State& state) {
         }
     }
     if (SendMessageW(state.list, LB_GETCOUNT, 0, 0) > 0) SendMessageW(state.list, LB_SETCURSEL, 0, 0);
+    if(state.bind_empty&&state.mode==ManagementMode::Settings&&state.settings_page==SettingsPage::Devices)
+        ShowWindow(state.bind_empty,state.devices.empty()?SW_SHOW:SW_HIDE);
 }
 
 void ReadSelection(State& state) {
@@ -2019,6 +2099,7 @@ void CreateControls(State& state) {
         state.settings_connection = MakeButton(state, L"本机与网络", kSettingsConnection);
         state.settings_project_types = MakeButton(state, L"项目类型", kSettingsProjectTypes);
         state.settings_groups = MakeButton(state, L"分组管理", kSettingsGroups);
+        state.settings_devices = MakeButton(state, L"设备管理", kSettingsDevices);
         state.computer_name = MakeField(state, kComputerName, L"显示在手机端，例如：开发主机", state.content);
         state.listen = MakeField(state, kListen, L"0.0.0.0 表示所有网卡", state.content);
         state.port = MakeField(state, kPort, L"例如 4280", state.content);
@@ -2070,6 +2151,9 @@ void CreateControls(State& state) {
                                                    state.settings_content_font : state.font), TRUE);
         state.add = MakeButton(state, L"新增类型", kAdd, state.content);
         state.remove = MakeButton(state, L"删除", kDelete, state.content);
+        state.select = MakeButton(state,L"绑定手机",kSelect,state.content);
+        state.unbind = MakeButton(state,L"解绑设备",kUnbind,state.content);
+        state.bind_empty=MakeButton(state,L"绑定第一台手机",kBindEmpty,state.content);
         state.title_close = MakeButton(state, L"\x00D7", kClose);
         for (HWND control : {state.computer_name, state.listen, state.port,
                               state.local, state.remote, state.mobile_workspace_root,
@@ -2078,14 +2162,15 @@ void CreateControls(State& state) {
                               state.taskbar_style_progress, state.taskbar_style_overlay,
                               state.taskbar_scope_current, state.taskbar_scope_all,
                               state.save, state.firewall,
-                             state.list, state.add, state.remove}) {
+                             state.list, state.add, state.remove,state.select,state.unbind,
+                             state.bind_empty}) {
             if (control) {
                 SetWindowSubclass(control, SettingsWheelProc,
                                   kSettingsWheelSubclassId,
                                   reinterpret_cast<DWORD_PTR>(&state));
             }
         }
-        UpdateSettingsPage(state, SettingsPage::Appearance);
+        UpdateSettingsPage(state, state.settings_page);
     } else if (state.mode == ManagementMode::Groups) {
         state.list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", nullptr,
                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
@@ -2203,7 +2288,8 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         auto* measure = reinterpret_cast<MEASUREITEMSTRUCT*>(lparam);
         if (measure && measure->CtlID == kList) {
             measure->itemHeight = DpiScale(h,
-                state->mode==ManagementMode::Devices?58:
+                (state->mode==ManagementMode::Devices||
+                 (state->mode==ManagementMode::Settings&&state->settings_page==SettingsPage::Devices))?58:
                 (IsSettingsProjectTypes(*state)?52:44));
             return TRUE;
         }
@@ -2222,6 +2308,8 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         if (id == kList && (notification == LBN_SELCHANGE || notification == LBN_DBLCLK)) {
             ReadSelection(*state);
             if(state->mode==ManagementMode::Devices)InvalidateRect(h,&state->panel,FALSE);
+            if(state->mode==ManagementMode::Settings&&state->settings_page==SettingsPage::Devices)
+                InvalidateRect(state->content,nullptr,FALSE);
             if (notification == LBN_DBLCLK && state->mode == ManagementMode::Groups) {
                 size_t index{};
                 if (SelectedIndex(state->list, index) && index < state->groups.size()) {
@@ -2258,6 +2346,30 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
             }
             if (id == kSettingsGroups) {
                 UpdateSettingsPage(*state, SettingsPage::Groups);
+                return 0;
+            }
+            if(id==kSettingsDevices){
+                UpdateSettingsPage(*state,SettingsPage::Devices);
+                return 0;
+            }
+            if(state->settings_page==SettingsPage::Devices&&
+               (id==kSelect||id==kBindEmpty)){
+                state->result.open_binding=true;
+                DestroyWindow(h);
+                return 0;
+            }
+            if(state->settings_page==SettingsPage::Devices&&id==kUnbind){
+                size_t index{};
+                if(!SelectedIndex(state->list,index)||index>=state->devices.size()){
+                    ShowError(h,L"请选择要解绑的设备");
+                }else if(!state->devices[index].active){
+                    ShowError(h,L"该设备已经解绑");
+                }else if(!state->agent->RevokeDevice(state->devices[index].phone_id)){
+                    ShowError(h,L"解绑失败");
+                }else{
+                    RefreshList(*state);
+                    InvalidateRect(state->content,nullptr,FALSE);
+                }
                 return 0;
             }
             if (id == kTheme || id == kThemeLight) {
@@ -2678,7 +2790,9 @@ ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
     }
     State state;
     state.owner = owner;
-    state.mode = mode;
+    state.mode = mode==ManagementMode::Devices?ManagementMode::Settings:mode;
+    state.settings_page = mode==ManagementMode::Devices
+        ? SettingsPage::Devices : SettingsPage::Appearance;
     state.store = &store;
     state.agent = &agent;
     state.restart_agent = std::move(restart_agent);
@@ -2691,11 +2805,12 @@ ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
     // Settings uses a compact, explicit type scale independent of the other
     // management dialogs: 16 px navigation, 14 px content headings/controls,
     // and 12 px supporting text.
-    if (mode == ManagementMode::Settings) {
+    if (state.mode == ManagementMode::Settings) {
         state.settings_title_font = CreateDialogFont(owner, 16, FW_SEMIBOLD);
         state.settings_nav_font = CreateDialogFont(owner, 16, FW_MEDIUM);
         state.settings_content_font = CreateDialogFont(owner, 14, FW_MEDIUM);
         state.settings_small_font = CreateDialogFont(owner, 12, FW_NORMAL);
+        state.settings_icon_font = CreateDialogIconFont(owner, 14);
     }
     const int host_title_height = ModalTopForOwner(owner);
     ModalWorkspaceScope workspace(owner, host_title_height, &state.palette);
@@ -2719,6 +2834,7 @@ ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
     if (state.settings_nav_font) DeleteObject(state.settings_nav_font);
     if (state.settings_content_font) DeleteObject(state.settings_content_font);
     if (state.settings_small_font) DeleteObject(state.settings_small_font);
+    if (state.settings_icon_font) DeleteObject(state.settings_icon_font);
     if (state.small_font) DeleteObject(state.small_font);
     if (state.field_brush) DeleteObject(state.field_brush);
     if (state.field_focus_brush) DeleteObject(state.field_focus_brush);

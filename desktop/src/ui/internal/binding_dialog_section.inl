@@ -6,7 +6,22 @@ void RefreshBindingPairing(){
     try{const auto value=Utf8Text(g_binding_info.qr_payload);g_binding_qr=qrcodegen::QrCode::encodeText(value.c_str(),qrcodegen::QrCode::Ecc::MEDIUM);}catch(...){g_binding_qr.reset();}
     if(g_binding_dialog)InvalidateRect(g_binding_dialog,nullptr,FALSE);
 }
-void LayoutBindingDialog(HWND h){RECT client{};GetClientRect(h,&client);const auto S=[](int value){return ScaleUi(value);};const int width=std::min(S(820),std::max(S(700),(int)client.right-S(96)));const int height=S(590);const int left=(client.right-width)/2,top=(client.bottom-height)/2;g_binding_panel={left,top,left+width,top+height};MoveWindow(g_binding_refresh,g_binding_panel.right-S(236),g_binding_panel.bottom-S(58),S(100),S(36),TRUE);MoveWindow(g_binding_close,g_binding_panel.right-S(124),g_binding_panel.bottom-S(58),S(90),S(36),TRUE);MoveWindow(g_binding_approve,g_binding_panel.right-S(236),g_binding_panel.bottom-S(106),S(100),S(36),TRUE);MoveWindow(g_binding_reject,g_binding_panel.right-S(124),g_binding_panel.bottom-S(106),S(90),S(36),TRUE);const bool pending=g_pending_pairing.has_value()&&g_pending_pairing->submitted&&!g_pending_pairing->authorized&&!g_pending_pairing->rejected;ShowWindow(g_binding_approve,pending?SW_SHOW:SW_HIDE);ShowWindow(g_binding_reject,pending?SW_SHOW:SW_HIDE);aicli::ui::SetModalSurfaceRegion(h,g_binding_panel,S(28));}
+void LayoutBindingDialog(HWND h){
+    RECT client{};GetClientRect(h,&client);const auto S=[](int value){return ScaleUi(value);};
+    const int width=std::min(S(780),std::max(S(680),(int)client.right-S(96)));
+    const int height=S(530);const int left=(client.right-width)/2,top=(client.bottom-height)/2;
+    g_binding_panel={left,top,left+width,top+height};
+    MoveWindow(g_binding_close,g_binding_panel.right-S(43),g_binding_panel.top+S(5),S(34),S(34),TRUE);
+    MoveWindow(g_binding_refresh,g_binding_panel.left+S(32),g_binding_panel.bottom-S(66),S(116),S(36),TRUE);
+    MoveWindow(g_binding_reject,g_binding_panel.right-S(238),g_binding_panel.bottom-S(66),S(96),S(36),TRUE);
+    MoveWindow(g_binding_approve,g_binding_panel.right-S(132),g_binding_panel.bottom-S(66),S(100),S(36),TRUE);
+    for(HWND button:{g_binding_close,g_binding_refresh,g_binding_reject,g_binding_approve}){
+        if(button){RECT r{};GetClientRect(button,&r);ApplyRoundedRegion(button,r.right,r.bottom,S(8));}
+    }
+    const bool pending=g_pending_pairing.has_value()&&g_pending_pairing->submitted&&!g_pending_pairing->authorized&&!g_pending_pairing->rejected;
+    ShowWindow(g_binding_approve,pending?SW_SHOW:SW_HIDE);ShowWindow(g_binding_reject,pending?SW_SHOW:SW_HIDE);
+    aicli::ui::SetModalSurfaceRegion(h,g_binding_panel,S(14));
+}
 void PaintBindingDialog(HDC dc,RECT client){
     HBRUSH fallback=CreateSolidBrush(BlendBackdropColor(bg,g_theme.scrim,150));FillRect(dc,&client,fallback);DeleteObject(fallback);
     HBRUSH panelBrush=CreateSolidBrush(RGB(29,31,35));HPEN panelPen=CreatePen(PS_SOLID,1,RGB(59,64,73));auto oldBrush=SelectObject(dc,panelBrush);auto oldPen=SelectObject(dc,panelPen);RoundRect(dc,g_binding_panel.left,g_binding_panel.top,g_binding_panel.right,g_binding_panel.bottom,14,14);SelectObject(dc,oldBrush);SelectObject(dc,oldPen);DeleteObject(panelBrush);DeleteObject(panelPen);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,fg);SelectObject(dc,g_font_modal_title);RECT title{g_binding_panel.left+34,g_binding_panel.top+24,g_binding_panel.right-34,g_binding_panel.top+54};DrawTextW(dc,L"绑定 Android 手机",-1,&title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);SelectObject(dc,g_font_small);SetTextColor(dc,muted);RECT subtitle{g_binding_panel.left+34,g_binding_panel.top+56,g_binding_panel.right-34,g_binding_panel.top+82};DrawTextW(dc,L"必须使用 AI CLI App 内的扫码入口；电脑只需确认这一次",-1,&subtitle,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
@@ -19,14 +34,18 @@ void PaintBindingDialogSurface(HDC dc,RECT client){
     const auto S=[](int value){return ScaleUi(value);};
     DrawSmoothRoundedRect(dc,g_binding_panel,ScaleUiF(14.0f),panel,border,ScaleUiF(1.0f));
     SetBkMode(dc,TRANSPARENT);SelectObject(dc,g_font_modal_title);SetTextColor(dc,fg);
-    RECT title{g_binding_panel.left+S(34),g_binding_panel.top+S(24),g_binding_panel.right-S(34),g_binding_panel.top+S(54)};
+    RECT title{g_binding_panel.left+S(24),g_binding_panel.top,g_binding_panel.right-S(58),g_binding_panel.top+S(44)};
     DrawTextW(dc,L"绑定 Android 手机",-1,&title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+    HPEN separator=CreatePen(PS_SOLID,1,border);HGDIOBJ old_pen=SelectObject(dc,separator);
+    MoveToEx(dc,g_binding_panel.left+S(1),g_binding_panel.top+S(44),nullptr);
+    LineTo(dc,g_binding_panel.right-S(1),g_binding_panel.top+S(44));
+    SelectObject(dc,old_pen);DeleteObject(separator);
     SelectObject(dc,g_font_small);SetTextColor(dc,muted);
-    RECT subtitle{g_binding_panel.left+S(34),g_binding_panel.top+S(56),g_binding_panel.right-S(34),g_binding_panel.top+S(82)};
-    DrawTextW(dc,L"必须使用 AI CLI App 内的扫码入口；电脑只需确认这一次",-1,&subtitle,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-    const int qrArea=S(360),qrLeft=g_binding_panel.left+S(34),qrTop=g_binding_panel.top+S(100);
-    HBRUSH white=CreateSolidBrush(RGB(245,247,250));RECT qrBack{qrLeft,qrTop,qrLeft+qrArea,qrTop+qrArea};
-    FillRect(dc,&qrBack,white);DeleteObject(white);
+    RECT subtitle{g_binding_panel.left+S(32),g_binding_panel.top+S(54),g_binding_panel.right-S(32),g_binding_panel.top+S(80)};
+    DrawTextW(dc,L"使用 AiCli Android App 扫码，首次授权需要在电脑上确认。",-1,&subtitle,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+    const int qrArea=S(280),qrLeft=g_binding_panel.left+S(32),qrTop=g_binding_panel.top+S(96);
+    RECT qrBack{qrLeft,qrTop,qrLeft+qrArea,qrTop+qrArea};
+    DrawSmoothRoundedRect(dc,qrBack,ScaleUiF(8.0f),RGB(248,249,251),RGB(215,220,228),ScaleUiF(1.0f));
     if(g_binding_qr){
         const int modules=g_binding_qr->getSize(),quiet=4,scale=std::max(1,qrArea/(modules+quiet*2));
         const int actual=scale*(modules+quiet*2);
@@ -36,26 +55,42 @@ void PaintBindingDialogSurface(HDC dc,RECT client){
             RECT module{originX+x*scale,originY+y*scale,originX+(x+1)*scale,originY+(y+1)*scale};FillRect(dc,&module,black);
         }
         DeleteObject(black);
-    }else{SetTextColor(dc,fg);SelectObject(dc,g_font);DrawTextW(dc,L"二维码生成失败",-1,&qrBack,DT_CENTER|DT_VCENTER|DT_SINGLELINE);}
-    const int infoLeft=qrLeft+qrArea+S(34),infoRight=g_binding_panel.right-S(34);
-    SelectObject(dc,g_font);SetTextColor(dc,fg);RECT statusTitle{infoLeft,qrTop,infoRight,qrTop+S(30)};
-    DrawTextW(dc,L"等待手机扫码",-1,&statusTitle,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-    SelectObject(dc,g_font_small);SetTextColor(dc,muted);
+    }else{SetTextColor(dc,RGB(45,50,58));SelectObject(dc,g_font);DrawTextW(dc,L"二维码生成失败",-1,&qrBack,DT_CENTER|DT_VCENTER|DT_SINGLELINE);}
+    const int infoLeft=qrLeft+qrArea+S(34),infoRight=g_binding_panel.right-S(32);
+    const bool submitted=g_pending_pairing&&g_pending_pairing->submitted;
+    const bool authorized=submitted&&g_pending_pairing->authorized;
+    const bool rejected=submitted&&g_pending_pairing->rejected;
+    const COLORREF status_color=authorized?g_theme.success:rejected?g_theme.danger:submitted?g_theme.warning:g_theme.muted;
+    HBRUSH status_brush=CreateSolidBrush(status_color);
+    const int dot=S(8);RECT status_dot{infoLeft,qrTop+S(9),infoLeft+dot,qrTop+S(9)+dot};
+    HGDIOBJ old_status_brush=SelectObject(dc,status_brush);HGDIOBJ old_status_pen=SelectObject(dc,GetStockObject(NULL_PEN));
+    Ellipse(dc,status_dot.left,status_dot.top,status_dot.right,status_dot.bottom);
+    SelectObject(dc,old_status_pen);SelectObject(dc,old_status_brush);DeleteObject(status_brush);
+    SelectObject(dc,g_font_medium);SetTextColor(dc,status_color);RECT statusTitle{infoLeft+S(18),qrTop,infoRight,qrTop+S(30)};
+    const wchar_t* status=authorized?L"绑定完成":rejected?L"已拒绝":submitted?L"等待电脑确认":L"等待手机扫码";
+    DrawTextW(dc,status,-1,&statusTitle,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
     std::wstring localAddress=g_store.GetSetting(L"local_address");
     if(localAddress.empty()){try{const auto payload=nlohmann::json::parse(Utf8Text(g_binding_info.qr_payload));localAddress=WideText(payload.value("localAddress",std::string{}));}catch(...){}}
-    std::wstring details=L"本地地址\n"+localAddress+L"\n\n证书指纹\n"+g_binding_info.certificate_fingerprint.substr(0,std::min<size_t>(24,g_binding_info.certificate_fingerprint.size()))+L"…\n\n二维码 5 分钟内有效。已绑定手机断网或电脑重启后不需要重新确认。";
-    RECT detailRect{infoLeft,qrTop+S(40),infoRight,qrTop+S(258)};DrawTextW(dc,details.c_str(),-1,&detailRect,DT_LEFT|DT_TOP|DT_WORDBREAK);
-    if(g_pending_pairing&&g_pending_pairing->submitted){
-        SetTextColor(dc,g_pending_pairing->authorized?g_theme.success:g_pending_pairing->rejected?g_theme.danger:g_theme.warning);
-        SelectObject(dc,g_font_medium);RECT phoneTitle{infoLeft,qrTop+S(268),infoRight,qrTop+S(298)};
-        const wchar_t* state=g_pending_pairing->authorized?L"绑定完成":g_pending_pairing->rejected?L"已拒绝":L"等待电脑确认";
-        DrawTextW(dc,state,-1,&phoneTitle,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-        SelectObject(dc,g_font_small);SetTextColor(dc,fg);
-        std::wstring phone=L"设备："+g_pending_pairing->device.name+L"\n型号："+g_pending_pairing->device.model;
-        RECT phoneRect{infoLeft,qrTop+S(302),infoRight,qrTop+S(360)};DrawTextW(dc,phone.c_str(),-1,&phoneRect,DT_LEFT|DT_TOP|DT_WORDBREAK);
+    SelectObject(dc,g_font_small);
+    auto info_row=[&](const wchar_t* label,const std::wstring& value,int y){
+        SetTextColor(dc,muted);RECT label_rect{infoLeft,qrTop+S(y),infoRight,qrTop+S(y+22)};
+        DrawTextW(dc,label,-1,&label_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        SetTextColor(dc,fg);RECT value_rect{infoLeft,qrTop+S(y+23),infoRight,qrTop+S(y+51)};
+        DrawTextW(dc,value.c_str(),-1,&value_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+    };
+    info_row(L"本地访问地址",localAddress,48);
+    info_row(L"证书指纹",g_binding_info.certificate_fingerprint.substr(0,std::min<size_t>(32,g_binding_info.certificate_fingerprint.size()))+L"…",116);
+    SetTextColor(dc,muted);RECT expiry{infoLeft,qrTop+S(184),infoRight,qrTop+S(220)};
+    DrawTextW(dc,L"二维码 5 分钟内有效。绑定完成后，断网和电脑重启都不需要重新确认。",-1,&expiry,DT_LEFT|DT_TOP|DT_WORDBREAK);
+    if(submitted){
+        HPEN line=CreatePen(PS_SOLID,1,border);HGDIOBJ previous=SelectObject(dc,line);
+        MoveToEx(dc,infoLeft,qrTop+S(238),nullptr);LineTo(dc,infoRight,qrTop+S(238));
+        SelectObject(dc,previous);DeleteObject(line);
+        info_row(L"手机名称",g_pending_pairing->device.name,254);
+        info_row(L"设备型号",g_pending_pairing->device.model,316);
     }
 }
-LRESULT CALLBACK BindingDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){switch(m){case WM_CREATE:g_binding_refresh=MakeDialogControl(L"BUTTON",L"刷新二维码",BS_PUSHBUTTON|WS_TABSTOP,ID_BIND_REFRESH,h,0,0,1,1);g_binding_close=MakeDialogControl(L"BUTTON",L"关闭",BS_PUSHBUTTON|WS_TABSTOP,ID_BIND_CLOSE,h,0,0,1,1);g_binding_approve=MakeDialogControl(L"BUTTON",L"确认绑定",BS_PUSHBUTTON|WS_TABSTOP,ID_BIND_APPROVE,h,0,0,1,1);g_binding_reject=MakeDialogControl(L"BUTTON",L"拒绝",BS_PUSHBUTTON|WS_TABSTOP,ID_BIND_REJECT,h,0,0,1,1);RefreshBindingPairing();LayoutBindingDialog(h);return 0;case WM_SIZE:LayoutBindingDialog(h);return 0;case WM_DPICHANGED:ApplyMainFontsToControls();LayoutBindingDialog(h);InvalidateRect(h,nullptr,FALSE);return 0;case WM_ERASEBKGND:return 1;case WM_PAINT:{PAINTSTRUCT ps;HDC dc=BeginPaint(h,&ps);RECT client{};GetClientRect(h,&client);PaintBindingDialogSurface(dc,client);EndPaint(h,&ps);return 0;}case WM_DRAWITEM:DrawModernButton((DRAWITEMSTRUCT*)l);return TRUE;case WM_COMMAND:if(LOWORD(w)==ID_BIND_REFRESH){RefreshBindingPairing();return 0;}if(LOWORD(w)==ID_BIND_CLOSE){DestroyWindow(h);return 0;}if((LOWORD(w)==ID_BIND_APPROVE||LOWORD(w)==ID_BIND_REJECT)&&g_pending_pairing){std::wstring error;if(!g_remote_agent.ConfirmPairing(g_pending_pairing->info.pairing_id,LOWORD(w)==ID_BIND_APPROVE,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);UpdateDeviceHeader();LayoutBindingDialog(h);InvalidateRect(h,nullptr,FALSE);return 0;}break;case WM_KEYDOWN:if(w==VK_ESCAPE){DestroyWindow(h);return 0;}break;case WM_DESTROY:g_binding_dialog=nullptr;g_binding_refresh=g_binding_close=g_binding_approve=g_binding_reject=nullptr;return 0;}return DefWindowProcW(h,m,w,l);}
+LRESULT CALLBACK BindingDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){switch(m){case WM_CREATE:g_binding_refresh=MakeDialogControl(L"BUTTON",L"刷新二维码",BS_PUSHBUTTON|WS_TABSTOP,ID_BIND_REFRESH,h,0,0,1,1);g_binding_close=MakeDialogControl(L"BUTTON",L"×",BS_PUSHBUTTON|WS_TABSTOP,ID_BIND_CLOSE,h,0,0,1,1);g_binding_approve=MakeDialogControl(L"BUTTON",L"确认绑定",BS_PUSHBUTTON|WS_TABSTOP,ID_BIND_APPROVE,h,0,0,1,1);g_binding_reject=MakeDialogControl(L"BUTTON",L"拒绝",BS_PUSHBUTTON|WS_TABSTOP,ID_BIND_REJECT,h,0,0,1,1);RefreshBindingPairing();LayoutBindingDialog(h);return 0;case WM_SIZE:LayoutBindingDialog(h);return 0;case WM_DPICHANGED:ApplyMainFontsToControls();LayoutBindingDialog(h);InvalidateRect(h,nullptr,FALSE);return 0;case WM_ERASEBKGND:return 1;case WM_PAINT:{PAINTSTRUCT ps;HDC dc=BeginPaint(h,&ps);RECT client{};GetClientRect(h,&client);PaintBindingDialogSurface(dc,client);EndPaint(h,&ps);return 0;}case WM_DRAWITEM:DrawModernButton((DRAWITEMSTRUCT*)l);return TRUE;case WM_COMMAND:if(LOWORD(w)==ID_BIND_REFRESH){RefreshBindingPairing();return 0;}if(LOWORD(w)==ID_BIND_CLOSE){DestroyWindow(h);return 0;}if((LOWORD(w)==ID_BIND_APPROVE||LOWORD(w)==ID_BIND_REJECT)&&g_pending_pairing){std::wstring error;if(!g_remote_agent.ConfirmPairing(g_pending_pairing->info.pairing_id,LOWORD(w)==ID_BIND_APPROVE,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);UpdateDeviceHeader();LayoutBindingDialog(h);InvalidateRect(h,nullptr,FALSE);return 0;}break;case WM_KEYDOWN:if(w==VK_ESCAPE){DestroyWindow(h);return 0;}break;case WM_DESTROY:g_binding_dialog=nullptr;g_binding_refresh=g_binding_close=g_binding_approve=g_binding_reject=nullptr;return 0;}return DefWindowProcW(h,m,w,l);}
 void ShowBindingDialog(HWND owner){
     if(!g_remote_agent.Online()){
         const wchar_t* message=aicli::agent::IsMobileAccessEnabled(g_store)
