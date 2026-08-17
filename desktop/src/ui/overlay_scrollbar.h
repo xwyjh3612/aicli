@@ -28,6 +28,8 @@ public:
     bool Attach(HWND host, MetricsProvider metrics, PositionSetter set_position);
     void Detach();
     void SetTheme(const ThemePalette& palette, COLORREF background);
+    void SetAutoHide(bool enabled);
+    void SetHostHovered(bool hovered);
     void Layout();
     void Sync();
     void NotifyActivity();
@@ -56,7 +58,11 @@ private:
     int dpi_{96};
     bool hovered_{};
     bool dragging_{};
+    bool auto_hide_{};
+    bool host_hovered_{};
+    bool visible_{};
     int drag_offset_{};
+    RECT layout_bounds_{};
 };
 
 } // namespace aicli::ui

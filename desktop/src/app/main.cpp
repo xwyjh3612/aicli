@@ -50,7 +50,7 @@
 #include "ui/footer_status.h"
 #include "ui/main_window_renderer.h"
 #include "ui/management_dialog.h"
-#include "ui/overlay_scrollbar.h"
+#include "ui/project_list_view.h"
 #include "ui/rounded_context_menu.h"
 #include "ui/rounded_select_popup.h"
 #include "ui/theme.h"
@@ -226,7 +226,6 @@ RECT g_d_name_rect{}, g_d_note_rect{}, g_d_type_rect{}, g_d_group_rect{}, g_d_fo
 RECT g_prestart_panel{},g_prestart_folder_surface{},g_prestart_command_surface{},g_prestart_note_surface{};
 aicli::ui::WindowChrome g_window_chrome({ID_MINIMIZE,ID_MAXIMIZE,ID_CLOSE});
 aicli::ui::FooterStatusController g_footer_status;
-aicli::ui::OverlayScrollbar g_project_scrollbar;
 aicli::ui::TaskbarWorkingIndicator g_taskbar_working_indicator;
 aicli::agent::TerminalSnapshotPublisher g_terminal_snapshots;
 aicli::agent::TerminalStreamPublisher g_terminal_streams;
@@ -246,7 +245,6 @@ UINT g_project_drag_message{};
 UINT g_taskbar_button_created_message{};
 HWND g_project_drag_preview{};
 POINT g_project_drag_hotspot{};
-int g_project_wheel_remainder{};
 
 int ScaleUi(int value) noexcept {
     return g_layout_metrics.Scale(value);
@@ -315,7 +313,14 @@ bool ApplyStoredTheme(){
     g_detail_surface_brush=CreateSolidBrush(
         g_light_theme?RGB(239,243,248):RGB(18,21,27));
     if(g_search) aicli::ui::SetStyledInputTheme(g_search,SearchInputPalette());
-    g_project_scrollbar.SetTheme(g_theme,SidebarBackground());
+    if(g_list){
+        const aicli::ui::ProjectListViewTheme list_theme{
+            SidebarBackground(),
+            g_light_theme?RGB(191,199,210):RGB(86,100,121),
+            g_light_theme?RGB(141,151,164):RGB(159,159,159),
+            g_light_theme?RGB(116,127,142):RGB(159,159,159)};
+        aicli::ui::SetProjectListViewTheme(g_list,list_theme);
+    }
     return true;
 }
 COLORREF TitleBarBackground(){return g_window_chrome.Background(g_theme);}
@@ -593,23 +598,6 @@ bool InvalidateWorkingProjectRows(){
     return found;
 }
 
-aicli::ui::OverlayScrollMetrics ProjectListScrollMetrics(){
-    if(!g_list)return {};
-    const int count=static_cast<int>(SendMessageW(g_list,LB_GETCOUNT,0,0));
-    const int item_height=std::max(
-        1,static_cast<int>(SendMessageW(g_list,LB_GETITEMHEIGHT,0,0)));
-    RECT client{};GetClientRect(g_list,&client);
-    const int page=std::max(1,static_cast<int>(client.bottom-client.top)/item_height);
-    const int top=std::max(0,static_cast<int>(SendMessageW(g_list,LB_GETTOPINDEX,0,0)));
-    return {count,page,top};
-}
-
-void SetProjectListScrollPosition(int position){
-    if(!g_list)return;
-    SendMessageW(g_list,LB_SETTOPINDEX,static_cast<WPARAM>(std::max(0,position)),0);
-    InvalidateRect(g_list,nullptr,FALSE);
-}
-
 #include "ui/internal/project_list_renderer_section.inl"
 bool PickFolder(HWND owner,std::wstring& path){IFileDialog* dialog=nullptr;if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))||!dialog)return false;DWORD options=0;dialog->GetOptions(&options);dialog->SetOptions(options|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST);if(FAILED(dialog->Show(owner))){dialog->Release();return false;}IShellItem* item=nullptr;bool ok=SUCCEEDED(dialog->GetResult(&item));if(ok){PWSTR value=nullptr;ok=SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&value));if(ok){path=value;CoTaskMemFree(value);}item->Release();}dialog->Release();return ok;}
 int SelectedProjectIndex(){
@@ -743,7 +731,6 @@ void RefreshProjectList(){
     RefreshProjectDetails();
     RefreshConversationsCache();
     UpdateGroupButton();
-    g_project_scrollbar.Sync();
     SyncProjectSpinnerTimer();
 }
 #include "ui/internal/project_drag_section.inl"
@@ -805,9 +792,8 @@ void Layout(){
     const int footer_top=r.bottom-bottom;
     g_footer_status.Layout(r,bottom);
     const int listTop=titleTop+titleHeight+titleBottomGap;
-    MoveMainChild(g_list,sidebarInset,listTop,left-sidebarInset*2,
+    MoveMainChild(g_list,sidebarInset,listTop,left-sidebarInset*2+S(2),
                   std::max(S(80),footer_top-listTop-sidebarInset));
-    g_project_scrollbar.Layout();
 
     // WM_NCCALCSIZE makes the complete custom frame part of the client area.
     // Keep the XAML Island off the outermost right-hand compositor rim so the
@@ -1205,7 +1191,21 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY);g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);RecreateMainFontsForDpi();
         g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,170,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,344,8,30,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,381,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"\xE710",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)(b==g_new_project?g_font:g_font_header),TRUE);EnableButtonHover(b);}
         g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE|SS_LEFT|SS_CENTERIMAGE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font_search,L"输入项目名、路径或备注搜索");aicli::ui::SetStyledInputLeadingIcon(g_search,L"\xE721");aicli::ui::SetStyledInputTheme(g_search,SearchInputPalette());aicli::ui::SetStyledInputFocusBorderOnly(g_search);aicli::ui::SetStyledInputParentFrame(g_search,true,2);
-        g_list=CreateWindowW(L"LISTBOX",nullptr,WS_CHILD|WS_VISIBLE|WS_TABSTOP|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,0,0,0,0,h,(HMENU)(INT_PTR)ID_PROJECT_LIST,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);SendMessageW(g_list,LB_SETITEMHEIGHT,0,ScaleUi(kProjectListItemHeight));g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);MakeDragList(g_list);SetWindowSubclass(g_list,ProjectListSubclassProc,kProjectListSubclassId,0);g_project_scrollbar.Attach(g_list,ProjectListScrollMetrics,SetProjectListScrollPosition);g_project_scrollbar.SetTheme(g_theme,SidebarBackground());RefreshProjectList();
+        g_list=aicli::ui::CreateProjectListView(
+            h,ID_PROJECT_LIST,GetModuleHandleW(nullptr));
+        SendMessageW(g_list,WM_SETFONT,(WPARAM)g_font_project_list,TRUE);
+        SendMessageW(g_list,LB_SETITEMHEIGHT,0,ScaleUi(kProjectListItemHeight));
+        const aicli::ui::ProjectListViewTheme list_theme{
+            SidebarBackground(),
+            g_light_theme?RGB(191,199,210):RGB(86,100,121),
+            g_light_theme?RGB(141,151,164):RGB(159,159,159),
+            g_light_theme?RGB(116,127,142):RGB(159,159,159)};
+        aicli::ui::SetProjectListViewTheme(g_list,list_theme);
+        g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);
+        MakeDragList(g_list);
+        SetWindowSubclass(g_list,ProjectListSubclassProc,
+                          kProjectListSubclassId,0);
+        RefreshProjectList();
         auto detailStatic=[&](const wchar_t* text){return CreateWindowW(L"STATIC",text,WS_CHILD|WS_VISIBLE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);};
         g_detail_title=detailStatic(L"选择一个项目");
         g_detail_subtitle=detailStatic(L"");
@@ -1543,7 +1543,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         EndPaint(h,&ps);
         return 0;
     }
-    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_project_scrollbar.Detach();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_header)DeleteObject(g_font_header);if(g_font_header_icon)DeleteObject(g_font_header_icon);if(g_font_search)DeleteObject(g_font_search);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_search_brush){DeleteObject(g_search_brush);g_search_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_header)DeleteObject(g_font_header);if(g_font_header_icon)DeleteObject(g_font_header_icon);if(g_font_search)DeleteObject(g_font_search);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_search_brush){DeleteObject(g_search_brush);g_search_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
     if(m==WM_NCDESTROY&&g_font_git){
         DeleteObject(g_font_git);
         g_font_git=nullptr;
@@ -1613,6 +1613,12 @@ int WINAPI wWinMain(HINSTANCE instance,
     INITCOMMONCONTROLSEX common_controls{
         sizeof(common_controls), ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES};
     InitCommonControlsEx(&common_controls);
+    if(!aicli::ui::RegisterProjectListViewClass(instance)){
+        MessageBoxW(nullptr,L"无法注册项目列表控件。",L"AiCli",
+                    MB_OK|MB_ICONERROR);
+        winrt::uninit_apartment();
+        return 1;
+    }
 
     g_taskbar_button_created_message=RegisterWindowMessageW(L"TaskbarButtonCreated");
     g_app_icon_large=static_cast<HICON>(LoadImageW(

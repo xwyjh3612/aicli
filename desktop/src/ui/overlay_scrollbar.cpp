@@ -65,12 +65,27 @@ void OverlayScrollbar::Detach() {
     metrics_ = {};
     hovered_ = false;
     dragging_ = false;
+    host_hovered_ = false;
+    visible_ = false;
+    layout_bounds_ = {};
 }
 
 void OverlayScrollbar::SetTheme(const ThemePalette& palette, COLORREF background) {
     palette_ = palette;
     background_ = background;
     if (window_) InvalidateRect(window_, nullptr, FALSE);
+}
+
+void OverlayScrollbar::SetAutoHide(bool enabled) {
+    if (auto_hide_ == enabled) return;
+    auto_hide_ = enabled;
+    Sync();
+}
+
+void OverlayScrollbar::SetHostHovered(bool hovered) {
+    if (host_hovered_ == hovered) return;
+    host_hovered_ = hovered;
+    Sync();
 }
 
 int OverlayScrollbar::Scale(int value) const noexcept {
@@ -122,22 +137,42 @@ void OverlayScrollbar::Layout() {
     RECT client{};
     GetClientRect(host_, &client);
     const int width = Scale(12);
-    SetWindowPos(window_, HWND_TOP, std::max(0, static_cast<int>(client.right) - width),
-                 0, width, std::max(1L, client.bottom - client.top),
-                 SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    const RECT next{
+        std::max(0, static_cast<int>(client.right) - width), 0,
+        static_cast<int>(client.right),
+        std::max(1L, client.bottom - client.top)};
+    if (!EqualRect(&next, &layout_bounds_)) {
+        layout_bounds_ = next;
+        SetWindowPos(window_, HWND_TOP, next.left, next.top,
+                     next.right - next.left, next.bottom - next.top,
+                     SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
     Sync();
 }
 
 void OverlayScrollbar::Sync() {
     if (!window_) return;
+    const OverlayScrollMetrics previous = metrics_;
     RefreshMetrics();
-    const bool visible = metrics_.viewport_extent > 0 &&
-                         metrics_.content_extent > metrics_.viewport_extent;
-    ShowWindow(window_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
-    if (visible) {
+    const bool scrollable = metrics_.viewport_extent > 0 &&
+                            metrics_.content_extent > metrics_.viewport_extent;
+    const bool visible = scrollable &&
+        (!auto_hide_ || host_hovered_ || hovered_ || dragging_);
+    const bool visibility_changed = visible_ != visible;
+    const bool metrics_changed =
+        previous.content_extent != metrics_.content_extent ||
+        previous.viewport_extent != metrics_.viewport_extent ||
+        previous.position != metrics_.position;
+    if (visibility_changed) {
+        visible_ = visible;
+        ShowWindow(window_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
+    }
+    if (visible && visibility_changed) {
         SetWindowPos(window_, HWND_TOP, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
                          SWP_NOOWNERZORDER);
+    }
+    if (visible && (visibility_changed || metrics_changed)) {
         InvalidateRect(window_, nullptr, FALSE);
     }
 }
@@ -192,11 +227,17 @@ LRESULT CALLBACK OverlayScrollbar::WindowProc(HWND window, UINT message,
     case WM_PAINT: {
         PAINTSTRUCT paint{};
         HDC dc = BeginPaint(window, &paint);
-        scrollbar->Paint(dc);
+        {
+            RECT client{};
+            GetClientRect(window, &client);
+            BufferedWindowPaint buffered(dc, client, paint.rcPaint);
+            scrollbar->Paint(buffered.dc());
+        }
         EndPaint(window, &paint);
         return 0;
     }
     case WM_MOUSEMOVE: {
+        scrollbar->host_hovered_ = true;
         if (!scrollbar->hovered_) {
             scrollbar->hovered_ = true;
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, window, 0};
@@ -226,7 +267,17 @@ LRESULT CALLBACK OverlayScrollbar::WindowProc(HWND window, UINT message,
     case WM_MOUSELEAVE:
         if (!scrollbar->dragging_) {
             scrollbar->hovered_ = false;
-            InvalidateRect(window, nullptr, FALSE);
+            POINT pointer{};
+            RECT host_rect{};
+            GetCursorPos(&pointer);
+            if (!scrollbar->host_ ||
+                !GetWindowRect(scrollbar->host_, &host_rect) ||
+                !PtInRect(&host_rect, pointer)) {
+                scrollbar->host_hovered_ = false;
+            }
+            scrollbar->Sync();
+            if (scrollbar->visible_)
+                InvalidateRect(window, nullptr, FALSE);
         }
         return 0;
     case WM_LBUTTONDOWN: {

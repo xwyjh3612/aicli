@@ -80,6 +80,7 @@ else()
         src/ui/footer_status.cpp
         src/ui/main_window_renderer.cpp
         src/ui/overlay_scrollbar.cpp
+        src/ui/project_list_view.cpp
         src/ui/rounded_context_menu.cpp
         src/ui/rounded_select_popup.cpp
         src/ui/styled_input.cpp

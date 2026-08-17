@@ -200,6 +200,7 @@ struct State {
     std::vector<ProjectGroup> groups;
     std::vector<ProjectType> types_data;
     std::vector<DeviceRecord> devices;
+    std::vector<unsigned char> device_online_states;
     ThemePalette palette;
     bool light_theme{};
     bool mobile_access_enabled{};
@@ -334,6 +335,17 @@ bool IsActiveSettingsNavigation(const State& state, int id) {
     if (id == kSettingsGroups) return state.settings_page == SettingsPage::Groups;
     if (id == kSettingsDevices) return state.settings_page == SettingsPage::Devices;
     return false;
+}
+
+HWND SettingsNavigationControl(const State& state, SettingsPage page) {
+    switch (page) {
+    case SettingsPage::Appearance: return state.settings_appearance;
+    case SettingsPage::Connection: return state.settings_connection;
+    case SettingsPage::ProjectTypes: return state.settings_project_types;
+    case SettingsPage::Groups: return state.settings_groups;
+    case SettingsPage::Devices: return state.settings_devices;
+    }
+    return nullptr;
 }
 
 COLORREF SettingsHeaderColor(const State& state) {
@@ -1080,6 +1092,12 @@ void AddLine(HDC dc, const wchar_t* text, int x, int y, int width, HFONT font, C
 
 void DrawButton(const DRAWITEMSTRUCT* item) {
     if (!item) return;
+    RECT client{};
+    GetClientRect(item->hwndItem, &client);
+    BufferedWindowPaint buffered(item->hDC, client, item->rcItem);
+    DRAWITEMSTRUCT buffered_item = *item;
+    buffered_item.hDC = buffered.dc();
+    item = &buffered_item;
     State* state = FindState(item->hwndItem);
     const COLORREF text_color = state ? state->text_color : DarkPalette().text;
     const COLORREF muted_color = state ? state->muted_color : DarkPalette().muted;
@@ -1290,13 +1308,15 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
 
 void DrawListItem(const DRAWITEMSTRUCT* item) {
     if (!item || item->itemID == static_cast<UINT>(-1)) return;
+    RECT client{};
+    GetClientRect(item->hwndItem, &client);
+    BufferedWindowPaint buffered(item->hDC, client, item->rcItem);
+    DRAWITEMSTRUCT buffered_item = *item;
+    buffered_item.hDC = buffered.dc();
+    item = &buffered_item;
     State* state = FindState(item->hwndItem);
     if (!state) return;
     const bool selected = (item->itemState & ODS_SELECTED) != 0;
-    HBRUSH fill = CreateSolidBrush(selected ? state->palette.selection
-                                            : state->palette.list_surface);
-    FillRect(item->hDC, &item->rcItem, fill);
-    DeleteObject(fill);
     wchar_t text[512]{};
     SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID, reinterpret_cast<LPARAM>(text));
     SetBkMode(item->hDC, TRANSPARENT);
@@ -1305,9 +1325,10 @@ void DrawListItem(const DRAWITEMSTRUCT* item) {
     RECT rect{item->rcItem.left + inset, item->rcItem.top, item->rcItem.right - inset, item->rcItem.bottom};
     const size_t data_index=static_cast<size_t>(SendMessageW(
         item->hwndItem,LB_GETITEMDATA,item->itemID,0));
-    if((state->mode==ManagementMode::Devices||
+    const bool device_item=(state->mode==ManagementMode::Devices||
         (state->mode==ManagementMode::Settings&&state->settings_page==SettingsPage::Devices))&&
-       data_index<state->devices.size()){
+        data_index<state->devices.size();
+    if(device_item){
         const auto& device=state->devices[data_index];
         const bool online=state->agent&&state->agent->IsDeviceOnline(device.phone_id);
         const COLORREF status=online?state->palette.success:
@@ -1351,6 +1372,10 @@ void DrawListItem(const DRAWITEMSTRUCT* item) {
         DrawTextW(item->hDC,online?L"在线":(device.active?L"离线":L"撤销"),-1,&status_rect,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
         return;
     }
+    HBRUSH fill = CreateSolidBrush(selected ? state->palette.selection
+                                            : state->palette.list_surface);
+    FillRect(item->hDC, &item->rcItem, fill);
+    DeleteObject(fill);
     if(IsSettingsProjectTypes(*state)&&data_index<state->types_data.size()){
         const auto& type=state->types_data[data_index];
         SelectObject(item->hDC,state->font);
@@ -1915,6 +1940,7 @@ void PaintSettingsContent(State& state, HDC dc) {
 
 void UpdateSettingsPage(State& state, SettingsPage page) {
     if (state.mode != ManagementMode::Settings) return;
+    const SettingsPage previous_page = state.settings_page;
     state.settings_page = page;
     state.content_scroll = 0;
     const bool appearance = page == SettingsPage::Appearance;
@@ -1974,11 +2000,11 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
         ReadSelection(state);
     }
     LayoutSettingsContent(state);
-    InvalidateRect(state.settings_appearance, nullptr, FALSE);
-    InvalidateRect(state.settings_connection, nullptr, FALSE);
-    InvalidateRect(state.settings_project_types, nullptr, FALSE);
-    InvalidateRect(state.settings_groups, nullptr, FALSE);
-    InvalidateRect(state.settings_devices, nullptr, FALSE);
+    if (HWND previous = SettingsNavigationControl(state, previous_page))
+        InvalidateRect(previous, nullptr, FALSE);
+    if (HWND current = SettingsNavigationControl(state, page);
+        current && current != SettingsNavigationControl(state, previous_page))
+        InvalidateRect(current, nullptr, FALSE);
     InvalidateRect(state.content, nullptr, FALSE);
     state.list_scrollbar.Sync();
 }
@@ -2037,7 +2063,12 @@ LRESULT CALLBACK SettingsContentProc(HWND h, UINT message, WPARAM wparam, LPARAM
     case WM_PAINT: {
         PAINTSTRUCT paint{};
         HDC dc = BeginPaint(h, &paint);
-        PaintSettingsContent(*state, dc);
+        {
+            RECT client{};
+            GetClientRect(h, &client);
+            BufferedWindowPaint buffered(dc, client, paint.rcPaint);
+            PaintSettingsContent(*state, buffered.dc());
+        }
         EndPaint(h, &paint);
         return 0;
     }
@@ -2074,7 +2105,11 @@ void RefreshList(State& state) {
                (state.mode==ManagementMode::Settings&&
                 state.settings_page==SettingsPage::Devices)) {
         state.devices = state.store->LoadDevices(true);
+        state.device_online_states.clear();
+        state.device_online_states.reserve(state.devices.size());
         for (const auto& value : state.devices) {
+            state.device_online_states.push_back(
+                state.agent && state.agent->IsDeviceOnline(value.phone_id));
             std::wstring text = value.name;
             LRESULT row = SendMessageW(state.list, LB_ADDSTRING, 0,
                                        reinterpret_cast<LPARAM>(text.c_str()));
@@ -2251,7 +2286,7 @@ void CreateControls(State& state) {
                              reinterpret_cast<WPARAM>(state.settings_content_font), TRUE);
         }
         state.list = CreateWindowExW(0, L"LISTBOX", nullptr,
-                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPCHILDREN |
                                          LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
                                          LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
                                      0, 0, 1, 1, state.content,
@@ -2380,8 +2415,27 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         if(wparam==kDevicePresenceTimerId){
             if(state->mode==ManagementMode::Settings&&
                state->settings_page==SettingsPage::Devices){
-                if(state->list)InvalidateRect(state->list,nullptr,FALSE);
-                if(state->content)InvalidateRect(state->content,nullptr,FALSE);
+                if(state->device_online_states.size()!=state->devices.size()){
+                    state->device_online_states.assign(state->devices.size(),0);
+                }
+                size_t selected_index{};
+                const bool has_selection=SelectedIndex(state->list,selected_index);
+                bool selected_status_changed=false;
+                for(size_t index=0;index<state->devices.size();++index){
+                    const bool online=state->agent&&
+                        state->agent->IsDeviceOnline(state->devices[index].phone_id);
+                    if(state->device_online_states[index]==static_cast<unsigned char>(online))
+                        continue;
+                    state->device_online_states[index]=static_cast<unsigned char>(online);
+                    RECT row{};
+                    if(state->list&&SendMessageW(state->list,LB_GETITEMRECT,
+                            static_cast<WPARAM>(index),reinterpret_cast<LPARAM>(&row))!=LB_ERR)
+                        InvalidateRect(state->list,&row,FALSE);
+                    selected_status_changed=selected_status_changed||
+                        (has_selection&&selected_index==index);
+                }
+                if(selected_status_changed&&state->content)
+                    InvalidateRect(state->content,nullptr,FALSE);
             }
             return 0;
         }

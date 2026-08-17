@@ -17,30 +17,7 @@ void InvalidateProjectRow(HWND list,int row){
 }
 LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
                                          UINT_PTR,DWORD_PTR){
-    if(m==WM_SIZE){
-        const LRESULT result=DefSubclassProc(h,m,w,l);
-        g_project_scrollbar.Layout();
-        return result;
-    }else if(m==WM_MOUSEWHEEL){
-        g_project_wheel_remainder+=GET_WHEEL_DELTA_WPARAM(w);
-        const int steps=g_project_wheel_remainder/WHEEL_DELTA;
-        g_project_wheel_remainder%=WHEEL_DELTA;
-        if(steps!=0){
-            UINT lines=3;
-            SystemParametersInfoW(SPI_GETWHEELSCROLLLINES,0,&lines,0);
-            const auto metrics=ProjectListScrollMetrics();
-            const int amount=lines==WHEEL_PAGESCROLL
-                ?std::max(1,metrics.viewport_extent)
-                :std::max(1,static_cast<int>(lines));
-            SetProjectListScrollPosition(metrics.position-steps*amount);
-            g_project_scrollbar.NotifyActivity();
-        }
-        return 0;
-    }else if(m==WM_KEYDOWN){
-        const LRESULT result=DefSubclassProc(h,m,w,l);
-        g_project_scrollbar.Sync();
-        return result;
-    }else if(m==WM_ERASEBKGND){
+    if(m==WM_ERASEBKGND){
         // Owner-drawn rows paint their complete cards.  Hover invalidations
         // use erase=FALSE, so they never pass through a blank frame.  A real
         // background erase (initial show/resize) still has to fill the empty
@@ -56,7 +33,8 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
         return 1;
     }else if(m==WM_PAINT){
         const LRESULT result=DefSubclassProc(h,m,w,l);
-        if(SendMessageW(h,LB_GETCOUNT,0,0)==0){
+        const int count=static_cast<int>(SendMessageW(h,LB_GETCOUNT,0,0));
+        if(count==0){
             HDC dc=GetDC(h);
             if(dc){
                 RECT client{};GetClientRect(h,&client);
@@ -99,9 +77,10 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
         }
         return result;
     }else if(m==WM_LBUTTONDOWN){
+        POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
+        if(aicli::ui::BeginProjectListScrollbarDrag(h,point))return 0;
         g_project_drag_candidate=-1;
         if(aicli::ui::GetStyledInputText(g_search).empty()){
-            POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
             const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
             if(!HIWORD(hit)){
                 const int row=static_cast<int>(LOWORD(hit));
@@ -113,8 +92,14 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
             }
         }
     }else if(m==WM_LBUTTONUP){
+        if(aicli::ui::EndProjectListScrollbarDrag(h)){
+            g_project_drag_candidate=-1;
+            return 0;
+        }
         if(!g_project_dragging)g_project_drag_candidate=-1;
     }else if(m==WM_MOUSEMOVE){
+        POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
+        if(aicli::ui::UpdateProjectListScrollbarDrag(h,point))return 0;
         const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
         const int next=HIWORD(hit)?-1:static_cast<int>(LOWORD(hit));
         if(next!=g_project_hover_row){
@@ -129,6 +114,8 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
         const int previous=g_project_hover_row;
         g_project_hover_row=-1;
         InvalidateProjectRow(h,previous);
+    }else if(m==WM_CAPTURECHANGED){
+        aicli::ui::CancelProjectListScrollbarDrag(h);
     }else if(m==WM_SETCURSOR&&LOWORD(l)==HTCLIENT&&
              aicli::ui::GetStyledInputText(g_search).empty()){
         POINT point{};
