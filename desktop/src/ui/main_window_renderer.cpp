@@ -169,10 +169,14 @@ void PaintMainWindow(HDC target_dc,
         LineTo(dc, client.right - 1, client.bottom - 1);
         LineTo(dc, 0, client.bottom - 1);
         LineTo(dc, 0, 0);
-        // GDI LineTo excludes the final endpoint on some DPI/rounded-corner
-        // combinations. Explicitly own the extreme top-right client pixel so
-        // DWM cannot expose a one-pixel white speck beside the close button.
+        // GDI LineTo and the rounded compositor clip disagree about endpoint
+        // ownership on some DPI combinations. Explicitly seed all four client
+        // corners so no stale class-background sample can survive a frame or
+        // activation transition.
+        SetPixelV(dc, 0, 0, frame);
         SetPixelV(dc, client.right - 1, 0, frame);
+        SetPixelV(dc, 0, client.bottom - 1, frame);
+        SetPixelV(dc, client.right - 1, client.bottom - 1, frame);
         SelectObject(dc, old_pen);
         DeleteObject(frame_pen);
     }

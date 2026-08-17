@@ -1653,7 +1653,13 @@ int WINAPI wWinMain(HINSTANCE instance,
     window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
     window_class.hIcon = g_app_icon_large;
     window_class.hIconSm = g_app_icon_small;
-    window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    // The whole client area is painted by PaintMainWindow and
+    // WM_ERASEBKGND is intentionally suppressed. Keeping COLOR_WINDOW here
+    // gives DWM a white fallback surface while it rebuilds rounded corners;
+    // an antialiased corner can then briefly retain one pure-white pixel in
+    // the dark theme. Do not register a system erase brush for this fully
+    // owner-painted window.
+    window_class.hbrBackground = nullptr;
     RegisterClassExW(&window_class);
 
     constexpr DWORD window_style =
