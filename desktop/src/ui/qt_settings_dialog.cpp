@@ -2,6 +2,7 @@
 
 #include <QDialogButtonBox>
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QDir>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -17,6 +18,7 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include <algorithm>
 #include <initializer_list>
 
 #include "core/text_utils.h"
@@ -77,6 +79,7 @@ public:
     NameCommandDialog(const QString& title,
                       const QString& name,
                       const QString& command,
+                      bool initialDefault,
                       QWidget* parent)
         : QDialog(parent) {
         setObjectName(QStringLiteral("nameCommandDialog"));
@@ -114,6 +117,12 @@ public:
         form->addRow(QStringLiteral("名称"), name_);
         form->addRow(QStringLiteral("启动命令"), command_);
         root->addLayout(form);
+        default_ = new QCheckBox(QStringLiteral("设为默认项目类型"), surface);
+        default_->setChecked(initialDefault);
+        if (initialDefault) {
+            default_->setText(QStringLiteral("当前默认项目类型"));
+        }
+        root->addWidget(default_);
         auto* buttons = new QDialogButtonBox(
             QDialogButtonBox::Cancel | QDialogButtonBox::Save, surface);
         buttons->button(QDialogButtonBox::Save)->setObjectName(QStringLiteral("primaryButton"));
@@ -133,10 +142,12 @@ public:
 
     QString name() const { return name_->text().trimmed(); }
     QString command() const { return command_->text().trimmed(); }
+    bool makeDefault() const { return default_->isChecked(); }
 
 private:
     QLineEdit* name_{};
     QLineEdit* command_{};
+    QCheckBox* default_{};
 };
 
 QWidget* PageWithHeading(const QString& title,
@@ -619,9 +630,12 @@ void SettingsDialog::saveNetwork() {
 
 void SettingsDialog::reloadProjectTypes() {
     project_types_->clear();
+    const auto defaultTypeId = controller_.store().ConfiguredDefaultProjectTypeId();
     for (const auto& type : controller_.store().LoadProjectTypes()) {
         auto* item = new QListWidgetItem(
-            ToQString(type.name) + QStringLiteral("\n") + ToQString(type.default_command), project_types_);
+            ToQString(type.name) +
+                (type.id == defaultTypeId ? QStringLiteral("  ·  默认") : QString{}) +
+                QStringLiteral("\n") + ToQString(type.default_command), project_types_);
         item->setSizeHint(QSize(0, 58));
         item->setData(Qt::UserRole, QVariant::fromValue<qlonglong>(type.id));
         item->setData(Qt::UserRole + 1, type.builtin);
@@ -653,12 +667,23 @@ void SettingsDialog::reloadDevices() {
 }
 
 void SettingsDialog::addProjectType() {
-    NameCommandDialog dialog(QStringLiteral("新增项目类型"), {}, {}, this);
+    NameCommandDialog dialog(QStringLiteral("新增项目类型"), {}, {}, false, this);
     if (dialog.exec() != QDialog::Accepted) return;
     std::wstring error;
     if (!controller_.store().AddProjectType(ToWideString(dialog.name()),
                                              ToWideString(dialog.command()), &error)) {
         showError(error); return;
+    }
+    if (dialog.makeDefault()) {
+        const auto types = controller_.store().LoadProjectTypes();
+        const auto name = ToWideString(dialog.name());
+        const auto found = std::find_if(types.begin(), types.end(), [&](const ProjectType& type) {
+            return _wcsicmp(type.name.c_str(), name.c_str()) == 0;
+        });
+        if (found != types.end() &&
+            !controller_.store().SetDefaultProjectType(found->id, &error)) {
+            showError(error);
+        }
     }
     controller_.ReloadModels();
     reloadProjectTypes();
@@ -669,13 +694,23 @@ void SettingsDialog::editProjectType() {
     const auto types = controller_.store().LoadProjectTypes();
     if (row < 0 || row >= static_cast<int>(types.size())) return;
     const auto& type = types[static_cast<std::size_t>(row)];
+    const bool wasDefault =
+        type.id == controller_.store().ConfiguredDefaultProjectTypeId();
     NameCommandDialog dialog(QStringLiteral("编辑项目类型"), ToQString(type.name),
-                             ToQString(type.default_command), this);
+                             ToQString(type.default_command), wasDefault, this);
     if (dialog.exec() != QDialog::Accepted) return;
     std::wstring error;
     if (!controller_.store().UpdateProjectType(type.id, ToWideString(dialog.name()),
                                                 ToWideString(dialog.command()), &error)) {
         showError(error); return;
+    }
+    if (dialog.makeDefault()) {
+        if (!controller_.store().SetDefaultProjectType(type.id, &error)) {
+            showError(error);
+        }
+    } else if (wasDefault &&
+               !controller_.store().ClearDefaultProjectType(&error)) {
+        showError(error);
     }
     controller_.ReloadModels();
     reloadProjectTypes();

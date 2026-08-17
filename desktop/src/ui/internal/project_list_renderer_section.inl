@@ -80,16 +80,50 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
         POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
         if(aicli::ui::BeginProjectListScrollbarDrag(h,point))return 0;
         g_project_drag_candidate=-1;
+        int clicked_row=-1;
+        bool on_drag_handle=false;
         if(aicli::ui::GetStyledInputText(g_search).empty()){
             const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
             if(!HIWORD(hit)){
                 const int row=static_cast<int>(LOWORD(hit));
+                clicked_row=row;
                 RECT item{};
                 if(SendMessageW(h,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))!=LB_ERR){
                     const RECT handle{item.left+ScaleUi(3),item.top+ScaleUi(3),item.left+ScaleUi(31),item.bottom-ScaleUi(3)};
-                    if(PtInRect(&handle,point))g_project_drag_candidate=row;
+                    if(PtInRect(&handle,point)){
+                        g_project_drag_candidate=row;
+                        on_drag_handle=true;
+                    }
                 }
             }
+        }else{
+            const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
+            if(!HIWORD(hit))clicked_row=static_cast<int>(LOWORD(hit));
+        }
+        if(clicked_row>=0){
+            // MakeDragList is designed for the stock LISTBOX procedure. This
+            // view implements the LB_* contract itself, so the drag subclass
+            // can consume the original mouse message after changing the row
+            // without ever producing LBN_SELCHANGE. Own normal selection at
+            // the outermost subclass and activate the matching terminal now.
+            SetFocus(h);
+            SendMessageW(h,LB_SETCURSEL,clicked_row,0);
+            SendMessageW(GetParent(h),WM_COMMAND,
+                         MAKEWPARAM(GetDlgCtrlID(h),LBN_SELCHANGE),
+                         reinterpret_cast<LPARAM>(h));
+            if(!on_drag_handle)return 0;
+        }
+    }else if(m==WM_LBUTTONDBLCLK){
+        POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
+        const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
+        if(!HIWORD(hit)){
+            const int row=static_cast<int>(LOWORD(hit));
+            SetFocus(h);
+            SendMessageW(h,LB_SETCURSEL,row,0);
+            SendMessageW(GetParent(h),WM_COMMAND,
+                         MAKEWPARAM(GetDlgCtrlID(h),LBN_DBLCLK),
+                         reinterpret_cast<LPARAM>(h));
+            return 0;
         }
     }else if(m==WM_LBUTTONUP){
         if(aicli::ui::EndProjectListScrollbarDrag(h)){

@@ -67,6 +67,22 @@ int wmain(int argc, wchar_t** argv) {
                         claude->default_command ==
                             L"claude --dangerously-skip-permissions --continue",
                     L"Claude builtin type and command");
+        ok &= Check(codex && store.DefaultProjectTypeId() == codex->id,
+                    L"Codex is the fallback default project type");
+        if (claude) {
+            error.clear();
+            ok &= Check(store.SetDefaultProjectType(claude->id, &error),
+                        (L"set Claude as default project type: " + error).c_str());
+            ok &= Check(store.ConfiguredDefaultProjectTypeId() == claude->id &&
+                            store.DefaultProjectTypeId() == claude->id,
+                        L"setting one default project type replaces the previous default");
+            error.clear();
+            ok &= Check(store.ClearDefaultProjectType(&error),
+                        (L"clear default project type: " + error).c_str());
+            ok &= Check(store.ConfiguredDefaultProjectTypeId() == 0 && codex &&
+                            store.DefaultProjectTypeId() == codex->id,
+                        L"clearing the explicit default falls back safely for creation");
+        }
         if (codex) {
             const auto codex_id = codex->id;
             error.clear();

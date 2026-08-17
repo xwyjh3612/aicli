@@ -41,6 +41,10 @@ public:
                            std::wstring* error = nullptr);
     bool DeleteProjectType(std::int64_t id, std::wstring* error = nullptr);
     bool IsProjectTypeInUse(const std::wstring& name);
+    std::int64_t ConfiguredDefaultProjectTypeId();
+    std::int64_t DefaultProjectTypeId();
+    bool SetDefaultProjectType(std::int64_t id, std::wstring* error = nullptr);
+    bool ClearDefaultProjectType(std::wstring* error = nullptr);
 
     bool AddGroup(const std::wstring& name, std::wstring* error = nullptr);
     bool RenameGroup(std::int64_t id, const std::wstring& new_name,

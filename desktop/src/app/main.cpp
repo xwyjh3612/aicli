@@ -635,6 +635,7 @@ void RefreshProjectDetails(bool force_git_refresh=false){
     const int index=SelectedProjectIndex();
     if(index<0 || index>=(int)g_projects.size()){
         g_last_project_id.clear();
+        SetText(g_hwnd,L"Aicli");
         SetText(g_detail_title,L"未选择项目");
         SetText(g_detail_subtitle,L"");
         SetText(g_detail_folder,L"未设置");
@@ -648,6 +649,7 @@ void RefreshProjectDetails(bool force_git_refresh=false){
     const auto& project=g_projects[index];
     g_last_project_id=project.id;
     g_store.SetSetting(L"last_project_id",project.id);
+    SetText(g_hwnd,project.name.empty()?L"Aicli":project.name);
     SetText(g_detail_title,project.name);
     SetText(g_detail_subtitle,project.type+L"  ·  "+(project.group.empty()?L"默认分组":project.group));
     SetText(g_detail_folder,project.folder.empty()?L"未设置":project.folder);
@@ -1258,6 +1260,18 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     }
     case WM_NCCALCSIZE:if(w){auto* params=(NCCALCSIZE_PARAMS*)l;if(IsZoomed(h)){HMONITOR monitor=MonitorFromRect(&params->rgrc[0],MONITOR_DEFAULTTONEAREST);MONITORINFO info{sizeof(info)};if(GetMonitorInfoW(monitor,&info))params->rgrc[0]=info.rcWork;}return 0;}break;
     case WM_NCHITTEST:return HitTestCustomFrame(h,l);
+    case WM_SETCURSOR: {
+        if (LOWORD(l) == HTCLIENT) {
+            POINT point{};
+            GetCursorPos(&point);
+            ScreenToClient(h, &point);
+            if (g_footer_status.IsPhonePoint(point)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
+        }
+        break;
+    }
     case WM_MOUSEMOVE:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};const bool over_git=g_footer_status.OnMouseMove(point,g_theme);const bool over_chrome=g_window_chrome.OnMouseMove(h,point);if(over_git||over_chrome)return 0;break;}
     case WM_MOUSELEAVE:g_footer_status.OnMouseLeave();g_window_chrome.OnMouseLeave(h);return 0;
     case WM_LBUTTONDOWN:{POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(g_window_chrome.OnLeftButtonDown(h,point))return 0;break;}

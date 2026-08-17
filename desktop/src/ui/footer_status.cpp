@@ -43,7 +43,10 @@ void FooterStatusController::Detach() {
     hover_title_font_ = nullptr;
     hover_font_dpi_ = 0;
     git_hovered_ = false;
+    phone_hovered_ = false;
     hover_card_visible_ = false;
+    SetRectEmpty(&phone_area_);
+    SetRectEmpty(&phone_bounds_);
     owner_ = nullptr;
 }
 
@@ -51,10 +54,20 @@ bool FooterStatusController::OnMouseMove(
     POINT client_point,
     const ThemePalette& theme) {
     if (!owner_ || !IsWindow(owner_)) return false;
+    const bool over_phone = IsPhonePoint(client_point);
+    if (phone_hovered_ != over_phone) {
+        phone_hovered_ = over_phone;
+        InvalidateFooter();
+    }
+    if (over_phone) {
+        TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, owner_, 0};
+        TrackMouseEvent(&tracking);
+    }
+
     const bool inside = PtInRect(&git_bounds_, client_point) != FALSE;
     if (!inside) {
         if (git_hovered_ || hover_card_visible_) HideHoverCard();
-        return false;
+        return over_phone;
     }
 
     hover_theme_ = theme;
@@ -75,6 +88,10 @@ bool FooterStatusController::OnMouseMove(
 
 void FooterStatusController::OnMouseLeave() {
     HideHoverCard();
+    if (phone_hovered_) {
+        phone_hovered_ = false;
+        InvalidateFooter();
+    }
 }
 
 bool FooterStatusController::HandleTimer(UINT_PTR timer_id) {
@@ -113,10 +130,10 @@ void FooterStatusController::Layout(const RECT& client, int footer_height) {
         git_bounds_ = next;
         UpdateTooltip();
     }
-    phone_bounds_={telemetry_left_+scale(108),footer_top,
-                   std::max(telemetry_left_+scale(108),
-                            static_cast<int>(client.right)-scale(10)),
-                   client.bottom};
+    phone_area_={telemetry_left_+scale(108),footer_top,
+                 std::max(telemetry_left_+scale(108),
+                          static_cast<int>(client.right)-scale(10)),
+                 client.bottom};
 }
 
 bool FooterStatusController::IsPhonePoint(POINT client_point) const noexcept {
@@ -583,24 +600,53 @@ void FooterStatusController::Draw(HDC dc,
     const int telemetry_top = client.bottom - footer_height;
     const std::wstring memory_label =
         L"内存 " + std::to_wstring(memory_megabytes_) + L" MB";
-    const std::wstring phone_label = !mobile_access_enabled_
-        ? L"手机访问未开启"
-        : (!agent_online_
-            ? L"手机服务异常"
-            : L"手机 " + std::to_wstring(online_devices_) + L"/" +
-                  std::to_wstring(authorized_devices_) + L" 在线");
     RECT memory_rect{
         telemetry_left_, telemetry_top, telemetry_left_ + scale(108), client.bottom};
-    RECT phone_rect=phone_bounds_;
     SetTextColor(dc, theme.muted);
     DrawTextW(dc, memory_label.c_str(), -1, &memory_rect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    SetTextColor(dc,!mobile_access_enabled_
-        ? theme.muted
-        : (!agent_online_?theme.danger:
-            (online_devices_>0?RGB(83,203,146):theme.muted)));
-    DrawTextW(dc,phone_label.c_str(),-1,&phone_rect,
-              DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+
+    SetRectEmpty(&phone_bounds_);
+    if (mobile_access_enabled_ && agent_online_) {
+        const std::wstring prefix = L"手机 ";
+        const std::wstring count = std::to_wstring(online_devices_) + L"/" +
+                                   std::to_wstring(authorized_devices_);
+        const std::wstring suffix = L" 台";
+        SIZE prefix_size{};
+        SIZE count_size{};
+        SIZE suffix_size{};
+        GetTextExtentPoint32W(dc, prefix.c_str(),
+                              static_cast<int>(prefix.size()), &prefix_size);
+        GetTextExtentPoint32W(dc, count.c_str(),
+                              static_cast<int>(count.size()), &count_size);
+        GetTextExtentPoint32W(dc, suffix.c_str(),
+                              static_cast<int>(suffix.size()), &suffix_size);
+
+        const int text_left = phone_area_.left;
+        RECT prefix_rect{text_left, phone_area_.top,
+                         text_left + prefix_size.cx, phone_area_.bottom};
+        phone_bounds_={prefix_rect.right, phone_area_.top,
+                       prefix_rect.right + count_size.cx, phone_area_.bottom};
+        RECT suffix_rect{phone_bounds_.right, phone_area_.top,
+                         phone_bounds_.right + suffix_size.cx,
+                         phone_area_.bottom};
+        SetTextColor(dc, theme.muted);
+        DrawTextW(dc, prefix.c_str(), -1, &prefix_rect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SetTextColor(dc, phone_hovered_ ? theme.accent : theme.muted);
+        DrawTextW(dc, count.c_str(), -1, &phone_bounds_,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SetTextColor(dc, theme.muted);
+        DrawTextW(dc, suffix.c_str(), -1, &suffix_rect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    } else {
+        const std::wstring phone_label = mobile_access_enabled_
+            ? L"手机服务异常" : L"手机访问未开启";
+        RECT phone_rect = phone_area_;
+        SetTextColor(dc, mobile_access_enabled_ ? theme.danger : theme.muted);
+        DrawTextW(dc, phone_label.c_str(), -1, &phone_rect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
 
     if (previous_font) SelectObject(dc, previous_font);
 }

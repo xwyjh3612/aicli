@@ -1,0 +1,10 @@
+^C:\PROJECT\AI_CODE\CODEX_TOOL\DESKTOP\BUILD-LOCAL\CMAKEFILES\7ADA48ABE8A7B4FEE938C96148CA9158\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SC:/project/ai_code/codex_tool/desktop -BC:/project/ai_code/codex_tool/desktop/build-local --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/project/ai_code/codex_tool/desktop/build-local/aicli.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

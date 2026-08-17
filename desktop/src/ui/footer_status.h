@@ -77,7 +77,8 @@ private:
     HWND owner_{};
     HWND hover_card_{};
     RECT git_bounds_{};
-    RECT phone_bounds_{};
+    RECT phone_area_{};
+    mutable RECT phone_bounds_{};
     int telemetry_left_{14};
     int footer_height_{30};
     // RepositoryStatus::root is empty for non-Git folders. Keep the selected
@@ -91,6 +92,7 @@ private:
     HFONT hover_title_font_{};
     int hover_font_dpi_{};
     bool git_hovered_{};
+    bool phone_hovered_{};
     bool hover_card_visible_{};
     aicli::git::RepositoryStatus repository_;
     bool repository_loading_{};

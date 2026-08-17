@@ -1,0 +1,5 @@
+C:/project/ai_code/codex_tool/desktop/build-local/CMakeFiles/aicli.dir
+C:/project/ai_code/codex_tool/desktop/build-local/CMakeFiles/aicli_data_store_tests.dir
+C:/project/ai_code/codex_tool/desktop/build-local/CMakeFiles/aicli_terminal_stream_tests.dir
+C:/project/ai_code/codex_tool/desktop/build-local/CMakeFiles/ALL_BUILD.dir
+C:/project/ai_code/codex_tool/desktop/build-local/CMakeFiles/ZERO_CHECK.dir

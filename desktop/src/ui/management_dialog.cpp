@@ -107,6 +107,7 @@ enum : int {
     kProjectTypeSave = 2422,
     kProjectTypeCancel = 2423,
     kProjectTypeClose = 2424,
+    kProjectTypeDefault = 2425,
 };
 
 enum class SettingsPage {
@@ -161,6 +162,7 @@ struct State {
     HFONT settings_content_font{};
     HFONT settings_small_font{};
     HFONT settings_icon_font{};
+    HFONT project_type_badge_font{};
     HFONT small_font{};
     HWND list{};
     HWND name{};
@@ -199,6 +201,7 @@ struct State {
     HWND hovered_control{};
     std::vector<ProjectGroup> groups;
     std::vector<ProjectType> types_data;
+    std::int64_t default_project_type_id{};
     std::vector<DeviceRecord> devices;
     std::vector<unsigned char> device_online_states;
     ThemePalette palette;
@@ -260,6 +263,7 @@ struct ProjectTypeEditorState {
     HWND owner{};
     HWND name_input{};
     HWND command_input{};
+    HWND default_toggle{};
     HWND save{};
     HWND cancel{};
     HWND close{};
@@ -276,6 +280,11 @@ struct ProjectTypeEditorState {
     std::wstring initial_command;
     std::wstring name;
     std::wstring command;
+    bool initial_default{};
+    bool make_default{};
+    float default_toggle_progress{};
+    float default_toggle_from{};
+    ULONGLONG default_toggle_started{};
     bool accepted{};
     ThemePalette palette;
     bool light_theme{};
@@ -294,9 +303,11 @@ bool ShowProjectTypeEditorDialog(HWND owner,
                                  const std::wstring& subtitle,
                                  const std::wstring& initial_name,
                                  const std::wstring& initial_command,
+                                 bool initial_default,
                                  bool light_theme,
                                  std::wstring& name,
-                                 std::wstring& command);
+                                 std::wstring& command,
+                                 bool& make_default);
 
 State* GetState(HWND h) {
     return reinterpret_cast<State*>(GetWindowLongPtrW(h, GWLP_USERDATA));
@@ -560,7 +571,9 @@ void LayoutGroupNameDialog(GroupNameState& state) {
     SetWindowRgn(state.cancel, CreateRoundRectRgn(0, 0, S(93), S(37), S(8), S(8)), TRUE);
     SetWindowRgn(state.save, CreateRoundRectRgn(0, 0, S(101), S(37), S(8), S(8)), TRUE);
     SetWindowRgn(state.close, CreateRoundRectRgn(0, 0, S(33), S(33), S(7), S(7)), TRUE);
-    SetModalSurfaceRegion(state.window, state.panel, S(12));
+    // RoundRect below uses a 16 px ellipse diameter. Match the window region
+    // to that curve so no unpainted corner pixels remain inside the surface.
+    SetModalSurfaceRegion(state.window, state.panel, S(16));
     InvalidateRect(state.window, nullptr, FALSE);
 }
 
@@ -572,6 +585,9 @@ void PaintGroupNameDialog(GroupNameState& state, HDC dc) {
     (void)client;
 
     const auto S=[&](int value){return DpiScale(state.window,value);};
+    HBRUSH panel_background = CreateSolidBrush(state.panel_color);
+    FillRect(dc, &state.panel, panel_background);
+    DeleteObject(panel_background);
     HBRUSH panel_brush = CreateSolidBrush(state.panel_color);
     HPEN panel_pen = CreatePen(PS_SOLID, 1, state.panel_edge);
     HGDIOBJ old_brush = SelectObject(dc, panel_brush);
@@ -743,6 +759,39 @@ LRESULT CALLBACK GroupNameWindowProc(HWND h, UINT message, WPARAM wparam, LPARAM
 
 constexpr UINT_PTR kProjectTypeEditorButtonSubclassId = 0xA1C17;
 constexpr UINT_PTR kProjectTypeEditorInputSubclassId = 0xA1C18;
+constexpr UINT_PTR kProjectTypeEditorToggleTimerId = 0xA1C19;
+constexpr ULONGLONG kProjectTypeEditorToggleDurationMs = 180;
+
+bool AdvanceProjectTypeDefaultToggle(ProjectTypeEditorState& state) {
+    if (!state.default_toggle_started) {
+        state.default_toggle_progress = state.make_default ? 1.0f : 0.0f;
+        return true;
+    }
+    const auto elapsed = GetTickCount64() - state.default_toggle_started;
+    const float t = std::clamp(
+        static_cast<float>(elapsed) /
+            static_cast<float>(kProjectTypeEditorToggleDurationMs),
+        0.0f, 1.0f);
+    const float inverse = 1.0f - t;
+    const float eased = 1.0f - inverse * inverse * inverse;
+    const float target = state.make_default ? 1.0f : 0.0f;
+    state.default_toggle_progress =
+        state.default_toggle_from +
+        (target - state.default_toggle_from) * eased;
+    if (t < 1.0f) return false;
+    state.default_toggle_progress = target;
+    state.default_toggle_started = 0;
+    return true;
+}
+
+void AnimateProjectTypeDefaultToggle(ProjectTypeEditorState& state) {
+    AdvanceProjectTypeDefaultToggle(state);
+    state.default_toggle_from = state.default_toggle_progress;
+    state.make_default = !state.make_default;
+    state.default_toggle_started = GetTickCount64();
+    SetTimer(state.window, kProjectTypeEditorToggleTimerId, 15, nullptr);
+    InvalidateRect(state.default_toggle, nullptr, FALSE);
+}
 
 LRESULT CALLBACK ProjectTypeEditorButtonProc(HWND control, UINT message, WPARAM wparam,
                                               LPARAM lparam, UINT_PTR,
@@ -817,7 +866,7 @@ void LayoutProjectTypeEditorDialog(ProjectTypeEditorState& state) {
     const int client_height = static_cast<int>(client.bottom);
     const auto S=[&](int value){return DpiScale(state.window,value);};
     const int width = std::min(S(640), std::max(S(500), client_width - S(120)));
-    const int height = S(370);
+    const int height = S(420);
     const int left = (client_width - width) / 2;
     const int top = std::max(S(24), (client_height - height) / 2);
     state.panel = {left, top, left + width, top + height};
@@ -825,13 +874,21 @@ void LayoutProjectTypeEditorDialog(ProjectTypeEditorState& state) {
                       {left + S(30), top + S(120), left + width - S(30), top + S(155)}, S(2), S(8));
     LayoutStyledInput(state.command_input,
                       {left + S(30), top + S(204), left + width - S(30), top + S(239)}, S(2), S(8));
-    MoveWindow(state.cancel, left + width - S(238), top + S(310), S(100), S(36), TRUE);
-    MoveWindow(state.save, left + width - S(126), top + S(310), S(96), S(36), TRUE);
+    MoveWindow(state.default_toggle, left + S(30), top + S(282),
+               width - S(60), S(48), TRUE);
+    MoveWindow(state.cancel, left + width - S(238), top + S(356), S(100), S(36), TRUE);
+    MoveWindow(state.save, left + width - S(126), top + S(356), S(96), S(36), TRUE);
     MoveWindow(state.close, left + width - S(42), top + S(5), S(32), S(32), TRUE);
     SetWindowRgn(state.cancel, CreateRoundRectRgn(0, 0, S(101), S(39), S(9), S(9)), TRUE);
     SetWindowRgn(state.save, CreateRoundRectRgn(0, 0, S(109), S(39), S(9), S(9)), TRUE);
+    // The default card paints its own antialiased rounded edge. A GDI window
+    // region clips the blended corner pixels and is the source of the jagged
+    // outline that was visible around this control.
+    SetWindowRgn(state.default_toggle, nullptr, FALSE);
     SetWindowRgn(state.close, CreateRoundRectRgn(0,0,S(33),S(33),S(7),S(7)),TRUE);
-    SetModalSurfaceRegion(state.window, state.panel, S(12));
+    // Match the window region to the 16 px RoundRect curve painted below.
+    // A smaller region admits four corner pixels outside the painted panel.
+    SetModalSurfaceRegion(state.window, state.panel, S(16));
     InvalidateRect(state.window, nullptr, FALSE);
 }
 
@@ -841,6 +898,12 @@ void PaintProjectTypeEditorDialog(ProjectTypeEditorState& state, HDC dc) {
     (void)client;
 
     const auto S=[&](int value){return DpiScale(state.window,value);};
+    // Seed every pixel admitted by the rounded window region. Without this,
+    // the modal's initial white surface can remain visible at the four
+    // extreme corner samples before the anti-aliased edge is painted.
+    HBRUSH panel_background = CreateSolidBrush(state.panel_color);
+    FillRect(dc, &state.panel, panel_background);
+    DeleteObject(panel_background);
     HBRUSH panel_brush = CreateSolidBrush(state.panel_color);
     HPEN panel_pen = CreatePen(PS_SOLID, 1, state.panel_edge);
     HGDIOBJ old_brush = SelectObject(dc, panel_brush);
@@ -893,8 +956,8 @@ void PaintProjectTypeEditorDialog(ProjectTypeEditorState& state, HDC dc) {
 
     SetTextColor(dc, state.muted);
     SelectObject(dc, state.small_font);
-    RECT hint{state.panel.left + S(30), state.panel.top + S(254),
-              state.panel.right - S(30), state.panel.top + S(284)};
+    RECT hint{state.panel.left + S(30), state.panel.top + S(248),
+              state.panel.right - S(30), state.panel.top + S(276)};
     DrawTextW(dc, L"启动命令会作为新建项目的默认值，项目仍可单独覆盖。", -1,
               &hint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     HPEN separator=CreatePen(PS_SOLID,1,state.panel_edge);
@@ -907,6 +970,67 @@ void PaintProjectTypeEditorDialog(ProjectTypeEditorState& state, HDC dc) {
 void DrawProjectTypeEditorButton(ProjectTypeEditorState& state,
                                  const DRAWITEMSTRUCT& item) {
     RECT rect = item.rcItem;
+    if (item.CtlID == kProjectTypeDefault) {
+        BufferedWindowPaint buffered(item.hDC, rect, rect);
+        HDC dc = buffered.dc();
+        const bool hovered = state.hovered == item.hwndItem;
+        HBRUSH clear = CreateSolidBrush(state.panel_color);
+        FillRect(dc, &rect, clear);
+        DeleteObject(clear);
+
+        const COLORREF fill = hovered ? state.field_focus : state.field;
+        const auto S = [&](int value) { return DpiScale(state.window, value); };
+        RECT card{rect.left + S(1), rect.top + S(1),
+                  rect.right - S(1), rect.bottom - S(1)};
+        DrawSmoothRoundedRect(dc, card, static_cast<float>(S(8)), fill,
+                              state.panel_edge,
+                              static_cast<float>(std::max(1, S(1))));
+
+        SetBkMode(dc, TRANSPARENT);
+        SelectObject(dc, state.font);
+        SetTextColor(dc, state.text);
+        RECT title{rect.left + S(14), rect.top + S(4),
+                   rect.right - S(74), rect.top + S(27)};
+        DrawTextW(dc, L"默认项目类型", -1, &title,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, state.small_font);
+        SetTextColor(dc, state.muted);
+        RECT detail{rect.left + S(14), rect.top + S(23),
+                    rect.right - S(74), rect.bottom - S(2)};
+        DrawTextW(dc, L"新建项目时自动选中；设置后会替换原默认类型", -1,
+                  &detail, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        RECT track{rect.right - S(58), rect.top + S(14),
+                   rect.right - S(14), rect.top + S(36)};
+        const BYTE blend = static_cast<BYTE>(std::clamp(
+            state.default_toggle_progress * 255.0f, 0.0f, 255.0f));
+        const COLORREF track_color =
+            BlendBackdropColor(state.panel_edge, state.accent, blend);
+
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+        graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+        Gdiplus::RectF track_bounds{
+            static_cast<float>(track.left), static_cast<float>(track.top),
+            static_cast<float>(track.right - track.left),
+            static_cast<float>(track.bottom - track.top)};
+        Gdiplus::GraphicsPath track_path;
+        AddRoundedPath(track_path, track_bounds, track_bounds.Height / 2.0f);
+        Gdiplus::SolidBrush track_brush(SmoothColor(track_color));
+        graphics.FillPath(&track_brush, &track_path);
+
+        const float inset = static_cast<float>(S(2));
+        const float knob = static_cast<float>(S(18));
+        const float travel = std::max(
+            0.0f, track_bounds.Width - knob - inset * 2.0f);
+        const float knob_left = track_bounds.X + inset +
+            travel * state.default_toggle_progress;
+        Gdiplus::SolidBrush knob_brush(SmoothColor(RGB(255, 255, 255)));
+        graphics.FillEllipse(&knob_brush, knob_left, track_bounds.Y + inset,
+                             knob, knob);
+        return;
+    }
     const bool primary = item.CtlID == kProjectTypeSave;
     const bool pressed = (item.itemState & ODS_SELECTED) != 0;
     const bool hovered = state.hovered == item.hwndItem;
@@ -965,6 +1089,11 @@ LRESULT CALLBACK ProjectTypeEditorWindowProc(HWND h, UINT message,
                               kProjectTypeEditorInputSubclassId,
                               reinterpret_cast<DWORD_PTR>(state));
         }
+        state->default_toggle = CreateWindowExW(
+            0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+            0, 0, 1, 1, h,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProjectTypeDefault)),
+            GetModuleHandleW(nullptr), nullptr);
         state->cancel = CreateWindowExW(0, L"BUTTON", L"取消",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW, 0, 0, 1, 1, h,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProjectTypeCancel)),
@@ -978,7 +1107,7 @@ LRESULT CALLBACK ProjectTypeEditorWindowProc(HWND h, UINT message,
             WS_CHILD|WS_VISIBLE|BS_OWNERDRAW,0,0,1,1,h,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kProjectTypeClose)),
             GetModuleHandleW(nullptr),nullptr);
-        for (HWND button : {state->cancel, state->save, state->close}) {
+        for (HWND button : {state->default_toggle, state->cancel, state->save, state->close}) {
             SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(state->font), TRUE);
             SetWindowSubclass(button, ProjectTypeEditorButtonProc,
                               kProjectTypeEditorButtonSubclassId,
@@ -1016,7 +1145,20 @@ LRESULT CALLBACK ProjectTypeEditorWindowProc(HWND h, UINT message,
         }
         return TRUE;
     }
+    case WM_TIMER:
+        if (wparam == kProjectTypeEditorToggleTimerId) {
+            if (AdvanceProjectTypeDefaultToggle(*state)) {
+                KillTimer(h, kProjectTypeEditorToggleTimerId);
+            }
+            InvalidateRect(state->default_toggle, nullptr, FALSE);
+            return 0;
+        }
+        break;
     case WM_COMMAND:
+        if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kProjectTypeDefault) {
+            AnimateProjectTypeDefaultToggle(*state);
+            return 0;
+        }
         if (HIWORD(wparam) == BN_CLICKED &&
             (LOWORD(wparam) == kProjectTypeCancel || LOWORD(wparam) == kProjectTypeClose)) {
             DestroyWindow(h);
@@ -1048,6 +1190,9 @@ LRESULT CALLBACK ProjectTypeEditorWindowProc(HWND h, UINT message,
         break;
     case WM_CLOSE:
         DestroyWindow(h);
+        return 0;
+    case WM_DESTROY:
+        KillTimer(h, kProjectTypeEditorToggleTimerId);
         return 0;
     }
     return DefWindowProcW(h, message, wparam, lparam);
@@ -1217,6 +1362,175 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         return;
     }
 
+    const bool taskbar_toggle = state && item->CtlID == kTaskbarWorking;
+    if (taskbar_toggle) {
+        // A binary setting reads more naturally as a compact switch than as
+        // a second action button. Keep the full HWND rectangular so the
+        // anti-aliased track can blend into the card without clipped edges.
+        HBRUSH clear = CreateSolidBrush(state->panel_color);
+        FillRect(item->hDC, &rect, clear);
+        DeleteObject(clear);
+
+        COLORREF track = active_theme
+            ? (light ? RGB(70, 137, 218) : RGB(47, 103, 166))
+            : (light ? RGB(199, 207, 218) : RGB(53, 59, 70));
+        if (hovered) {
+            track = active_theme
+                ? (light ? RGB(61, 128, 211) : RGB(55, 119, 188))
+                : (light ? RGB(185, 195, 208) : RGB(63, 71, 84));
+        }
+        if (pressed) {
+            track = active_theme
+                ? (light ? RGB(51, 113, 191) : RGB(42, 91, 147))
+                : (light ? RGB(174, 185, 199) : RGB(46, 52, 62));
+        }
+        const COLORREF track_edge = active_theme
+            ? (light ? RGB(55, 119, 202) : RGB(70, 132, 202))
+            : (light ? RGB(180, 189, 201) : RGB(70, 78, 91));
+        RECT track_rect{rect.left + S(1), rect.top + S(1),
+                        rect.right - S(1), rect.bottom - S(1)};
+        DrawSmoothRoundedRect(item->hDC, track_rect,
+                              static_cast<float>(S(13)),
+                              track, track_edge, 1.0f);
+
+        const int knob_size = S(18);
+        const int knob_margin = S(4);
+        const int knob_left = active_theme
+            ? rect.right - knob_margin - knob_size
+            : rect.left + knob_margin;
+        RECT knob{knob_left,
+                  rect.top + (rect.bottom - rect.top - knob_size) / 2,
+                  knob_left + knob_size,
+                  rect.top + (rect.bottom - rect.top + knob_size) / 2};
+        const COLORREF knob_fill = light ? RGB(255, 255, 255)
+                                         : RGB(232, 238, 247);
+        const COLORREF knob_edge = light ? RGB(225, 230, 237)
+                                         : RGB(195, 207, 222);
+        DrawSmoothRoundedRect(item->hDC, knob,
+                              static_cast<float>(knob_size / 2),
+                              knob_fill, knob_edge, 1.0f);
+        return;
+    }
+
+    const bool segmented_choice = state &&
+        (item->CtlID == kTheme || item->CtlID == kThemeLight ||
+         item->CtlID == kTaskbarStyleProgress ||
+         item->CtlID == kTaskbarStyleOverlay ||
+         item->CtlID == kTaskbarScopeCurrent ||
+         item->CtlID == kTaskbarScopeAll);
+    if (segmented_choice) {
+        // Paired settings share one rounded base. Each child owns half of the
+        // inner surface and paints only its selected/hover interaction layer.
+        const COLORREF selector_fill = light ? RGB(238, 242, 247)
+                                             : RGB(25, 29, 37);
+        const COLORREF hover_fill = light ? RGB(229, 235, 243)
+                                          : RGB(34, 40, 51);
+        const COLORREF selected_fill = light ? RGB(226, 237, 251)
+                                             : RGB(32, 58, 90);
+        const COLORREF selected_edge = light ? RGB(190, 210, 236)
+                                             : RGB(48, 82, 122);
+        const COLORREF selected_text = light ? RGB(39, 102, 190)
+                                             : RGB(221, 235, 255);
+
+        HBRUSH clear = CreateSolidBrush(selector_fill);
+        FillRect(item->hDC, &rect, clear);
+        DeleteObject(clear);
+
+        COLORREF segment_fill = selector_fill;
+        COLORREF segment_edge = selector_fill;
+        float edge_width = 0.0f;
+        if (active_theme) {
+            segment_fill = pressed
+                ? (light ? RGB(214, 229, 247) : RGB(28, 51, 79))
+                : selected_fill;
+            segment_edge = selected_edge;
+            edge_width = 1.0f;
+        } else if (hovered || pressed) {
+            segment_fill = pressed
+                ? (light ? RGB(220, 228, 238) : RGB(39, 46, 59))
+                : hover_fill;
+        }
+
+        if (active_theme || hovered || pressed) {
+            RECT layer{rect.left + S(1), rect.top + S(1),
+                       rect.right - S(1), rect.bottom - S(1)};
+            DrawSmoothRoundedRect(item->hDC, layer,
+                                  static_cast<float>(S(7)),
+                                  segment_fill, segment_edge, edge_width);
+        }
+
+        wchar_t text[256]{};
+        GetWindowTextW(item->hwndItem, text,
+                       static_cast<int>(std::size(text)));
+        const wchar_t* icon = item->CtlID == kTheme ? L"\xE708" :
+                              item->CtlID == kThemeLight ? L"\xE706" :
+                              item->CtlID == kTaskbarStyleOverlay ? L"\xE895" :
+                              item->CtlID == kTaskbarScopeCurrent ? L"\xE8B7" :
+                              item->CtlID == kTaskbarScopeAll ? L"\xE8A5" : nullptr;
+        const HFONT icon_font = state->settings_icon_font
+            ? state->settings_icon_font : state->font;
+        const HFONT text_font = state->settings_content_font
+            ? state->settings_content_font : state->font;
+        SIZE icon_size{};
+        SIZE text_size{};
+        if (icon) {
+            SelectObject(item->hDC, icon_font);
+            GetTextExtentPoint32W(item->hDC, icon, 1, &icon_size);
+        } else {
+            icon_size.cx = S(15);
+        }
+        SelectObject(item->hDC, text_font);
+        GetTextExtentPoint32W(item->hDC, text,
+                              static_cast<int>(wcslen(text)), &text_size);
+        const int gap = S(7);
+        const int content_width = icon_size.cx + gap + text_size.cx;
+        const int segment_width = static_cast<int>(rect.right - rect.left);
+        const int content_left = rect.left +
+            std::max(0, (segment_width - content_width) / 2);
+
+        SetBkMode(item->hDC, TRANSPARENT);
+        const COLORREF foreground = disabled
+            ? muted_color
+            : (active_theme ? selected_text
+                            : (hovered ? text_color : muted_color));
+        SetTextColor(item->hDC, foreground);
+        RECT icon_rect{content_left, rect.top,
+                       content_left + icon_size.cx, rect.bottom};
+        if (icon) {
+            SelectObject(item->hDC, icon_font);
+            DrawTextW(item->hDC, icon, 1, &icon_rect,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        } else {
+            // Compact vector progress glyph; it stays crisp at every DPI and
+            // avoids relying on an unrelated font symbol.
+            const int glyph_height = S(5);
+            const int glyph_top = rect.top +
+                (rect.bottom - rect.top - glyph_height) / 2;
+            RECT progress_track{icon_rect.left, glyph_top,
+                                icon_rect.right, glyph_top + glyph_height};
+            const COLORREF progress_back = active_theme
+                ? BlendBackdrop(selected_fill, foreground, 54)
+                : BlendBackdrop(selector_fill, foreground, 44);
+            DrawSmoothRoundedRect(item->hDC, progress_track,
+                                  static_cast<float>(S(2)),
+                                  progress_back, progress_back, 0.0f);
+            RECT progress_fill = progress_track;
+            const int progress_width = static_cast<int>(
+                progress_track.right - progress_track.left);
+            progress_fill.right = progress_fill.left +
+                std::max(S(5), progress_width * 3 / 5);
+            DrawSmoothRoundedRect(item->hDC, progress_fill,
+                                  static_cast<float>(S(2)),
+                                  foreground, foreground, 0.0f);
+        }
+        SelectObject(item->hDC, text_font);
+        RECT text_rect{icon_rect.right + gap, rect.top,
+                       rect.right, rect.bottom};
+        DrawTextW(item->hDC, text, -1, &text_rect,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        return;
+    }
+
     COLORREF fill = light ? RGB(245, 247, 250) : RGB(38, 42, 50);
     COLORREF edge = light ? RGB(210, 217, 226) : RGB(58, 65, 76);
     if (hovered) {
@@ -1301,7 +1615,14 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
     }
     SetTextColor(item->hDC, disabled ? muted_color :
                  (item->CtlID==kUnbind&&state?state->palette.danger:
-                  (active_theme && state ? state->accent_color : text_color)));
+                   (active_theme && state ? state->accent_color : text_color)));
+    if (state) {
+        const bool settings_content = state->mode == ManagementMode::Settings &&
+                                      GetParent(item->hwndItem) == state->content;
+        SelectObject(item->hDC,
+                     settings_content && state->settings_content_font
+                         ? state->settings_content_font : state->font);
+    }
     RECT text_rect = rect;
     DrawTextW(item->hDC, text, -1, &text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
@@ -1378,9 +1699,26 @@ void DrawListItem(const DRAWITEMSTRUCT* item) {
     DeleteObject(fill);
     if(IsSettingsProjectTypes(*state)&&data_index<state->types_data.size()){
         const auto& type=state->types_data[data_index];
+        const bool is_default=type.id==state->default_project_type_id;
         SelectObject(item->hDC,state->font);
-        RECT name_rect{rect.left,rect.top+DpiScale(state->window,4),rect.right,rect.top+DpiScale(state->window,27)};
+        const int badge_width=is_default?DpiScale(state->window,48):0;
+        RECT name_rect{rect.left,rect.top+DpiScale(state->window,4),
+                       rect.right-badge_width,rect.top+DpiScale(state->window,27)};
         DrawTextW(item->hDC,type.name.c_str(),-1,&name_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        if(is_default){
+            RECT badge{rect.right-DpiScale(state->window,44),
+                       rect.top+DpiScale(state->window,7),
+                       rect.right,rect.top+DpiScale(state->window,25)};
+            const COLORREF badge_fill=state->light_theme?RGB(226,238,253):RGB(24,43,68);
+            DrawSmoothRoundedRect(item->hDC,badge,
+                static_cast<float>(DpiScale(state->window,5)),
+                badge_fill,state->accent_color,1.0f);
+            SelectObject(item->hDC,state->project_type_badge_font
+                ?state->project_type_badge_font:state->small_font);
+            SetTextColor(item->hDC,state->accent_color);
+            DrawTextW(item->hDC,L"默认",-1,&badge,
+                      DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+        }
         SelectObject(item->hDC,state->small_font);SetTextColor(item->hDC,state->muted_color);
         RECT command_rect{rect.left,rect.top+DpiScale(state->window,26),rect.right,rect.bottom-DpiScale(state->window,3)};
         DrawTextW(item->hDC,type.default_command.c_str(),-1,&command_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
@@ -1694,20 +2032,47 @@ void LayoutSettingsContent(State& state) {
     };
 
     if (state.settings_page == SettingsPage::Appearance) {
-        const int gap = S(10);
         const int right_inset = S(18);
-        const int button_width = S(112);
-        const int wide_button = S(128);
         const int right_edge = right - right_inset;
-        button(state.theme_light, right_edge - button_width, 88, button_width, 36);
-        button(state.theme, right_edge - button_width * 2 - gap, 88, button_width, 36);
-        button(state.taskbar_working, right_edge - button_width, 144, button_width, 36);
-        button(state.taskbar_style_overlay, right_edge - wide_button, 200, wide_button, 36);
-        button(state.taskbar_style_progress,
-               right_edge - wide_button - button_width - gap, 200, button_width, 36);
-        button(state.taskbar_scope_all, right_edge - button_width, 256, button_width, 36);
-        button(state.taskbar_scope_current,
-               right_edge - button_width * 2 - gap, 256, button_width, 36);
+        const int selector_width = S(234);
+        const int selector_inset = S(2);
+        const int selector_left = right_edge - selector_width;
+        const int selector_inner_width = selector_width - selector_inset * 2;
+        const int left_width = selector_inner_width / 2;
+        const int right_width = selector_inner_width - left_width;
+        auto segment = [&](HWND control, int left, int y, int width) {
+            if (!control) return;
+            SetWindowPos(control, nullptr, left, S(y + 2) - offset,
+                         width, S(32),
+                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+                             SWP_NOREDRAW | SWP_NOSENDCHANGING);
+            SetWindowRgn(control, nullptr, TRUE);
+            RedrawWindow(control, nullptr, nullptr,
+                         RDW_INVALIDATE | RDW_NOERASE);
+        };
+        auto segmented_pair = [&](HWND left_control, HWND right_control, int y) {
+            segment(left_control, selector_left + selector_inset, y, left_width);
+            segment(right_control,
+                    selector_left + selector_inset + left_width, y, right_width);
+        };
+        segmented_pair(state.theme, state.theme_light, 88);
+        segmented_pair(state.taskbar_style_progress,
+                       state.taskbar_style_overlay, 200);
+        segmented_pair(state.taskbar_scope_current,
+                       state.taskbar_scope_all, 256);
+
+        if (state.taskbar_working) {
+            const int toggle_width = S(50);
+            const int toggle_height = S(28);
+            SetWindowPos(state.taskbar_working, nullptr,
+                         right_edge - toggle_width, S(148) - offset,
+                         toggle_width, toggle_height,
+                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+                             SWP_NOREDRAW | SWP_NOSENDCHANGING);
+            SetWindowRgn(state.taskbar_working, nullptr, TRUE);
+            RedrawWindow(state.taskbar_working, nullptr, nullptr,
+                         RDW_INVALIDATE | RDW_NOERASE);
+        }
     } else if (state.settings_page == SettingsPage::Connection) {
         const int label_width = S(120);
         const int field_x = x + label_width;
@@ -1815,6 +2180,21 @@ void PaintSettingsContent(State& state, HDC dc) {
 
     if (state.settings_page == SettingsPage::Appearance) {
         card({x, S(64), right, S(310)});
+        const int selector_right = right - S(18);
+        const int selector_left = selector_right - S(234);
+        const COLORREF selector_fill = state.light_theme
+            ? RGB(238, 242, 247) : RGB(25, 29, 37);
+        const COLORREF selector_edge = state.light_theme
+            ? RGB(215, 221, 230) : RGB(45, 51, 62);
+        auto selector = [&](int y) {
+            const RECT bounds{selector_left, S(y),
+                              selector_right, S(y + 36)};
+            DrawSmoothRoundedRect(dc, bounds, static_cast<float>(S(8)),
+                                  selector_fill, selector_edge, 1.0f);
+        };
+        selector(88);
+        selector(200);
+        selector(256);
         SelectObject(dc, state.settings_content_font ? state.settings_content_font : state.font);
         SetTextColor(dc, state.text_color);
         auto row_label = [&](const wchar_t* text, int y) {
@@ -1961,6 +2341,11 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     visible(state.taskbar_style_overlay, appearance);
     visible(state.taskbar_scope_current, appearance);
     visible(state.taskbar_scope_all, appearance);
+    // The project/group/device list overlaps the connection form. Hide it
+    // before revealing connection fields; otherwise each EDIT receives its
+    // first WM_PAINT while still clipped by the higher-z-order list, and the
+    // exposed text can remain only half painted after the list disappears.
+    if (connection) visible(state.list, false);
     visible(state.computer_name, connection);
     visible(state.listen, connection);
     visible(state.port, connection);
@@ -1971,7 +2356,7 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     visible(state.mobile_access, connection);
     visible(state.firewall, connection);
     visible(state.save, connection || project_types || groups);
-    visible(state.list, project_types || groups || devices);
+    if (!connection) visible(state.list, project_types || groups || devices);
     visible(state.name, false);
     visible(state.command, false);
     visible(state.add, project_types || groups);
@@ -2000,6 +2385,16 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
         ReadSelection(state);
     }
     LayoutSettingsContent(state);
+    if (connection) {
+        for (HWND field : {state.computer_name, state.listen, state.port,
+                           state.local, state.remote,
+                           state.mobile_workspace_root}) {
+            if (field && IsWindowVisible(field)) {
+                RedrawWindow(field, nullptr, nullptr,
+                             RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
+            }
+        }
+    }
     if (HWND previous = SettingsNavigationControl(state, previous_page))
         InvalidateRect(previous, nullptr, FALSE);
     if (HWND current = SettingsNavigationControl(state, page);
@@ -2095,6 +2490,7 @@ void RefreshList(State& state) {
         }
     } else if (IsSettingsProjectTypes(state)) {
         state.types_data = state.store->LoadProjectTypes();
+        state.default_project_type_id = state.store->ConfiguredDefaultProjectTypeId();
         for (const auto& value : state.types_data) {
             LRESULT row = SendMessageW(state.list, LB_ADDSTRING, 0,
                                        reinterpret_cast<LPARAM>(value.name.c_str()));
@@ -2156,6 +2552,21 @@ bool SelectedIndex(HWND list, size_t& index) {
 
 void ShowError(HWND owner, const std::wstring& message) {
     if (!message.empty()) MessageBoxW(owner, message.c_str(), L"AI CLI", MB_OK | MB_ICONWARNING);
+}
+
+bool SetDefaultProjectTypeByName(DataStore& store,
+                                 const std::wstring& name,
+                                 std::wstring* error) {
+    const auto types = store.LoadProjectTypes();
+    const auto found = std::find_if(
+        types.begin(), types.end(), [&](const ProjectType& type) {
+            return _wcsicmp(type.name.c_str(), name.c_str()) == 0;
+        });
+    if (found == types.end()) {
+        if (error) *error = L"新项目类型已保存，但无法将它设为默认";
+        return false;
+    }
+    return store.SetDefaultProjectType(found->id, error);
 }
 
 std::wstring QuoteArgument(const std::wstring& value) {
@@ -2719,13 +3130,19 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                 if (id == kAdd) {
                     std::wstring name;
                     std::wstring command;
+                    bool make_default=false;
                     if (!ShowProjectTypeEditorDialog(
                             h, L"新增项目类型",
                             L"为新的 AI CLI 配置名称和默认启动命令。",
-                            L"", L"", state->light_theme, name, command)) return 0;
+                            L"", L"", false, state->light_theme,
+                            name, command, make_default)) return 0;
                     if (!state->store->AddProjectType(name, command, &error)) {
                         ShowError(h, error);
                     } else {
+                        if (make_default &&
+                            !SetDefaultProjectTypeByName(*state->store,name,&error)) {
+                            ShowError(h,error);
+                        }
                         RefreshList(*state);
                         ReadSelection(*state);
                     }
@@ -2737,15 +3154,27 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                         const auto current = state->types_data[index];
                         std::wstring name;
                         std::wstring command;
+                        const bool was_default =
+                            current.id == state->store->ConfiguredDefaultProjectTypeId();
+                        bool make_default = was_default;
                         if (!ShowProjectTypeEditorDialog(
                                 h, L"修改项目类型",
                                 L"保存后，类型名称和默认启动命令会立即更新。",
                                 current.name, current.default_command,
-                                state->light_theme, name, command)) return 0;
+                                make_default, state->light_theme,
+                                name, command, make_default)) return 0;
                         if (!state->store->UpdateProjectType(
                                 current.id, name, command, &error)) {
                             ShowError(h, error);
                         } else {
+                            if (make_default) {
+                                if (!state->store->SetDefaultProjectType(current.id,&error)) {
+                                    ShowError(h,error);
+                                }
+                            } else if (was_default &&
+                                       !state->store->ClearDefaultProjectType(&error)) {
+                                ShowError(h,error);
+                            }
                             RefreshList(*state);
                             ReadSelection(*state);
                         }
@@ -2828,12 +3257,18 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
             if (id == kAdd) {
                 std::wstring name;
                 std::wstring command;
+                bool make_default=false;
                 if (!ShowProjectTypeEditorDialog(
                         h, L"新增项目类型",
                         L"为新的 AI CLI 配置名称和默认启动命令。",
-                        L"", L"", state->light_theme, name, command)) return 0;
+                        L"", L"", false, state->light_theme,
+                        name, command, make_default)) return 0;
                 if (!state->store->AddProjectType(name, command, &error)) ShowError(h, error);
-                else { RefreshList(*state); ReadSelection(*state); }
+                else {
+                    if (make_default&&
+                        !SetDefaultProjectTypeByName(*state->store,name,&error)) ShowError(h,error);
+                    RefreshList(*state); ReadSelection(*state);
+                }
             } else if (id == kSave) {
                 size_t index{};
                 if (!SelectedIndex(state->list, index) || index >= state->types_data.size()) ShowError(h, L"请选择要修改的类型");
@@ -2841,13 +3276,27 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                     const auto current = state->types_data[index];
                     std::wstring name;
                     std::wstring command;
+                    const bool was_default =
+                        current.id == state->store->ConfiguredDefaultProjectTypeId();
+                    bool make_default = was_default;
                     if (!ShowProjectTypeEditorDialog(
                             h, L"修改项目类型",
                             L"保存后，类型名称和默认启动命令会立即更新。",
                             current.name, current.default_command,
-                            state->light_theme, name, command)) return 0;
+                            make_default, state->light_theme,
+                            name, command, make_default)) return 0;
                     if (!state->store->UpdateProjectType(current.id, name, command, &error)) ShowError(h, error);
-                    else { RefreshList(*state); ReadSelection(*state); }
+                    else {
+                        if (make_default) {
+                            if (!state->store->SetDefaultProjectType(current.id,&error)) {
+                                ShowError(h,error);
+                            }
+                        } else if (was_default&&
+                                   !state->store->ClearDefaultProjectType(&error)) {
+                            ShowError(h,error);
+                        }
+                        RefreshList(*state); ReadSelection(*state);
+                    }
                 }
             } else if (id == kDelete) {
                 size_t index{};
@@ -2887,9 +3336,11 @@ bool ShowProjectTypeEditorDialog(HWND owner,
                                  const std::wstring& subtitle,
                                  const std::wstring& initial_name,
                                  const std::wstring& initial_command,
+                                 bool initial_default,
                                  bool light_theme,
                                  std::wstring& name,
-                                 std::wstring& command) {
+                                 std::wstring& command,
+                                 bool& make_default) {
     static bool registered = false;
     if (!registered) {
         WNDCLASSW klass{};
@@ -2908,6 +3359,10 @@ bool ShowProjectTypeEditorDialog(HWND owner,
     state.subtitle = subtitle;
     state.initial_name = initial_name;
     state.initial_command = initial_command;
+    state.initial_default = initial_default;
+    state.make_default = initial_default;
+    state.default_toggle_progress = initial_default ? 1.0f : 0.0f;
+    state.default_toggle_from = state.default_toggle_progress;
     state.palette = MakeThemePalette(light_theme);
     state.light_theme = state.palette.light();
     state.background = state.palette.window;
@@ -2947,6 +3402,7 @@ bool ShowProjectTypeEditorDialog(HWND owner,
     if (state.accepted) {
         name = state.name;
         command = state.command;
+        make_default = state.make_default;
     }
     aicli::ui::RestoreModalOwner(owner);
     return state.accepted;
@@ -2991,6 +3447,7 @@ ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
     state.font = CreateDialogFont(owner, 15, FW_NORMAL);
     state.title_font = CreateDialogFont(owner, 22, FW_SEMIBOLD);
     state.small_font = CreateDialogFont(owner, 13, FW_NORMAL);
+    state.project_type_badge_font = CreateDialogFont(owner, 10, FW_NORMAL);
     // Settings uses a compact, explicit type scale independent of the other
     // management dialogs: 16 px navigation, 14 px content headings/controls,
     // and 12 px supporting text.
@@ -3024,6 +3481,7 @@ ManagementDialogResult ShowManagementDialog(HWND owner, ManagementMode mode,
     if (state.settings_content_font) DeleteObject(state.settings_content_font);
     if (state.settings_small_font) DeleteObject(state.settings_small_font);
     if (state.settings_icon_font) DeleteObject(state.settings_icon_font);
+    if (state.project_type_badge_font) DeleteObject(state.project_type_badge_font);
     if (state.small_font) DeleteObject(state.small_font);
     if (state.field_brush) DeleteObject(state.field_brush);
     if (state.field_focus_brush) DeleteObject(state.field_focus_brush);

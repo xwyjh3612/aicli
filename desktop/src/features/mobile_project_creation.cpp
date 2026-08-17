@@ -134,14 +134,7 @@ CreationOptions LoadCreationOptions(DataStore& store) {
     options.project_types = store.LoadProjectTypes();
     options.groups = store.LoadGroups();
 
-    const auto preferred_type = std::find_if(
-        options.project_types.begin(), options.project_types.end(),
-        [](const ProjectType& type) { return type.name == L"Codex"; });
-    if (preferred_type != options.project_types.end()) {
-        options.default_type_id = preferred_type->id;
-    } else if (!options.project_types.empty()) {
-        options.default_type_id = options.project_types.front().id;
-    }
+    options.default_type_id = store.DefaultProjectTypeId();
 
     const auto preferred_group = std::find_if(
         options.groups.begin(), options.groups.end(),

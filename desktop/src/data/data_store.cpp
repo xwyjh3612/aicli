@@ -19,6 +19,7 @@ namespace {
 // delivery (especially through FRP) is not. Keep a bounded reordering window
 // while request-id and per-device sequence uniqueness still reject replays.
 constexpr std::int64_t kSignedRequestReorderWindow = 256;
+constexpr wchar_t kDefaultProjectTypeSetting[] = L"default_project_type_id";
 
 struct StatementDeleter {
     void operator()(sqlite3_stmt* statement) const noexcept {
@@ -507,7 +508,12 @@ bool DataStore::DeleteProjectType(std::int64_t id, std::wstring* error) {
     auto statement = Prepare(db_, "DELETE FROM project_types WHERE id=?;");
     if (!statement) return false;
     sqlite3_bind_int64(statement.get(), 1, id);
-    return sqlite3_step(statement.get()) == SQLITE_DONE;
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) return false;
+
+    if (GetSetting(kDefaultProjectTypeSetting) == std::to_wstring(id)) {
+        SetSetting(kDefaultProjectTypeSetting, L"");
+    }
+    return true;
 }
 
 bool DataStore::IsProjectTypeInUse(const std::wstring& name) {
@@ -516,6 +522,58 @@ bool DataStore::IsProjectTypeInUse(const std::wstring& name) {
     if (!statement) return false;
     BindText(statement.get(), 1, name);
     return sqlite3_step(statement.get()) == SQLITE_ROW;
+}
+
+std::int64_t DataStore::ConfiguredDefaultProjectTypeId() {
+    std::scoped_lock lock(mutex_);
+    std::int64_t configured_id{};
+    try {
+        const auto configured = GetSetting(kDefaultProjectTypeSetting);
+        if (!configured.empty()) configured_id = std::stoll(configured);
+    } catch (...) {
+        configured_id = 0;
+    }
+    if (configured_id <= 0) return 0;
+    auto statement = Prepare(db_, "SELECT 1 FROM project_types WHERE id=? LIMIT 1;");
+    if (!statement) return 0;
+    sqlite3_bind_int64(statement.get(), 1, configured_id);
+    return sqlite3_step(statement.get()) == SQLITE_ROW ? configured_id : 0;
+}
+
+std::int64_t DataStore::DefaultProjectTypeId() {
+    std::scoped_lock lock(mutex_);
+    const auto configured_id = ConfiguredDefaultProjectTypeId();
+    if (configured_id > 0) return configured_id;
+    const auto types = LoadProjectTypes();
+    return types.empty() ? 0 : types.front().id;
+}
+
+bool DataStore::SetDefaultProjectType(std::int64_t id, std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    auto statement = Prepare(db_, "SELECT 1 FROM project_types WHERE id=? LIMIT 1;");
+    if (!statement) {
+        if (error) *error = L"无法读取项目类型";
+        return false;
+    }
+    sqlite3_bind_int64(statement.get(), 1, id);
+    if (sqlite3_step(statement.get()) != SQLITE_ROW) {
+        if (error) *error = L"要设为默认的项目类型不存在";
+        return false;
+    }
+    if (!SetSetting(kDefaultProjectTypeSetting, std::to_wstring(id))) {
+        if (error) *error = L"保存默认项目类型失败";
+        return false;
+    }
+    return true;
+}
+
+bool DataStore::ClearDefaultProjectType(std::wstring* error) {
+    std::scoped_lock lock(mutex_);
+    if (!SetSetting(kDefaultProjectTypeSetting, L"")) {
+        if (error) *error = L"取消默认项目类型失败";
+        return false;
+    }
+    return true;
 }
 
 bool DataStore::AddGroup(const std::wstring& name, std::wstring* error) {

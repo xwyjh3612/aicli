@@ -12,6 +12,12 @@ std::wstring DefaultProjectCommand(const std::wstring& type){
     if(found!=g_project_types.end())return found->default_command;
     return type==L"Claude"?L"claude --dangerously-skip-permissions --continue":L"codex --yolo resume --last";
 }
+std::wstring DefaultProjectTypeName(){
+    const std::int64_t defaultId=g_store.DefaultProjectTypeId();
+    const auto found=std::find_if(g_project_types.begin(),g_project_types.end(),[&](const ProjectType& value){return value.id==defaultId;});
+    if(found!=g_project_types.end())return found->name;
+    return g_project_types.empty()?L"Codex":g_project_types.front().name;
+}
 void LayoutProjectDialog(HWND h){
     RECT client{}; GetClientRect(h,&client);
     const int dpi=std::max(96,static_cast<int>(GetDpiForWindow(h)));
@@ -40,7 +46,11 @@ void LayoutProjectDialog(HWND h){
     RECT save{left+width-padding-S(96),top+S(498),left+width-padding,top+S(534)};
     HWND child=GetWindow(h,GW_CHILD); while(child){int id=GetDlgCtrlID(child);if(id==ID_D_OK){MoveWindow(child,save.left,save.top,save.right-save.left,save.bottom-save.top,TRUE);ApplyRoundedRegion(child,save.right-save.left,save.bottom-save.top,S(8));}if(id==ID_D_CANCEL){MoveWindow(child,cancel.left,cancel.top,cancel.right-cancel.left,cancel.bottom-cancel.top,TRUE);ApplyRoundedRegion(child,cancel.right-cancel.left,cancel.bottom-cancel.top,S(8));}child=GetWindow(child,GW_HWNDNEXT);}
     if(g_d_close){MoveWindow(g_d_close,g_project_panel.right-S(43),g_project_panel.top+S(5),S(34),S(34),TRUE);ApplyRoundedRegion(g_d_close,S(34),S(34),S(7));}
-    aicli::ui::SetModalSurfaceRegion(h,g_project_panel,S(14));
+    // CreateRoundRectRgn receives an ellipse diameter, while the smooth
+    // renderer below receives a true corner radius. Use the matching 28 px
+    // diameter so the binary window region does not expose four unpainted
+    // corner pixels outside the 14 px rendered curve.
+    aicli::ui::SetModalSurfaceRegion(h,g_project_panel,S(28));
     InvalidateRect(h,nullptr,FALSE);
 }
 void InvalidateProjectControlFrame(HWND dialog, HWND control) {
@@ -69,6 +79,13 @@ void PaintProjectDialogSurface(HDC dc,RECT client){
     // terminal/workspace and defeat modal translucency.
     (void)client;
     const auto S=[](int value){return ScaleUi(value);};
+    // The modal surface suppresses WM_ERASEBKGND. Seed every pixel admitted by
+    // the rounded window region with the panel colour before anti-aliasing the
+    // visible edge, otherwise the extreme corner samples can retain the
+    // window's initial white pixels.
+    HBRUSH panel_background=CreateSolidBrush(panel);
+    FillRect(dc,&g_project_panel,panel_background);
+    DeleteObject(panel_background);
     DrawSmoothRoundedRect(dc,g_project_panel,ScaleUiF(14.0f),panel,border,ScaleUiF(1.0f));
     SetBkMode(dc,TRANSPARENT);
     SelectObject(dc,g_font_modal_title?g_font_modal_title:g_font_medium);
@@ -151,7 +168,7 @@ void ShowProjectDropdown(HWND dialog,HWND anchor,bool projectType){
 LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
     switch(m){
     case WM_CREATE:{
-        const std::wstring initialType=g_project_dialog_edit?g_project_draft.type:(g_project_types.empty()?L"Codex":g_project_types.front().name);
+        const std::wstring initialType=g_project_dialog_edit?g_project_draft.type:DefaultProjectTypeName();
         g_d_name=aicli::ui::CreateStyledInput(h,ID_D_NAME,g_font,L"输入项目名称");
         g_d_note=aicli::ui::CreateStyledInput(h,ID_D_NOTE,g_font,L"输入项目备注（可选）");
         g_d_type=MakeDialogControl(L"BUTTON",initialType.c_str(),BS_NOTIFY|WS_TABSTOP,ID_D_TYPE,h,0,0,1,1);

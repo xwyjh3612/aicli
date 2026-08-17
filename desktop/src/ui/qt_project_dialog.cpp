@@ -122,6 +122,10 @@ ProjectDialog::ProjectDialog(app::DesktopController& controller,
         if (groupIndex >= 0) group_->setCurrentIndex(groupIndex);
         type_->setEnabled(false);
     } else if (type_->count() > 0) {
+        const auto defaultTypeId = controller_.store().DefaultProjectTypeId();
+        const int defaultIndex = type_->findData(
+            QVariant::fromValue<qlonglong>(defaultTypeId));
+        if (defaultIndex >= 0) type_->setCurrentIndex(defaultIndex);
         projectTypeChanged(type_->currentIndex());
     }
     previousCommand_ = command_->text();
