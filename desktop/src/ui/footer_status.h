@@ -16,7 +16,7 @@ namespace aicli::ui {
 // repaints from flashing the rest of the main window.
 class FooterStatusController {
 public:
-    static constexpr int kTelemetryWidth = 344;
+    static constexpr int kTelemetryWidth = 276;
 
     FooterStatusController() = default;
     ~FooterStatusController();

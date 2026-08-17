@@ -113,8 +113,8 @@ void FooterStatusController::Layout(const RECT& client, int footer_height) {
         git_bounds_ = next;
         UpdateTooltip();
     }
-    phone_bounds_={telemetry_left_+scale(224),footer_top,
-                   std::max(telemetry_left_+scale(224),
+    phone_bounds_={telemetry_left_+scale(108),footer_top,
+                   std::max(telemetry_left_+scale(108),
                             static_cast<int>(client.right)-scale(10)),
                    client.bottom};
 }
@@ -576,35 +576,29 @@ void FooterStatusController::Draw(HDC dc,
         }
     }
 
-    // Use one 12 px footer font for Git, Agent, memory and network status.
+    // Use one 12 px footer font for Git, memory and mobile status.
     if (git_font) SelectObject(dc, git_font);
     else if (font) SelectObject(dc, font);
 
     const int telemetry_top = client.bottom - footer_height;
-    const std::wstring agent_label = !mobile_access_enabled_
-        ? L"○ 手机访问关闭"
-        : (agent_online_ ? L"● Agent 在线" : L"○ Agent 离线");
     const std::wstring memory_label =
         L"内存 " + std::to_wstring(memory_megabytes_) + L" MB";
-    const std::wstring phone_label = L"手机 " +
-        std::to_wstring(online_devices_) + L"/" +
-        std::to_wstring(authorized_devices_);
-    RECT agent_rect{
-        telemetry_left_, telemetry_top, telemetry_left_ + scale(116), client.bottom};
+    const std::wstring phone_label = !mobile_access_enabled_
+        ? L"手机访问未开启"
+        : (!agent_online_
+            ? L"手机服务异常"
+            : L"手机 " + std::to_wstring(online_devices_) + L"/" +
+                  std::to_wstring(authorized_devices_) + L" 在线");
     RECT memory_rect{
-        agent_rect.right, telemetry_top, agent_rect.right + scale(108), client.bottom};
+        telemetry_left_, telemetry_top, telemetry_left_ + scale(108), client.bottom};
     RECT phone_rect=phone_bounds_;
-    SetTextColor(dc, !mobile_access_enabled_
-        ? theme.muted
-        : (agent_online_ ? RGB(83, 203, 146) : RGB(225, 101, 112)));
-    DrawTextW(dc, agent_label.c_str(), -1, &agent_rect,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     SetTextColor(dc, theme.muted);
     DrawTextW(dc, memory_label.c_str(), -1, &memory_rect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    SetTextColor(dc,!mobile_access_enabled_||!agent_online_
-        ? (authorized_devices_>0?theme.danger:theme.muted)
-        : (online_devices_>0?RGB(83,203,146):theme.muted));
+    SetTextColor(dc,!mobile_access_enabled_
+        ? theme.muted
+        : (!agent_online_?theme.danger:
+            (online_devices_>0?RGB(83,203,146):theme.muted)));
     DrawTextW(dc,phone_label.c_str(),-1,&phone_rect,
               DT_LEFT|DT_VCENTER|DT_SINGLELINE);
 

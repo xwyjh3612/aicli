@@ -205,9 +205,11 @@ struct State {
     bool mobile_access_enabled{};
     SettingsPage settings_page{SettingsPage::Appearance};
     OverlayScrollbar content_scrollbar;
+    OverlayScrollbar list_scrollbar;
     int content_scroll{};
     int content_extent{};
     bool content_layout_active{};
+    int device_hover_row{-1};
     COLORREF background_color{};
     COLORREF panel_color{};
     COLORREF panel_edge{};
@@ -351,6 +353,33 @@ constexpr UINT_PTR kSettingsWheelSubclassId = 0xA1C19;
 LRESULT CALLBACK SettingsWheelProc(HWND control, UINT message, WPARAM wparam,
                                    LPARAM lparam, UINT_PTR, DWORD_PTR reference) {
     auto* state = reinterpret_cast<State*>(reference);
+    const bool device_list=state&&control==state->list&&
+        state->mode==ManagementMode::Settings&&
+        state->settings_page==SettingsPage::Devices;
+    if(message==WM_MOUSEMOVE&&device_list){
+        const LRESULT hit=SendMessageW(control,LB_ITEMFROMPOINT,0,lparam);
+        const int next=HIWORD(static_cast<DWORD_PTR>(hit))? -1:
+            static_cast<int>(LOWORD(static_cast<DWORD_PTR>(hit)));
+        if(next!=state->device_hover_row){
+            const int previous=state->device_hover_row;state->device_hover_row=next;
+            RECT row{};if(previous>=0&&SendMessageW(control,LB_GETITEMRECT,previous,reinterpret_cast<LPARAM>(&row))!=LB_ERR)InvalidateRect(control,&row,FALSE);
+            if(next>=0&&SendMessageW(control,LB_GETITEMRECT,next,reinterpret_cast<LPARAM>(&row))!=LB_ERR)InvalidateRect(control,&row,FALSE);
+        }
+        TRACKMOUSEEVENT tracking{sizeof(tracking),TME_LEAVE,control,0};TrackMouseEvent(&tracking);
+    }
+    if(message==WM_MOUSELEAVE&&device_list){
+        const int previous=state->device_hover_row;state->device_hover_row=-1;
+        RECT row{};if(previous>=0&&SendMessageW(control,LB_GETITEMRECT,previous,reinterpret_cast<LPARAM>(&row))!=LB_ERR)InvalidateRect(control,&row,FALSE);
+        return 0;
+    }
+    if(message==WM_MOUSEWHEEL&&device_list){
+        const int delta=GET_WHEEL_DELTA_WPARAM(wparam);
+        const int top=static_cast<int>(SendMessageW(control,LB_GETTOPINDEX,0,0));
+        const int next=std::max(0,top-(delta/WHEEL_DELTA)*3);
+        SendMessageW(control,LB_SETTOPINDEX,next,0);
+        state->list_scrollbar.NotifyActivity();state->list_scrollbar.Sync();
+        return 0;
+    }
     if (message == WM_MOUSEWHEEL && state && state->content) {
         // LISTBOX consumes wheel input even when its own rows do not need to
         // move. The list is part of the scrolling settings document, so route
@@ -439,6 +468,7 @@ void ApplyTheme(State& state, bool light) {
         if (field) SetStyledInputTheme(field, state.palette);
     }
     state.content_scrollbar.SetTheme(state.palette, state.background_color);
+    state.list_scrollbar.SetTheme(state.palette,state.palette.list_surface);
     if (state.content) {
         RedrawWindow(state.content, nullptr, nullptr,
                      RDW_INVALIDATE | RDW_ALLCHILDREN);
@@ -1183,13 +1213,17 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         fill = light ? RGB(226, 237, 251) : RGB(31, 57, 87);
         edge = light ? RGB(107, 153, 213) : RGB(59, 111, 178);
     }
-    if (item->CtlID == kDelete || item->CtlID == kUnbind) {
+    if (item->CtlID == kDelete) {
         fill = light ? RGB(253, 240, 242) : RGB(56, 40, 45);
         edge = light ? RGB(225, 170, 178) : RGB(116, 65, 77);
         if (hovered || pressed) {
             fill = light ? RGB(249, 222, 226) : RGB(82, 43, 50);
             edge = light ? RGB(211, 124, 139) : RGB(151, 70, 84);
         }
+    }
+    if(item->CtlID==kUnbind&&state){
+        fill=state->background_color;edge=state->palette.danger;
+        if(hovered||pressed)fill=light?RGB(253,238,241):RGB(56,35,42);
     }
     if (disabled) {
         fill = light ? RGB(235, 238, 243) : RGB(32, 35, 41);
@@ -1200,7 +1234,9 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
     // rounded button; filling it with the button color leaves square corners
     // behind on hover/press, notably for Unbind and Close.
     if (state) {
-        HBRUSH clear = CreateSolidBrush(state->panel_color);
+        const COLORREF clear_color=GetParent(item->hwndItem)==state->content
+            ?state->background_color:state->panel_color;
+        HBRUSH clear = CreateSolidBrush(clear_color);
         FillRect(item->hDC, &rect, clear);
         DeleteObject(clear);
     }
@@ -1246,7 +1282,8 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         return;
     }
     SetTextColor(item->hDC, disabled ? muted_color :
-                 (active_theme && state ? state->accent_color : text_color));
+                 (item->CtlID==kUnbind&&state?state->palette.danger:
+                  (active_theme && state ? state->accent_color : text_color)));
     RECT text_rect = rect;
     DrawTextW(item->hDC, text, -1, &text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
@@ -1275,19 +1312,43 @@ void DrawListItem(const DRAWITEMSTRUCT* item) {
         const bool online=state->agent&&state->agent->IsDeviceOnline(device.phone_id);
         const COLORREF status=online?state->palette.success:
             (device.active?state->palette.muted:state->palette.danger);
-        HBRUSH dot=CreateSolidBrush(status);
-        const int dot_size=DpiScale(state->window,7);
-        const int dot_top=(rect.top+rect.bottom-dot_size)/2;
-        RECT dot_rect{rect.left,dot_top,rect.left+dot_size,dot_top+dot_size};
-        FillRect(item->hDC,&dot_rect,dot);DeleteObject(dot);
-        SelectObject(item->hDC,state->font);
-        RECT name_rect{rect.left+DpiScale(state->window,18),rect.top+DpiScale(state->window,5),rect.right,rect.top+DpiScale(state->window,29)};
+        const bool hovered=static_cast<int>(item->itemID)==state->device_hover_row;
+        HBRUSH clear=CreateSolidBrush(state->palette.list_surface);FillRect(item->hDC,&item->rcItem,clear);DeleteObject(clear);
+        RECT card{item->rcItem.left+DpiScale(state->window,3),item->rcItem.top+DpiScale(state->window,2),
+                  item->rcItem.right-DpiScale(state->window,3),item->rcItem.bottom-DpiScale(state->window,2)};
+        const COLORREF card_fill=selected
+            ?(state->light_theme?RGB(232,241,253):RGB(24,40,62))
+            :(hovered?(state->light_theme?RGB(244,247,251):RGB(24,31,42)):state->palette.list_surface);
+        const COLORREF card_edge=selected?state->accent_color:
+            (hovered?state->panel_edge:card_fill);
+        DrawSmoothRoundedRect(item->hDC,card,static_cast<float>(DpiScale(state->window,6)),card_fill,card_edge,1.0f);
+        const int icon_size=DpiScale(state->window,30);
+        RECT icon_rect{card.left+DpiScale(state->window,10),(card.top+card.bottom-icon_size)/2,
+                       card.left+DpiScale(state->window,10)+icon_size,(card.top+card.bottom+icon_size)/2};
+        const COLORREF icon_fill=selected
+            ?(state->light_theme?RGB(215,231,251):RGB(31,58,88)):state->palette.surface;
+        DrawSmoothRoundedRect(item->hDC,icon_rect,static_cast<float>(DpiScale(state->window,7)),icon_fill,icon_fill,0.0f);
+        SelectObject(item->hDC,state->settings_icon_font?state->settings_icon_font:state->font);
+        SetTextColor(item->hDC,selected?state->accent_color:state->muted_color);
+        DrawTextW(item->hDC,L"\xE8EA",-1,&icon_rect,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+        const int text_left=icon_rect.right+DpiScale(state->window,10);
+        SelectObject(item->hDC,state->settings_content_font?state->settings_content_font:state->font);
+        SetTextColor(item->hDC,state->text_color);
+        RECT name_rect{text_left,card.top+DpiScale(state->window,4),card.right-DpiScale(state->window,58),card.top+DpiScale(state->window,30)};
         DrawTextW(item->hDC,device.name.c_str(),-1,&name_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
-        SelectObject(item->hDC,state->small_font);SetTextColor(item->hDC,state->muted_color);
+        SelectObject(item->hDC,state->settings_small_font?state->settings_small_font:state->small_font);SetTextColor(item->hDC,state->muted_color);
         std::wstring detail=device.model;
         if(!device.phone_id.empty())detail+=L"  ·  "+device.phone_id.substr(0,std::min<size_t>(8,device.phone_id.size()));
-        RECT detail_rect{rect.left+DpiScale(state->window,18),rect.top+DpiScale(state->window,28),rect.right,rect.bottom-DpiScale(state->window,3)};
+        RECT detail_rect{text_left,card.top+DpiScale(state->window,28),card.right-DpiScale(state->window,12),card.bottom-DpiScale(state->window,3)};
         DrawTextW(item->hDC,detail.c_str(),-1,&detail_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        HBRUSH dot=CreateSolidBrush(status);HGDIOBJ old_dot_brush=SelectObject(item->hDC,dot);HGDIOBJ old_dot_pen=SelectObject(item->hDC,GetStockObject(NULL_PEN));
+        const int dot_size=DpiScale(state->window,7);const int dot_top=card.top+DpiScale(state->window,13);
+        Ellipse(item->hDC,card.right-DpiScale(state->window,48),dot_top,
+                card.right-DpiScale(state->window,48)+dot_size,dot_top+dot_size);
+        SelectObject(item->hDC,old_dot_pen);SelectObject(item->hDC,old_dot_brush);DeleteObject(dot);
+        SetTextColor(item->hDC,status);
+        RECT status_rect{card.right-DpiScale(state->window,36),card.top,card.right-DpiScale(state->window,8),card.top+DpiScale(state->window,32)};
+        DrawTextW(item->hDC,online?L"在线":(device.active?L"离线":L"撤销"),-1,&status_rect,DT_RIGHT|DT_VCENTER|DT_SINGLELINE);
         return;
     }
     if(IsSettingsProjectTypes(*state)&&data_index<state->types_data.size()){
@@ -1650,16 +1711,17 @@ void LayoutSettingsContent(State& state) {
         button(state.save, x + S(134), 492, S(118));
         button(state.remove, x + S(264), 492, S(104));
     } else {
-        const int list_width=std::min(S(300),available/2);
+        const int list_width=std::min(S(306),available/2);
         if(state.list){
-            SetWindowPos(state.list,nullptr,x,S(126)-offset,list_width,S(300),
+            SetWindowPos(state.list,nullptr,x,S(126)-offset,list_width,S(350),
                          SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_NOREDRAW);
-            ApplyRoundedRegion(state.list,list_width,S(300),S(8));
+            ApplyRoundedRegion(state.list,list_width,S(350),S(8));
         }
         button(state.select,right-S(122),80,S(122),36);
-        button(state.unbind,right-S(122),390,S(122),36);
-        button(state.bind_empty,x+list_width+S(70),270,S(150),36);
+        button(state.unbind,right-S(122),444,S(122),36);
+        button(state.bind_empty,x+list_width+S(62),270,S(158),36);
     }
+    state.list_scrollbar.Layout();
     state.content_scrollbar.Layout();
     InvalidateRect(state.content, nullptr, FALSE);
     state.content_layout_active = false;
@@ -1783,23 +1845,44 @@ void PaintSettingsContent(State& state, HDC dc) {
         DrawTextW(dc, L"添加和修改名称会打开独立输入模态层；非空分组不能删除。", -1,
                   &hint, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }else{
-        label(L"已授权设备",96);
-        const int list_width=std::min(S(300),(right-x)/2);
+        SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
+        SetTextColor(dc,state.palette.muted);
+        const std::wstring list_title=L"已授权设备（"+std::to_wstring(state.devices.size())+L"）";
+        RECT list_title_rect{x,S(96),right,S(120)};
+        DrawTextW(dc,list_title.c_str(),-1,&list_title_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        const int list_width=std::min(S(306),(right-x)/2);
         const int detail_x=x+list_width+S(26);
         size_t index{};
         const bool has_device=SelectedIndex(state.list,index)&&index<state.devices.size();
         if(!has_device){
+            SelectObject(dc,state.settings_icon_font?state.settings_icon_font:state.font);
+            SetTextColor(dc,state.muted_color);
+            RECT empty_icon{detail_x,S(166),right,S(218)};
+            DrawTextW(dc,L"\xE8EA",-1,&empty_icon,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
             SelectObject(dc,state.settings_content_font?state.settings_content_font:state.font);
             SetTextColor(dc,state.muted_color);
-            RECT empty{detail_x,S(186),right,S(266)};
+            RECT empty{detail_x,S(216),right,S(258)};
             DrawTextW(dc,state.devices.empty()?L"当前没有已绑定手机":L"选择一台设备查看详细信息",
                       -1,&empty,DT_CENTER|DT_VCENTER|DT_WORDBREAK);
         }else{
             const auto& device=state.devices[index];
+            const bool online=state.agent&&state.agent->IsDeviceOnline(device.phone_id);
             SelectObject(dc,state.settings_content_font?state.settings_content_font:state.font);
             SetTextColor(dc,state.text_color);
-            RECT device_name{detail_x,S(126),right,S(158)};
+            RECT device_name{detail_x,S(126),right-S(82),S(158)};
             DrawTextW(dc,device.name.c_str(),-1,&device_name,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+            const COLORREF badge_text=online?state.palette.success:state.palette.muted;
+            const COLORREF badge_fill=online
+                ?(state.light_theme?RGB(229,247,239):RGB(24,54,45))
+                :(state.light_theme?RGB(239,242,246):RGB(31,36,44));
+            RECT badge{right-S(70),S(128),right,S(154)};
+            DrawSmoothRoundedRect(dc,badge,static_cast<float>(S(7)),badge_fill,badge_fill,0.0f);
+            SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
+            SetTextColor(dc,badge_text);
+            DrawTextW(dc,online?L"●  在线":L"○  离线",-1,&badge,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+            SetTextColor(dc,state.muted_color);
+            RECT section{detail_x,S(166),right,S(188)};
+            DrawTextW(dc,L"设备信息",-1,&section,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
             SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
             auto row=[&](const wchar_t* key,const std::wstring& value,int y){
                 SetTextColor(dc,state.muted_color);
@@ -1809,12 +1892,22 @@ void PaintSettingsContent(State& state, HDC dc) {
                 RECT value_rect{detail_x+S(92),S(y),right,S(y+28)};
                 DrawTextW(dc,value.c_str(),-1,&value_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
             };
-            row(L"设备型号",device.model,170);
-            row(L"设备 ID",device.phone_id,208);
-            row(L"绑定时间",FormatDeviceTime(device.paired_at),246);
-            row(L"最近在线",FormatDeviceTime(device.last_seen),284);
-            row(L"连接状态",state.agent&&state.agent->IsDeviceOnline(device.phone_id)?L"在线":L"离线",322);
-            row(L"授权状态",device.active?L"已授权":L"已解绑",360);
+            row(L"设备型号",device.model,194);
+            row(L"设备 ID",device.phone_id,230);
+            row(L"绑定时间",FormatDeviceTime(device.paired_at),266);
+            row(L"最近在线",FormatDeviceTime(device.last_seen),302);
+            row(L"授权状态",device.active?L"已授权":L"已解绑",338);
+            HPEN divider=CreatePen(PS_SOLID,1,state.panel_edge);HGDIOBJ old_divider=SelectObject(dc,divider);
+            MoveToEx(dc,detail_x,S(382),nullptr);LineTo(dc,right,S(382));
+            SelectObject(dc,old_divider);DeleteObject(divider);
+            SelectObject(dc,state.settings_content_font?state.settings_content_font:state.font);
+            SetTextColor(dc,state.text_color);
+            RECT danger_title{detail_x,S(390),right,S(414)};
+            DrawTextW(dc,L"撤销设备访问权限",-1,&danger_title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+            SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
+            SetTextColor(dc,state.muted_color);
+            RECT danger_text{detail_x,S(416),right-S(138),S(476)};
+            DrawTextW(dc,L"解绑后，该手机必须重新扫码并在电脑上确认。",-1,&danger_text,DT_LEFT|DT_TOP|DT_WORDBREAK);
         }
     }
     SetViewportOrgEx(dc, previous_origin.x, previous_origin.y, nullptr);
@@ -1829,6 +1922,9 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     const bool project_types = page == SettingsPage::ProjectTypes;
     const bool groups = page == SettingsPage::Groups;
     const bool devices = page == SettingsPage::Devices;
+    state.device_hover_row=-1;
+    if(state.list)SendMessageW(state.list,LB_SETITEMHEIGHT,0,
+        DpiScale(state.window,devices?64:(project_types?52:44)));
     auto visible = [](HWND control, bool show) {
         if (control) ShowWindow(control, show ? SW_SHOW : SW_HIDE);
     };
@@ -1875,6 +1971,7 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
         ReadSelection(state);
     }else if(devices){
         RefreshList(state);
+        ReadSelection(state);
     }
     LayoutSettingsContent(state);
     InvalidateRect(state.settings_appearance, nullptr, FALSE);
@@ -1883,6 +1980,7 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     InvalidateRect(state.settings_groups, nullptr, FALSE);
     InvalidateRect(state.settings_devices, nullptr, FALSE);
     InvalidateRect(state.content, nullptr, FALSE);
+    state.list_scrollbar.Sync();
 }
 
 LRESULT CALLBACK SettingsContentProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -1972,7 +2070,9 @@ void RefreshList(State& state) {
             if (row != LB_ERR) SendMessageW(state.list, LB_SETITEMDATA, row,
                                              static_cast<LPARAM>(&value - state.types_data.data()));
         }
-    } else if (state.mode == ManagementMode::Devices) {
+    } else if (state.mode == ManagementMode::Devices ||
+               (state.mode==ManagementMode::Settings&&
+                state.settings_page==SettingsPage::Devices)) {
         state.devices = state.store->LoadDevices(true);
         for (const auto& value : state.devices) {
             std::wstring text = value.name;
@@ -1985,12 +2085,17 @@ void RefreshList(State& state) {
     if (SendMessageW(state.list, LB_GETCOUNT, 0, 0) > 0) SendMessageW(state.list, LB_SETCURSEL, 0, 0);
     if(state.bind_empty&&state.mode==ManagementMode::Settings&&state.settings_page==SettingsPage::Devices)
         ShowWindow(state.bind_empty,state.devices.empty()?SW_SHOW:SW_HIDE);
+    state.list_scrollbar.Sync();
 }
 
 void ReadSelection(State& state) {
     if (!state.list) return;
     LRESULT row = SendMessageW(state.list, LB_GETCURSEL, 0, 0);
-    if (row == LB_ERR) return;
+    if (row == LB_ERR) {
+        if(state.mode==ManagementMode::Settings&&state.settings_page==SettingsPage::Devices&&state.unbind)
+            EnableWindow(state.unbind,FALSE);
+        return;
+    }
     const auto index = static_cast<size_t>(SendMessageW(state.list, LB_GETITEMDATA, row, 0));
     if (IsSettingsProjectTypes(state) && index < state.types_data.size()) {
         SetField(state.name, state.types_data[index].name);
@@ -2002,6 +2107,8 @@ void ReadSelection(State& state) {
     if (IsSettingsGroups(state) && index < state.groups.size()) {
         SetField(state.name, state.groups[index].name);
     }
+    if(state.mode==ManagementMode::Settings&&state.settings_page==SettingsPage::Devices&&state.unbind)
+        EnableWindow(state.unbind,index<state.devices.size()&&state.devices[index].active);
 }
 
 bool SelectedIndex(HWND list, size_t& index) {
@@ -2144,7 +2251,7 @@ void CreateControls(State& state) {
                              reinterpret_cast<WPARAM>(state.settings_content_font), TRUE);
         }
         state.list = CreateWindowExW(0, L"LISTBOX", nullptr,
-                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
+                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                          LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
                                          LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
                                      0, 0, 1, 1, state.content,
@@ -2153,6 +2260,15 @@ void CreateControls(State& state) {
         SendMessageW(state.list, WM_SETFONT,
                      reinterpret_cast<WPARAM>(state.settings_content_font ?
                                                    state.settings_content_font : state.font), TRUE);
+        state.list_scrollbar.Attach(state.list,[&state]{
+            RECT client{};GetClientRect(state.list,&client);
+            const int item_height=std::max(1,static_cast<int>(SendMessageW(state.list,LB_GETITEMHEIGHT,0,0)));
+            return OverlayScrollMetrics{
+                static_cast<int>(SendMessageW(state.list,LB_GETCOUNT,0,0)),
+                std::max(1,static_cast<int>(client.bottom-client.top)/item_height),
+                static_cast<int>(SendMessageW(state.list,LB_GETTOPINDEX,0,0))};
+        },[&state](int position){SendMessageW(state.list,LB_SETTOPINDEX,position,0);});
+        state.list_scrollbar.SetTheme(state.palette,state.palette.list_surface);
         state.add = MakeButton(state, L"新增类型", kAdd, state.content);
         state.remove = MakeButton(state, L"删除", kDelete, state.content);
         state.select = MakeButton(state,L"绑定手机",kSelect,state.content);
@@ -2305,7 +2421,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         if (measure && measure->CtlID == kList) {
             measure->itemHeight = DpiScale(h,
                 (state->mode==ManagementMode::Devices||
-                 (state->mode==ManagementMode::Settings&&state->settings_page==SettingsPage::Devices))?58:
+                 (state->mode==ManagementMode::Settings&&state->settings_page==SettingsPage::Devices))?64:
                 (IsSettingsProjectTypes(*state)?52:44));
             return TRUE;
         }
@@ -2384,6 +2500,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                     ShowError(h,L"解绑失败");
                 }else{
                     RefreshList(*state);
+                    ReadSelection(*state);
                     InvalidateRect(state->content,nullptr,FALSE);
                 }
                 return 0;
@@ -2704,6 +2821,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         return 0;
     case WM_DESTROY:
         KillTimer(h,kDevicePresenceTimerId);
+        state->list_scrollbar.Detach();
         state->content_scrollbar.Detach();
         return 0;
     }
