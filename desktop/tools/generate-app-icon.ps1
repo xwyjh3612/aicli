@@ -218,10 +218,10 @@ function New-OverlayMaster {
             $trackPen.StartCap = [Drawing.Drawing2D.LineCap]::Round
             $trackPen.EndCap = [Drawing.Drawing2D.LineCap]::Round
             $graphics.CompositingMode = [Drawing.Drawing2D.CompositingMode]::SourceOver
-            $graphics.DrawLine($trackPen, 48.0, 196.0, 240.0, 196.0)
+            $graphics.DrawLine($trackPen, 71.0, 196.0, 263.0, 196.0)
         } finally { $trackPen.Dispose() }
 
-        $dotCenters = @(68.0, 144.0, 220.0)
+        $dotCenters = @(91.0, 167.0, 243.0)
         $dotColors = @(
             @(103, 232, 249),
             @(100, 199, 250),
