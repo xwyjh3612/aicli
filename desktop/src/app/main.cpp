@@ -185,7 +185,7 @@ HWND g_detail_title{}, g_detail_subtitle{}, g_detail_folder_label{}, g_detail_fo
      g_detail_tooltip{};
 HICON g_app_icon_large{},g_app_icon_small{};
 WNDPROC g_button_proc{}; HWND g_hover_button{};
-HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_header{}, g_font_header_icon{}, g_font_search{}, g_font_git{}, g_font_sidebar_title{}, g_font_project_list{}, g_font_modal_title{}, g_font_modal_subtitle{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
+HFONT g_font{}, g_font_medium{}, g_font_small{}, g_font_header{}, g_font_header_icon{}, g_font_search{}, g_font_git{}, g_font_sidebar_title{}, g_font_project_list{}, g_font_modal_title{}, g_font_modal_subtitle{}, g_font_empty_state_icon{}, g_icon_font{}; XamlIslandAdapter g_island; WinRtComponentRegistry g_components;
 HFONT g_font_project_heading{},g_font_monospace{};
 aicli::DataStore g_store;
 aicli::agent::RemoteAgent g_remote_agent;
@@ -224,6 +224,7 @@ RECT g_binding_panel{};
 RECT g_project_panel{};
 RECT g_d_name_rect{}, g_d_note_rect{}, g_d_type_rect{}, g_d_group_rect{}, g_d_folder_rect{}, g_d_command_rect{};
 RECT g_prestart_panel{},g_prestart_folder_surface{},g_prestart_command_surface{},g_prestart_note_surface{};
+RECT g_empty_state_icon{};
 aicli::ui::WindowChrome g_window_chrome({ID_MINIMIZE,ID_MAXIMIZE,ID_CLOSE});
 aicli::ui::FooterStatusController g_footer_status;
 aicli::ui::TaskbarWorkingIndicator g_taskbar_working_indicator;
@@ -428,11 +429,11 @@ void ApplyMainFontsToControls() {
 }
 
 void RecreateMainFontsForDpi() {
-    const std::array<HFONT, 14> previous{
+    const std::array<HFONT, 15> previous{
         g_font, g_font_medium, g_font_small, g_font_header, g_font_header_icon, g_font_search, g_font_git,
         g_font_sidebar_title, g_font_project_list, g_font_modal_title,
         g_font_modal_subtitle, g_font_project_heading, g_font_monospace,
-        g_icon_font};
+        g_font_empty_state_icon, g_icon_font};
 
     g_font = CreateMainFont(15, FW_NORMAL, L"Segoe UI");
     g_font_medium = CreateMainFont(17, FW_SEMIBOLD, L"Segoe UI");
@@ -447,6 +448,7 @@ void RecreateMainFontsForDpi() {
     g_font_modal_subtitle = CreateMainFont(14, FW_NORMAL, L"Segoe UI");
     g_font_project_heading = CreateMainFont(22, FW_SEMIBOLD, L"Segoe UI");
     g_font_monospace = CreateMainFont(14, FW_NORMAL, L"Cascadia Mono", FIXED_PITCH);
+    g_font_empty_state_icon = CreateMainFont(32, FW_NORMAL, L"Segoe MDL2 Assets");
     g_icon_font = CreateMainFont(16, FW_NORMAL, L"Segoe MDL2 Assets");
 
     ApplyMainFontsToControls();
@@ -604,6 +606,10 @@ int SelectedProjectIndex(){
     const LRESULT row=SendMessageW(g_list,LB_GETCURSEL,0,0);
     if(row==LB_ERR||row<0||row>=static_cast<LRESULT>(g_visible_project_indices.size()))return -1;
     return g_visible_project_indices[static_cast<size_t>(row)];
+}
+bool NoProjectSelection(){
+    const int index=SelectedProjectIndex();
+    return g_projects.empty()||index<0||index>=static_cast<int>(g_projects.size());
 }
 void RefreshGitStatus(bool force_redraw=false){
     const int index=SelectedProjectIndex();
@@ -818,31 +824,55 @@ void Layout(){
     const bool showingTerminal=selectedRunning;
     const bool showingNative=showingTerminal&&g_island.Active();
     const bool emptyProjects=g_projects.empty();
+    const bool noProjectSelection=NoProjectSelection();
+    const RECT previousEmptyStateIcon=g_empty_state_icon;
     if(g_detail_title){
         LONG_PTR titleStyle=GetWindowLongPtrW(g_detail_title,GWL_STYLE);
-        const LONG_PTR alignment=emptyProjects?SS_CENTER:SS_LEFT;
+        const LONG_PTR alignment=noProjectSelection?SS_CENTER:SS_LEFT;
         const LONG_PTR nextStyle=(titleStyle&~SS_TYPEMASK)|alignment;
         if(nextStyle!=titleStyle){
             SetWindowLongPtrW(g_detail_title,GWL_STYLE,nextStyle);
             InvalidateRect(g_detail_title,nullptr,FALSE);
         }
     }
+    if(g_detail_subtitle){
+        LONG_PTR subtitleStyle=GetWindowLongPtrW(g_detail_subtitle,GWL_STYLE);
+        const LONG_PTR alignment=noProjectSelection?SS_CENTER:SS_LEFT;
+        const LONG_PTR nextStyle=(subtitleStyle&~SS_TYPEMASK)|alignment;
+        if(nextStyle!=subtitleStyle){
+            SetWindowLongPtrW(g_detail_subtitle,GWL_STYLE,nextStyle);
+            InvalidateRect(g_detail_subtitle,nullptr,FALSE);
+        }
+    }
     SetMainChildVisible(g_detail_title,!showingTerminal);
-    for(HWND control:{g_detail_subtitle,g_detail_folder_label,g_detail_folder,
+    SetMainChildVisible(g_detail_subtitle,!showingTerminal);
+    for(HWND control:{g_detail_folder_label,g_detail_folder,
                       g_detail_command_label,g_detail_command,g_detail_note_label,
                       g_detail_note,g_detail_state})
-        SetMainChildVisible(control,!showingTerminal&&!emptyProjects);
-    SetMainChildVisible(g_start_project,!showingTerminal&&!emptyProjects);
-    SetMainChildVisible(g_edit_project,!showingTerminal&&!emptyProjects);
-    SetMainChildVisible(g_open_project_folder,!showingTerminal&&!emptyProjects);
-    if(emptyProjects){
+        SetMainChildVisible(control,!showingTerminal&&!noProjectSelection);
+    SetMainChildVisible(g_start_project,!showingTerminal&&!noProjectSelection);
+    SetMainChildVisible(g_edit_project,!showingTerminal&&!noProjectSelection);
+    SetMainChildVisible(g_open_project_folder,!showingTerminal&&!noProjectSelection);
+    if(noProjectSelection){
         SetRectEmpty(&g_prestart_panel);SetRectEmpty(&g_prestart_folder_surface);
         SetRectEmpty(&g_prestart_command_surface);SetRectEmpty(&g_prestart_note_surface);
-        SetText(g_detail_title,L"请先添加项目");
-        MoveMainChild(g_detail_title,terminal.left+S(28),
-                      terminal.top+(terminal.bottom-terminal.top-S(32))/2,
+        const int emptyHeight=S(148);
+        const int emptyTop=terminal.top+std::max(
+            S(22),static_cast<int>((terminal.bottom-terminal.top-emptyHeight)/2));
+        const int iconWidth=S(48);
+        const int iconLeft=terminal.left+
+            (terminal.right-terminal.left-iconWidth)/2;
+        g_empty_state_icon={iconLeft,emptyTop,iconLeft+iconWidth,emptyTop+S(42)};
+        SetText(g_detail_title,emptyProjects?L"还没有项目":L"该分组暂无项目");
+        SetText(g_detail_subtitle,emptyProjects
+            ?L"创建第一个项目后，它会显示在这里"
+            :L"切换其他分组，或点击左上角 + 新建项目");
+        MoveMainChild(g_detail_title,terminal.left+S(28),emptyTop+S(50),
                       terminal.right-terminal.left-S(56),S(32));
+        MoveMainChild(g_detail_subtitle,terminal.left+S(28),emptyTop+S(91),
+                      terminal.right-terminal.left-S(56),S(38));
     }else{
+        SetRectEmpty(&g_empty_state_icon);
         const int workspaceWidth=terminal.right-terminal.left;
         const int panelWidth=std::min(S(620),std::max(S(480),workspaceWidth-S(72)));
         const int panelHeight=S(466);
@@ -869,6 +899,12 @@ void Layout(){
         MoveMainChild(g_start_project,actionsLeft,panelTop+S(402),S(132),S(38));
         MoveMainChild(g_edit_project,actionsLeft+S(144),panelTop+S(403),S(38),S(36));
         MoveMainChild(g_open_project_folder,actionsLeft+S(192),panelTop+S(403),S(38),S(36));
+    }
+    if(!EqualRect(&previousEmptyStateIcon,&g_empty_state_icon)){
+        if(!IsRectEmpty(&previousEmptyStateIcon))
+            InvalidateRect(g_hwnd,&previousEmptyStateIcon,FALSE);
+        if(!IsRectEmpty(&g_empty_state_icon))
+            InvalidateRect(g_hwnd,&g_empty_state_icon,FALSE);
     }
     // The central surface is always the real Windows Terminal control.  Do
     // not create a second EDIT-based command line or a text-output fallback:
@@ -1548,6 +1584,14 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         aicli::ui::PaintMainWindow(
             target_dc,r,ps.rcPaint,h,g_search,g_sidebar_title,g_list,g_app_icon_large,g_font_medium,g_font_small,g_font_git,SidebarBackground(),
             metrics,g_theme,g_window_chrome,g_footer_status);
+        if(!IsRectEmpty(&g_empty_state_icon)){
+            SetBkMode(target_dc,TRANSPARENT);
+            SetTextColor(target_dc,accent);
+            SelectObject(target_dc,g_font_empty_state_icon?
+                         g_font_empty_state_icon:g_icon_font);
+            DrawTextW(target_dc,L"\xE8B7",-1,&g_empty_state_icon,
+                      DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+        }
         if(!IsRectEmpty(&g_prestart_panel)){
             const COLORREF surface=g_light_theme?RGB(239,243,248):RGB(18,21,27);
             for(const RECT& rect:{g_prestart_folder_surface,g_prestart_command_surface,g_prestart_note_surface}){
@@ -1557,7 +1601,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         EndPaint(h,&ps);
         return 0;
     }
-    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_header)DeleteObject(g_font_header);if(g_font_header_icon)DeleteObject(g_font_header_icon);if(g_font_search)DeleteObject(g_font_search);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_search_brush){DeleteObject(g_search_brush);g_search_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_header)DeleteObject(g_font_header);if(g_font_header_icon)DeleteObject(g_font_header_icon);if(g_font_search)DeleteObject(g_font_search);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_font_empty_state_icon)DeleteObject(g_font_empty_state_icon);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_search_brush){DeleteObject(g_search_brush);g_search_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
     if(m==WM_NCDESTROY&&g_font_git){
         DeleteObject(g_font_git);
         g_font_git=nullptr;

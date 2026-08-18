@@ -131,6 +131,13 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
             return 0;
         }
         if(!g_project_dragging)g_project_drag_candidate=-1;
+    }else if(m==WM_KEYDOWN&&w==VK_DELETE){
+        if(SendMessageW(h,LB_GETCURSEL,0,0)!=LB_ERR){
+            SendMessageW(GetParent(h),WM_COMMAND,
+                         MAKEWPARAM(ID_CTX_DELETE,0),
+                         reinterpret_cast<LPARAM>(h));
+            return 0;
+        }
     }else if(m==WM_MOUSEMOVE){
         POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
         if(aicli::ui::UpdateProjectListScrollbarDrag(h,point))return 0;
