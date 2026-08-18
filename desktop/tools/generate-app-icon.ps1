@@ -197,22 +197,46 @@ function Save-ScaledPng {
 }
 
 function New-OverlayMaster {
-    param([Drawing.Bitmap]$Master)
+    param([int]$WorkingStep = 0)
 
-    $size = [int]($Master.Width / 2)
+    # The taskbar overlay is placed over the icon's lower-right quadrant.
+    # Keep every pixel outside the cursor rail transparent so Explorer cannot
+    # paint the crop beyond the app icon bounds.
+    $size = 512
     $bitmap = [Drawing.Bitmap]::new($size, $size, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
     try {
         $graphics.Clear([Drawing.Color]::Transparent)
         $graphics.CompositingMode = [Drawing.Drawing2D.CompositingMode]::SourceCopy
         $graphics.CompositingQuality = [Drawing.Drawing2D.CompositingQuality]::HighQuality
-        $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-        $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::HighQuality
+        $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
         $graphics.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-        $source = [Drawing.Rectangle]::new($size, $size, $size, $size)
-        $destination = [Drawing.Rectangle]::new(0, 0, $size, $size)
-        $graphics.DrawImage($Master, $destination, $source,
-                            [Drawing.GraphicsUnit]::Pixel)
+
+        $trackPen = [Drawing.Pen]::new(
+            [Drawing.Color]::FromArgb(255, 20, 32, 68), 84.0)
+        try {
+            $trackPen.StartCap = [Drawing.Drawing2D.LineCap]::Round
+            $trackPen.EndCap = [Drawing.Drawing2D.LineCap]::Round
+            $graphics.CompositingMode = [Drawing.Drawing2D.CompositingMode]::SourceOver
+            $graphics.DrawLine($trackPen, 48.0, 196.0, 240.0, 196.0)
+        } finally { $trackPen.Dispose() }
+
+        $dotCenters = @(68.0, 144.0, 220.0)
+        $dotColors = @(
+            @(103, 232, 249),
+            @(100, 199, 250),
+            @(96, 165, 250)
+        )
+        for ($dot = 0; $dot -lt $dotCenters.Count; $dot++) {
+            $alpha = if ($dot -le $WorkingStep) { 255 } else { 72 }
+            $color = $dotColors[$dot]
+            $brush = [Drawing.SolidBrush]::new(
+                [Drawing.Color]::FromArgb($alpha, $color[0], $color[1], $color[2]))
+            try {
+                $graphics.FillEllipse($brush, $dotCenters[$dot] - 32.0,
+                                      164.0, 64.0, 64.0)
+            } finally { $brush.Dispose() }
+        }
     } finally {
         $graphics.Dispose()
     }
@@ -277,22 +301,17 @@ $workingTemp = Join-Path ([IO.Path]::GetTempPath()) ("aicli-working-icon-" + [Gu
 New-Item -ItemType Directory -Force -Path $workingTemp | Out-Null
 try {
     for ($step = 0; $step -lt 3; $step++) {
-        $workingMaster = New-AppIconMaster -WorkingStep $step
+        $overlayMaster = New-OverlayMaster -WorkingStep $step
         try {
-            $overlayMaster = New-OverlayMaster -Master $workingMaster
-            try {
-                $workingPngPaths = foreach ($size in $sizes) {
-                    $path = Join-Path $workingTemp "working-$step-$size.png"
-                    Save-ScaledPng -Master $overlayMaster -Size $size -Path $path
-                    $path
-                }
-                Write-PngIcon -PngPaths $workingPngPaths -Sizes $sizes `
-                              -OutputPath (Join-Path $outputFull "aicli-working-overlay-$($step + 1).ico")
-            } finally {
-                $overlayMaster.Dispose()
+            $workingPngPaths = foreach ($size in $sizes) {
+                $path = Join-Path $workingTemp "working-$step-$size.png"
+                Save-ScaledPng -Master $overlayMaster -Size $size -Path $path
+                $path
             }
+            Write-PngIcon -PngPaths $workingPngPaths -Sizes $sizes `
+                          -OutputPath (Join-Path $outputFull "aicli-working-overlay-$($step + 1).ico")
         } finally {
-            $workingMaster.Dispose()
+            $overlayMaster.Dispose()
         }
     }
 } finally {
