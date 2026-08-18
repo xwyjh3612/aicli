@@ -65,7 +65,7 @@ int wmain(int argc, wchar_t** argv) {
                     L"Codex builtin type and command");
         ok &= Check(claude && claude->builtin &&
                         claude->default_command ==
-                            L"claude --dangerously-skip-permissions --continue",
+                            L"claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions",
                     L"Claude builtin type and command");
         ok &= Check(codex && store.DefaultProjectTypeId() == codex->id,
                     L"Codex is the fallback default project type");

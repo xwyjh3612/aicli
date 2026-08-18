@@ -64,6 +64,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /** Native Android companion for the desktop-owned AI CLI sessions. */
@@ -86,6 +87,7 @@ public final class MainActivity extends AppCompatActivity {
     private AicliClient client;
     private ConversationAdapter conversationAdapter;
     private String selectedGroup = ALL_GROUPS;
+    private String conversationSearchQuery = "";
     private String selectedConversationId;
     private String pendingConversationId;
     private AicliClient.Conversation selectedConversation;
@@ -114,6 +116,8 @@ public final class MainActivity extends AppCompatActivity {
     private ImageView remoteCurrentRouteIcon;
     private TextView drawerConnectionStatus;
     private TextView drawerGroupLabel;
+    private EditText conversationSearchInput;
+    private View conversationSearchEmpty;
     private TerminalView terminalView;
     private TerminalTextRenderer terminalRenderer;
     private View terminalKeyBar;
@@ -205,6 +209,8 @@ public final class MainActivity extends AppCompatActivity {
         remoteCurrentRouteIcon = findViewById(R.id.remoteCurrentRouteIcon);
         drawerConnectionStatus = findViewById(R.id.drawerConnectionStatus);
         drawerGroupLabel = findViewById(R.id.drawerGroupLabel);
+        conversationSearchInput = findViewById(R.id.conversationSearchInput);
+        conversationSearchEmpty = findViewById(R.id.conversationSearchEmpty);
         terminalView = findViewById(R.id.terminalView);
         terminalRenderer = new TerminalTextRenderer(terminalView);
         terminalView.setHistoryLoadListener(this::loadOlderTerminalHistory);
@@ -228,6 +234,15 @@ public final class MainActivity extends AppCompatActivity {
         conversationList.setLayoutManager(new LinearLayoutManager(this));
         conversationAdapter = new ConversationAdapter(this::selectConversation);
         conversationList.setAdapter(conversationAdapter);
+
+        conversationSearchInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) {
+                conversationSearchQuery = value == null ? "" : value.toString().trim();
+                renderSelectedGroup(false);
+            }
+            @Override public void afterTextChanged(Editable value) {}
+        });
 
         groupSelector.setOnItemClickListener((parent, view, position, id) -> {
             if (rebuildingGroups || position < 0 || position >= displayedGroups.size()) return;
@@ -762,24 +777,42 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void renderSelectedGroup(boolean selectFirst) {
-        List<AicliClient.Conversation> filtered = new ArrayList<>();
+        List<AicliClient.Conversation> groupItems = new ArrayList<>();
         for (AicliClient.Conversation conversation : allConversations) {
             String group = conversation.group.isEmpty() ? "默认分组" : conversation.group;
             if (ALL_GROUPS.equals(selectedGroup) ||
                     (RUNNING_GROUP.equals(selectedGroup) && isRunning(conversation)) ||
-                    selectedGroup.equals(group)) filtered.add(conversation);
+                    selectedGroup.equals(group)) groupItems.add(conversation);
+        }
+        List<AicliClient.Conversation> filtered = new ArrayList<>();
+        for (AicliClient.Conversation conversation : groupItems) {
+            if (matchesConversationSearch(conversation)) filtered.add(conversation);
         }
         conversationAdapter.replace(filtered);
         String selectedGroupLabel = ALL_GROUPS.equals(selectedGroup) ? "全部分组"
                 : RUNNING_GROUP.equals(selectedGroup) ? "正在运行" : selectedGroup;
-        drawerGroupLabel.setText(selectedGroupLabel + " · " + filtered.size() + " 个项目");
-        if (filtered.isEmpty()) {
+        boolean hasSearch = !conversationSearchQuery.isEmpty();
+        drawerGroupLabel.setText(hasSearch
+                ? selectedGroupLabel + " · 找到 " + filtered.size() + " 个项目"
+                : selectedGroupLabel + " · " + filtered.size() + " 个项目");
+        boolean searchHasNoMatches = hasSearch && !groupItems.isEmpty() && filtered.isEmpty();
+        conversationSearchEmpty.setVisibility(searchHasNoMatches ? View.VISIBLE : View.GONE);
+        conversationList.setVisibility(searchHasNoMatches ? View.GONE : View.VISIBLE);
+        if (searchHasNoMatches) {
+            conversationAdapter.select(selectedConversationId);
+            return;
+        }
+        if (groupItems.isEmpty()) {
             pendingConversationId = null;
             selectedConversationId = null;
             selectedConversation = null;
             conversationAdapter.select(null);
             hideConversation();
             showEmptyState("这个分组还没有项目", "点击项目列表右上角的 +，即可在当前电脑上创建项目。");
+            return;
+        }
+        if (hasSearch) {
+            conversationAdapter.select(selectedConversationId);
             return;
         }
 
@@ -808,6 +841,20 @@ public final class MainActivity extends AppCompatActivity {
             updateProjectControls(selected);
             hideEmptyState();
         }
+    }
+
+    private boolean matchesConversationSearch(AicliClient.Conversation conversation) {
+        if (conversationSearchQuery.isEmpty()) return true;
+        String query = conversationSearchQuery.toLowerCase(Locale.ROOT);
+        return containsSearchText(conversation.name, query)
+                || containsSearchText(conversation.folder, query)
+                || containsSearchText(conversation.type, query)
+                || containsSearchText(conversation.provider, query)
+                || containsSearchText(conversation.group, query);
+    }
+
+    private static boolean containsSearchText(String value, String query) {
+        return value != null && value.toLowerCase(Locale.ROOT).contains(query);
     }
 
     private void selectConversation(AicliClient.Conversation conversation) {
@@ -1688,6 +1735,8 @@ public final class MainActivity extends AppCompatActivity {
         selectedConversation = null;
         lastEventId = 0L;
         allConversations.clear();
+        conversationSearchQuery = "";
+        if (conversationSearchInput != null) conversationSearchInput.setText("");
         displayedGroups.clear();
         conversationAdapter.replace(new ArrayList<>());
         conversationAdapter.select(null);

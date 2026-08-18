@@ -39,6 +39,9 @@ struct RoundedSelectPopupOptions {
     int maximum_width{300};
     bool match_anchor_width{};
     bool use_screen_anchor{};
+    // Intended for menu-style child popups. The popup stays open while the
+    // pointer is over the anchor, the popup, or the short bridge between them.
+    bool dismiss_when_pointer_leaves{};
     RECT screen_anchor{};
     RoundedPopupPlacement placement{RoundedPopupPlacement::Below};
     std::function<void(bool)> open_state_changed;

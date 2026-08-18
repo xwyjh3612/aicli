@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -29,6 +30,10 @@ struct RoundedContextMenuOptions {
     int dpi{96};
     int width{224};
     int row_height{36};
+    // Opens a submenu for the hovered/clicked entry. Returning true means
+    // the submenu handled the action and the parent menu should close;
+    // returning false keeps the parent menu available.
+    std::function<bool(int, const RECT&)> submenu_handler;
 };
 
 struct RoundedContextMenuResult {

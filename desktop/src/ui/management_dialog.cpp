@@ -2109,7 +2109,11 @@ void LayoutSettingsContent(State& state) {
         }
         button(state.select,right-S(122),80,S(122),36);
         button(state.unbind,right-S(122),444,S(122),36);
-        button(state.bind_empty,x+list_width+S(62),270,S(158),36);
+        const int detail_x=x+list_width+S(26);
+        const int bind_width=S(158);
+        const int bind_left=detail_x+
+            std::max(0,(right-detail_x-bind_width)/2);
+        button(state.bind_empty,bind_left,270,bind_width,36);
     }
     state.list_scrollbar.Layout();
     state.content_scrollbar.Layout();
@@ -2328,6 +2332,9 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     const bool project_types = page == SettingsPage::ProjectTypes;
     const bool groups = page == SettingsPage::Groups;
     const bool devices = page == SettingsPage::Devices;
+    const bool has_active_device = std::any_of(
+        state.devices.begin(), state.devices.end(),
+        [](const DeviceRecord& device) { return device.active; });
     state.device_hover_row=-1;
     if(state.list)SendMessageW(state.list,LB_SETITEMHEIGHT,0,
         DpiScale(state.window,devices?64:(project_types?52:44)));
@@ -2362,7 +2369,7 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     visible(state.add, project_types || groups);
     visible(state.remove, project_types || groups);
     visible(state.select,devices);
-    visible(state.unbind,devices);
+    visible(state.unbind,devices&&has_active_device);
     visible(state.bind_empty,devices&&state.devices.empty());
     if (state.save) EnableWindow(state.save, TRUE);
     if (state.remove) EnableWindow(state.remove, TRUE);
@@ -2514,8 +2521,14 @@ void RefreshList(State& state) {
         }
     }
     if (SendMessageW(state.list, LB_GETCOUNT, 0, 0) > 0) SendMessageW(state.list, LB_SETCURSEL, 0, 0);
-    if(state.bind_empty&&state.mode==ManagementMode::Settings&&state.settings_page==SettingsPage::Devices)
-        ShowWindow(state.bind_empty,state.devices.empty()?SW_SHOW:SW_HIDE);
+    if(state.mode==ManagementMode::Settings&&state.settings_page==SettingsPage::Devices){
+        const bool has_devices=!state.devices.empty();
+        const bool has_active_device=std::any_of(
+            state.devices.begin(),state.devices.end(),
+            [](const DeviceRecord& device){return device.active;});
+        if(state.bind_empty)ShowWindow(state.bind_empty,has_devices?SW_HIDE:SW_SHOW);
+        if(state.unbind)ShowWindow(state.unbind,has_active_device?SW_SHOW:SW_HIDE);
+    }
     state.list_scrollbar.Sync();
 }
 

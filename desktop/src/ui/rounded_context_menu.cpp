@@ -31,6 +31,7 @@ struct MenuState {
     int keyboard_index{-1};
     bool closing{};
     bool done{};
+    bool submenu_open{};
     std::optional<RoundedContextMenuResult> result;
 
     int EntryTop(int index) const {
@@ -95,6 +96,50 @@ void Finish(MenuState* state, int index = -1) {
     }
     if (GetCapture() == state->window) ReleaseCapture();
     if (state->window && IsWindow(state->window)) DestroyWindow(state->window);
+}
+
+void OpenSubmenu(MenuState* state, int index) {
+    if (!state || state->closing || state->submenu_open || !state->window ||
+        index < 0 || index >= static_cast<int>(state->entries.size()) ||
+        !state->entries[index].enabled || !state->entries[index].submenu ||
+        !state->options.submenu_handler) {
+        return;
+    }
+
+    state->hover_index = index;
+    state->keyboard_index = index;
+    InvalidateRect(state->window, nullptr, FALSE);
+    UpdateWindow(state->window);
+
+    RECT item = state->EntryRect(index);
+    MapWindowPoints(state->window, HWND_DESKTOP,
+                    reinterpret_cast<POINT*>(&item), 2);
+    state->submenu_open = true;
+    const bool accepted = state->options.submenu_handler(
+        state->entries[index].command, item);
+    state->submenu_open = false;
+
+    if (state->closing || !state->window || !IsWindow(state->window)) return;
+    if (accepted) {
+        Finish(state);
+        return;
+    }
+
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    RECT parent{};
+    GetWindowRect(state->window, &parent);
+    if (!PtInRect(&parent, cursor)) {
+        Finish(state);
+        return;
+    }
+    SetCapture(state->window);
+    ScreenToClient(state->window, &cursor);
+    const int next = state->HitTest(cursor);
+    state->hover_index = next;
+    if (next >= 0 && state->entries[next].enabled)
+        state->keyboard_index = next;
+    InvalidateRect(state->window, nullptr, FALSE);
 }
 
 void PaintMenu(HWND window, MenuState* state) {
@@ -214,7 +259,12 @@ LRESULT CALLBACK MenuWindowProc(HWND window, UINT message,
             state->hover_index = next;
             if (next >= 0 && state->entries[next].enabled)
                 state->keyboard_index = next;
-            InvalidateRect(window, nullptr, FALSE);
+            if (next >= 0 && state->entries[next].enabled &&
+                state->entries[next].submenu && !state->submenu_open) {
+                OpenSubmenu(state, next);
+            }
+            if (state->window && IsWindow(state->window))
+                InvalidateRect(window, nullptr, FALSE);
         }
         return 0;
     }
@@ -222,15 +272,21 @@ LRESULT CALLBACK MenuWindowProc(HWND window, UINT message,
         if (!state) return 0;
         const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         const int hit = state->HitTest(point);
+        if (hit >= 0 && state->entries[hit].submenu &&
+            state->entries[hit].enabled && state->options.submenu_handler) {
+            OpenSubmenu(state, hit);
+            return 0;
+        }
         Finish(state, hit);
         return 0;
     }
     case WM_RBUTTONUP:
     case WM_CANCELMODE:
+        if (state && state->submenu_open) return 0;
         Finish(state);
         return 0;
     case WM_CAPTURECHANGED:
-        if (state && !state->closing &&
+        if (state && !state->closing && !state->submenu_open &&
             reinterpret_cast<HWND>(lparam) != window) Finish(state);
         return 0;
     case WM_DESTROY:
@@ -322,6 +378,15 @@ std::optional<RoundedContextMenuResult> ShowRoundedContextMenu(
                     state.keyboard_index, direction);
                 state.hover_index = state.keyboard_index;
                 InvalidateRect(state.window, nullptr, FALSE);
+                continue;
+            }
+            if ((message.wParam == VK_RETURN || message.wParam == VK_SPACE ||
+                 message.wParam == VK_RIGHT) &&
+                state.keyboard_index >= 0 &&
+                state.keyboard_index < static_cast<int>(state.entries.size()) &&
+                state.entries[state.keyboard_index].submenu &&
+                state.options.submenu_handler) {
+                OpenSubmenu(&state, state.keyboard_index);
                 continue;
             }
             if (message.wParam == VK_RETURN || message.wParam == VK_SPACE ||

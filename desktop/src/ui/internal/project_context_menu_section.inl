@@ -3,7 +3,7 @@
 // object-owned.
 
 void OpenProjectFolder(){const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;const auto& folder=g_projects[index].folder;if(folder.empty()){MessageBoxW(g_hwnd,L"当前项目还没有设置项目文件夹。",L"打开项目文件夹",MB_OK|MB_ICONINFORMATION);return;}if((INT_PTR)ShellExecuteW(g_hwnd,L"open",folder.c_str(),nullptr,nullptr,SW_SHOWNORMAL)<=32)MessageBoxW(g_hwnd,L"无法打开项目文件夹。",L"打开项目文件夹",MB_OK|MB_ICONWARNING);}
-void OpenProjectCommandPrompt(){const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;std::wstring error;if(!aicli::app::OpenCommandPromptAt(g_projects[index].folder,&error))MessageBoxW(g_hwnd,error.c_str(),L"用 CMD 打开项目目录",MB_OK|MB_ICONWARNING);}
+void OpenProjectPowerShell(){const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;std::wstring error;if(!aicli::app::OpenPowerShellAt(g_projects[index].folder,&error))MessageBoxW(g_hwnd,error.c_str(),L"用 PowerShell 打开项目目录",MB_OK|MB_ICONWARNING);}
 void MoveSelectedProjectToGroup(const std::wstring& group){const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;g_projects[index].group=group;g_store.SaveProject(g_projects[index]);g_group_name=group;g_store.SetSetting(L"last_group",group);RefreshProjectList();SetText(g_status,L"项目已移动到 "+group);Layout();}
 void MoveSelectedProjectToDefaultGroup(){MoveSelectedProjectToGroup(L"默认分组");}
 void CreateGroupFromHeader(){
@@ -36,7 +36,7 @@ void ShowProjectContextMenu(HWND owner,LPARAM position){
     SetForegroundWindow(owner);
     std::vector<aicli::ui::RoundedContextMenuEntry> entries{
         {ID_CTX_OPEN_FOLDER,L"打开项目文件夹",L"\xE8B7"},
-        {ID_CTX_OPEN_CMD,L"用 CMD 打开",L"\xE756"},
+        {ID_CTX_OPEN_CMD,L"用 PowerShell 打开",L"\xE756"},
         {ID_CTX_EDIT,L"编辑项目",L"\xE70F"},
         {ID_CTX_MOVE_DEFAULT,L"移动到分组",L"\xE8B7",true,false,true,true},
         {ID_CTX_RESTART,running||paused?L"重新启动":L"立即开始",running||paused?L"\xE72C":L"\xE768",true,false,true},
@@ -50,12 +50,12 @@ void ShowProjectContextMenu(HWND owner,LPARAM position){
     menu_options.text_font=g_font;
     menu_options.icon_font=g_icon_font?g_icon_font:g_font;
     menu_options.dpi=g_layout_metrics.dpi;
-    auto result=aicli::ui::ShowRoundedContextMenu(menu_options,std::move(entries));
-    if(result&&result->command==ID_CTX_MOVE_DEFAULT){
+    auto open_group_submenu = [&](const RECT& anchor) {
         std::vector<aicli::ui::RoundedSelectEntry> group_entries;
         group_entries.reserve(g_groups.size());
         for(const auto& group:g_groups){
-            group_entries.push_back({group.name,group.name,L"",L"\xE8B7",group.name==g_projects[index].group});
+            group_entries.push_back({group.name,group.name,L"",L"\xE8B7",
+                                     group.name==g_projects[index].group});
         }
         aicli::ui::RoundedSelectPopupOptions group_options;
         group_options.owner=owner;
@@ -65,11 +65,23 @@ void ShowProjectContextMenu(HWND owner,LPARAM position){
         group_options.icon_font=g_icon_font?g_icon_font:g_font;
         group_options.dpi=g_layout_metrics.dpi;
         group_options.use_screen_anchor=true;
-        group_options.screen_anchor=result->item_screen_rect;
+        group_options.dismiss_when_pointer_leaves=true;
+        group_options.screen_anchor=anchor;
         group_options.placement=aicli::ui::RoundedPopupPlacement::Right;
         group_options.minimum_width=190;
-        if(auto group=aicli::ui::ShowRoundedSelectPopup(group_options,std::move(group_entries)))
+        if(auto group=aicli::ui::ShowRoundedSelectPopup(
+               group_options,std::move(group_entries))){
             MoveSelectedProjectToGroup(*group);
+            return true;
+        }
+        return false;
+    };
+    menu_options.submenu_handler = [&](int command, const RECT& anchor) {
+        return command == ID_CTX_MOVE_DEFAULT && open_group_submenu(anchor);
+    };
+    auto result=aicli::ui::ShowRoundedContextMenu(menu_options,std::move(entries));
+    if(result&&result->command==ID_CTX_MOVE_DEFAULT){
+        open_group_submenu(result->item_screen_rect);
     }else if(result){
         SendMessageW(owner,WM_COMMAND,MAKEWPARAM(result->command,0),0);
     }

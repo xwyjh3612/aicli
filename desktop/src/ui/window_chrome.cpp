@@ -166,11 +166,13 @@ void WindowChrome::InvalidateButtons(HWND window) const {
 void WindowChrome::DrawButtons(HDC dc,
                                HWND window,
                                const ThemePalette& theme) const {
-    Gdiplus::Graphics graphics(dc);
-    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     const auto metrics = LayoutMetrics::ForWindow(window);
-    const float scale = static_cast<float>(std::max(1, metrics.dpi)) / 96.0F;
-    const auto s = [scale](float value) { return value * scale; };
+    const int dpi = std::max(96, metrics.dpi);
+    const auto scale = [dpi](int value) {
+        return std::max(1, MulDiv(value, dpi, 96));
+    };
+    const int stroke = dpi >= 144 ? 2 : 1;
+    const int glyph_size = scale(10);
     for (const int id : {ids_.minimize, ids_.maximize, ids_.close}) {
         const RECT rect = ButtonRect(window, id);
         COLORREF fill = Background(theme);
@@ -186,42 +188,58 @@ void WindowChrome::DrawButtons(HDC dc,
                 ? theme.titlebar_close_pressed
                 : theme.titlebar_pressed;
         }
-        Gdiplus::SolidBrush background(SmoothColor(fill));
-        graphics.FillRectangle(
-            &background,
-            static_cast<Gdiplus::REAL>(rect.left),
-            static_cast<Gdiplus::REAL>(rect.top),
-            static_cast<Gdiplus::REAL>(rect.right - rect.left),
-            static_cast<Gdiplus::REAL>(rect.bottom - rect.top));
+        HBRUSH background = CreateSolidBrush(fill);
+        FillRect(dc, &rect, background);
+        DeleteObject(background);
 
         const COLORREF glyph = id == ids_.close && hover
             ? RGB(255, 255, 255)
             : Text(theme);
-        Gdiplus::Pen pen(SmoothColor(glyph), std::max(1.0F, s(1.25F)));
-        pen.SetStartCap(Gdiplus::LineCapSquare);
-        pen.SetEndCap(Gdiplus::LineCapSquare);
-        const float cx = (rect.left + rect.right) / 2.0F;
-        const float cy = (rect.top + rect.bottom) / 2.0F;
+        const int cx = (rect.left + rect.right) / 2;
+        const int cy = (rect.top + rect.bottom) / 2;
+        HBRUSH glyph_brush = CreateSolidBrush(glyph);
+        const auto fill_rect = [&](RECT value) {
+            FillRect(dc, &value, glyph_brush);
+        };
+        const auto outline = [&](int left, int top, int size) {
+            fill_rect({left, top, left + size, top + stroke});
+            fill_rect({left, top + size - stroke, left + size, top + size});
+            fill_rect({left, top + stroke, left + stroke, top + size - stroke});
+            fill_rect({left + size - stroke, top + stroke,
+                       left + size, top + size - stroke});
+        };
+
         if (id == ids_.minimize) {
-            graphics.DrawLine(&pen, cx - s(5.0F), cy + s(1.0F),
-                              cx + s(5.0F), cy + s(1.0F));
+            const int width = glyph_size;
+            fill_rect({cx - width / 2, cy + scale(3),
+                       cx - width / 2 + width, cy + scale(3) + stroke});
         } else if (id == ids_.close) {
-            graphics.DrawLine(&pen, cx - s(4.0F), cy - s(4.0F),
-                              cx + s(4.0F), cy + s(4.0F));
-            graphics.DrawLine(&pen, cx + s(4.0F), cy - s(4.0F),
-                              cx - s(4.0F), cy + s(4.0F));
+            HPEN glyph_pen = CreatePen(PS_SOLID, stroke, glyph);
+            const auto previous_pen = SelectObject(dc, glyph_pen);
+            const int radius = std::max(4, glyph_size / 2);
+            MoveToEx(dc, cx - radius, cy - radius, nullptr);
+            LineTo(dc, cx + radius + 1, cy + radius + 1);
+            MoveToEx(dc, cx + radius, cy - radius, nullptr);
+            LineTo(dc, cx - radius - 1, cy + radius + 1);
+            SelectObject(dc, previous_pen);
+            DeleteObject(glyph_pen);
         } else if (IsZoomed(window)) {
-            graphics.DrawRectangle(&pen, cx - s(3.0F), cy - s(4.0F),
-                                   s(8.0F), s(8.0F));
-            Gdiplus::SolidBrush cover(SmoothColor(fill));
-            graphics.FillRectangle(&cover, cx - s(5.0F), cy - s(2.0F),
-                                   s(8.0F), s(8.0F));
-            graphics.DrawRectangle(&pen, cx - s(5.0F), cy - s(2.0F),
-                                   s(8.0F), s(8.0F));
+            const int size = std::max(scale(8), stroke * 4);
+            const int offset = scale(2);
+            outline(cx - size / 2 + offset, cy - size / 2 - offset, size);
+            // Clear the overlapping lower-left area before drawing the front
+            // square, matching the native restore glyph without fuzzy joins.
+            HBRUSH cover = CreateSolidBrush(fill);
+            RECT cover_rect{cx - size / 2 - 1, cy - size / 2,
+                            cx + size / 2, cy + size / 2 + 1};
+            FillRect(dc, &cover_rect, cover);
+            DeleteObject(cover);
+            outline(cx - size / 2 - offset, cy - size / 2 + offset, size);
         } else {
-            graphics.DrawRectangle(&pen, cx - s(5.0F), cy - s(4.5F),
-                                   s(10.0F), s(9.0F));
+            outline(cx - glyph_size / 2, cy - glyph_size / 2,
+                    glyph_size);
         }
+        DeleteObject(glyph_brush);
     }
 }
 

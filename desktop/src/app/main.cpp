@@ -1334,7 +1334,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(id==ID_EDIT_PROJECT){EditProject();return 0;}
         if(id==ID_OPEN_PROJECT_FOLDER){OpenProjectFolder();return 0;}
         if(id==ID_CTX_OPEN_FOLDER){OpenProjectFolder();return 0;}
-        if(id==ID_CTX_OPEN_CMD){OpenProjectCommandPrompt();return 0;}
+        if(id==ID_CTX_OPEN_CMD){OpenProjectPowerShell();return 0;}
         const UINT moveGroupEnd=static_cast<UINT>(ID_CTX_MOVE_GROUP_BASE)+static_cast<UINT>(g_groups.size());
         if(id>=static_cast<UINT>(ID_CTX_MOVE_GROUP_BASE)&&id<moveGroupEnd){MoveSelectedProjectToGroup(g_groups[id-ID_CTX_MOVE_GROUP_BASE].name);return 0;}
         if(id==ID_CTX_MOVE_DEFAULT){MoveSelectedProjectToDefaultGroup();return 0;}

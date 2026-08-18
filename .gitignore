@@ -4,6 +4,7 @@
 /desktop/bin/
 /desktop/installer/output/
 /target/
+/release/
 
 # Android/Gradle build state
 /android-app/.gradle/

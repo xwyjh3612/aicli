@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -448,7 +449,24 @@ public:
             try {
                 next->control.Visibility(winrt::Windows::UI::Xaml::Visibility::Visible);
                 if (visible_) next->control.WindowVisibilityChanged(true);
+                const auto dirty = theme_dirty_sessions_.find(next_id);
+                if (visible_ && dirty != theme_dirty_sessions_.end()) {
+                    ApplySessionTheme(*next, light_theme_, true);
+                    theme_dirty_sessions_.erase(dirty);
+                }
             } catch (...) {}
+        }
+        // A caller may activate the already-selected project after a theme
+        // switch (for example after the modal closes), so handle that path as
+        // well as a normal project-to-project transition.
+        if (!changed) {
+            const auto dirty = theme_dirty_sessions_.find(next_id);
+            if (visible_ && dirty != theme_dirty_sessions_.end()) {
+                try {
+                    ApplySessionTheme(*next, light_theme_, true);
+                    theme_dirty_sessions_.erase(dirty);
+                } catch (...) {}
+            }
         }
         try {
             if (focus) {
@@ -468,6 +486,7 @@ public:
     }
     void Stop(std::wstring_view project_id) {
         const std::wstring id{project_id};
+        theme_dirty_sessions_.erase(id);
         auto found = sessions_.find(id);
         if (found == sessions_.end()) return;
         const bool was_active = active_project_id_ == id;
@@ -494,6 +513,7 @@ public:
         }
         try { if (grid_) grid_.Children().Clear(); } catch (...) {}
         sessions_.clear();
+        theme_dirty_sessions_.clear();
         active_project_id_.clear();
         visible_ = false;
         if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
@@ -503,6 +523,7 @@ public:
         if (visible_ == visible) {
             if (visible) {
                 RaiseIsland();
+                ApplyActiveSessionThemeIfDirty();
                 EnsureNativeScrollbar();
             }
             return;
@@ -516,6 +537,7 @@ public:
             if (visible) RaiseIsland();
             if (auto* active = ActiveSession()) {
                 if (visible) {
+                    ApplyActiveSessionThemeIfDirty();
                     EnsureNativeScrollbar(active);
                 }
             }
@@ -526,6 +548,7 @@ public:
     }
     void SetTheme(bool light) {
         light_theme_ = light;
+        theme_dirty_sessions_.clear();
         try {
             if (grid_) {
                 const auto background = light
@@ -533,17 +556,25 @@ public:
                     : winrt::Windows::UI::Color{0xff, 0x0c, 0x0c, 0x0c};
                 grid_.Background(winrt::Windows::UI::Xaml::Media::SolidColorBrush(background));
             }
-            for (auto& [_, session] : sessions_) {
-                if (!session->control || !session->control_settings) continue;
+            for (auto& [project_id, session] : sessions_) {
+                if (!session) continue;
+                // Hidden TermControl instances do not repaint reliably while
+                // another project owns the visible XAML surface. Keep their
+                // ConPTY color mapping current, then refresh the visual
+                // controls lazily when that project is activated.
                 if (session->conpty_connection)
                     session->conpty_connection->SetLightTheme(light);
-                ApplyPalette(session->control_settings, light);
-                if (session->unfocused_settings) ApplyPalette(session->unfocused_settings, light);
-                session->control.UpdateControlSettings(
-                    session->control_settings, session->unfocused_settings);
-                session->control.UpdateLayout();
-                if (session->native_scrollbar)
-                    ApplyNativeScrollbarPalette(*session, light);
+                if (project_id == active_project_id_) {
+                    try {
+                        ApplySessionTheme(*session, light, false);
+                    } catch (...) {
+                        // Keep the session in the deferred set if the XAML
+                        // control is between visibility/layout transitions.
+                        theme_dirty_sessions_.insert(project_id);
+                    }
+                } else {
+                    theme_dirty_sessions_.insert(project_id);
+                }
             }
             if (grid_) grid_.UpdateLayout();
             // Qt can complete the host layout after UpdateControlSettings.
@@ -979,6 +1010,29 @@ private:
     TerminalSession* ActiveSession() { return FindSession(active_project_id_); }
     const TerminalSession* ActiveSession() const { return FindSession(active_project_id_); }
 
+    void ApplyActiveSessionThemeIfDirty() {
+        auto* active = ActiveSession();
+        if (!active || !visible_) return;
+        const auto dirty = theme_dirty_sessions_.find(active_project_id_);
+        if (dirty == theme_dirty_sessions_.end()) return;
+        ApplySessionTheme(*active, light_theme_, true);
+        theme_dirty_sessions_.erase(dirty);
+    }
+
+    void ApplySessionTheme(TerminalSession& session, bool light,
+                           bool refresh_viewport) {
+        if (!session.control || !session.control_settings) return;
+        ApplyPalette(session.control_settings, light);
+        if (session.unfocused_settings) ApplyPalette(session.unfocused_settings, light);
+        session.control.UpdateControlSettings(
+            session.control_settings, session.unfocused_settings);
+        session.control.UpdateLayout();
+        if (session.native_scrollbar)
+            ApplyNativeScrollbarPalette(session, light);
+        if (refresh_viewport && session.conpty_connection)
+            session.conpty_connection->RefreshViewport();
+    }
+
     static void ApplyPalette(
         const winrt::Microsoft::Terminal::Settings::Model::TerminalSettings& settings,
         bool light) {
@@ -1220,6 +1274,10 @@ private:
     std::wstring active_project_id_;
     bool visible_{};
     bool light_theme_{};
+    // Hidden project sessions are refreshed on their next activation after a
+    // theme switch. This avoids stale XAML palettes without disturbing the
+    // visible session during the switch.
+    std::unordered_set<std::wstring> theme_dirty_sessions_;
     bool shutting_down_{};
     RECT last_resize_rect_{};
     UINT last_resize_dpi_{};

@@ -408,7 +408,9 @@ std::wstring DesktopController::DefaultCommandForType(const std::wstring& type) 
     for (const auto& value : project_types_) {
         if (value.name == type && !value.default_command.empty()) return value.default_command;
     }
-    if (type == L"Claude") return L"claude --dangerously-skip-permissions --continue";
+    if (type == L"Claude") {
+        return L"claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions";
+    }
     return L"codex --yolo resume --last";
 }
 

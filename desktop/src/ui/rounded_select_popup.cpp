@@ -112,6 +112,48 @@ PopupState* StateFor(HWND window) {
         GetWindowLongPtrW(window, GWLP_USERDATA));
 }
 
+bool PointerInsidePopupInteractionRegion(PopupState* state) {
+    if (!state || !state->window) return false;
+
+    POINT cursor{};
+    if (!GetCursorPos(&cursor)) return true;
+
+    RECT popup{};
+    GetWindowRect(state->window, &popup);
+    if (PtInRect(&popup, cursor)) return true;
+
+    RECT anchor{};
+    if (state->options.use_screen_anchor) {
+        anchor = state->options.screen_anchor;
+    } else if (state->options.anchor) {
+        GetWindowRect(state->options.anchor, &anchor);
+    }
+    if (PtInRect(&anchor, cursor)) return true;
+
+    RECT bridge{};
+    bool has_bridge = false;
+    if (state->options.placement == RoundedPopupPlacement::Right) {
+        if (popup.left >= anchor.right) {
+            bridge = {anchor.right, anchor.top, popup.left, anchor.bottom};
+            has_bridge = true;
+        } else if (popup.right <= anchor.left) {
+            bridge = {popup.right, anchor.top, anchor.left, anchor.bottom};
+            has_bridge = true;
+        }
+        if (has_bridge) InflateRect(&bridge, 0, Scale(4, state->options.dpi));
+    } else {
+        if (popup.top >= anchor.bottom) {
+            bridge = {anchor.left, anchor.bottom, anchor.right, popup.top};
+            has_bridge = true;
+        } else if (popup.bottom <= anchor.top) {
+            bridge = {anchor.left, popup.bottom, anchor.right, anchor.top};
+            has_bridge = true;
+        }
+        if (has_bridge) InflateRect(&bridge, Scale(4, state->options.dpi), 0);
+    }
+    return has_bridge && PtInRect(&bridge, cursor);
+}
+
 void Invalidate(PopupState* state) {
     if (state && state->window) InvalidateRect(state->window, nullptr, FALSE);
 }
@@ -307,6 +349,12 @@ LRESULT CALLBACK PopupWindowProc(HWND window, UINT message,
     }
     case WM_MOUSEMOVE: {
         if (!state) return 0;
+        if (state->options.dismiss_when_pointer_leaves &&
+            !state->scrollbar_dragging &&
+            !PointerInsidePopupInteractionRegion(state)) {
+            Finish(state, false);
+            return 0;
+        }
         RECT client{};
         GetClientRect(window, &client);
         const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
@@ -426,7 +474,9 @@ int MeasureWidth(const RoundedSelectPopupOptions& options,
 std::optional<std::wstring> ShowRoundedSelectPopup(
     const RoundedSelectPopupOptions& options,
     std::vector<RoundedSelectEntry> entries) {
-    if (!options.owner || !options.anchor || entries.empty() || !EnsurePopupClass())
+    if (!options.owner ||
+        (!options.use_screen_anchor && !options.anchor) ||
+        entries.empty() || !EnsurePopupClass())
         return std::nullopt;
 
     PopupState state;
@@ -494,7 +544,7 @@ std::optional<std::wstring> ShowRoundedSelectPopup(
             break;
         }
         if (message.message == WM_KEYDOWN) {
-            if (message.wParam == VK_ESCAPE) {
+            if (message.wParam == VK_ESCAPE || message.wParam == VK_LEFT) {
                 Finish(&state, false);
                 continue;
             }
