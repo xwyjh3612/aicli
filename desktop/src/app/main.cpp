@@ -914,8 +914,12 @@ void Layout(){
         if(!IsRectEmpty(&g_empty_state_icon))
             InvalidateRect(g_hwnd,&g_empty_state_icon,FALSE);
     }
-    if(noProjectSelection&&!IsRectEmpty(&previousPrestartPanel))
-        InvalidateRect(g_hwnd,&previousPrestartPanel,FALSE);
+    if(!EqualRect(&previousPrestartPanel,&g_prestart_panel)){
+        if(!IsRectEmpty(&previousPrestartPanel))
+            InvalidateRect(g_hwnd,&previousPrestartPanel,FALSE);
+        if(!IsRectEmpty(&g_prestart_panel))
+            InvalidateRect(g_hwnd,&g_prestart_panel,FALSE);
+    }
     // The central surface is always the real Windows Terminal control.  Do
     // not create a second EDIT-based command line or a text-output fallback:
     // keyboard focus, shortcuts, selection and scrolling must stay native.
