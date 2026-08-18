@@ -196,7 +196,7 @@ void ReorderVisibleProjects(int source_row,int insert_slot){
     const int source_index=g_visible_project_indices[source_row];
     if(source_index<0||source_index>=static_cast<int>(g_projects.size()))return;
     const auto& moving_project=g_projects[source_index];
-    const std::wstring moving_group=moving_project.group.empty()?L"默认分组":moving_project.group;
+    const std::wstring moving_group=moving_project.group.empty()?DefaultGroupName():moving_project.group;
 
     std::vector<std::wstring> ordered_ids;
     ordered_ids.reserve(g_visible_project_indices.size());
@@ -206,7 +206,7 @@ void ReorderVisibleProjects(int source_row,int insert_slot){
         const int index=g_visible_project_indices[row];
         if(index<0||index>=static_cast<int>(g_projects.size()))continue;
         const auto& project=g_projects[index];
-        const std::wstring group=project.group.empty()?L"默认分组":project.group;
+        const std::wstring group=project.group.empty()?DefaultGroupName():project.group;
         if(group!=moving_group)continue;
         if(row<insert_slot)++destination;
         if(index==source_index)source_in_group=static_cast<int>(ordered_ids.size());
@@ -227,7 +227,7 @@ void ReorderVisibleProjects(int source_row,int insert_slot){
     }
     g_projects=g_store.LoadProjects();
     g_last_project_id=moving_id;SendMessageW(g_list,LB_SETCURSEL,static_cast<WPARAM>(LB_ERR),0);
-    RefreshProjectList();RefreshProjectDetails();Layout();SetText(g_status,L"项目顺序已保存");
+        RefreshProjectList();RefreshProjectDetails();Layout();SetStatusText(L"项目顺序已保存");
 }
 LRESULT HandleProjectDragListMessage(HWND,LPARAM lparam){
     auto* info=reinterpret_cast<DRAGLISTINFO*>(lparam);

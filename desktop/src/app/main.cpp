@@ -195,7 +195,9 @@ std::vector<Project> g_projects;
 std::vector<ProjectType> g_project_types;
 std::vector<ProjectGroup> g_groups;
 std::vector<int> g_visible_project_indices;
-std::wstring g_group_name=L"默认分组";
+std::wstring g_default_group_name=L"默认分组";
+std::wstring g_group_name=g_default_group_name;
+const std::wstring& DefaultGroupName(){return g_default_group_name;}
 std::size_t g_group_project_count{};
 bool g_group_dropdown_open{};
 std::wstring g_last_project_id;
@@ -508,10 +510,13 @@ bool IsProjectWorking(const Project& project){
            g_working_projects.find(project.id)!=g_working_projects.end();
 }
 void RefreshTaskbarWorkingIndicator(){
+    const auto style=g_store.GetSetting(L"taskbar_working_style",L"progress");
     g_taskbar_working_indicator.SetStyle(
-        g_store.GetSetting(L"taskbar_working_style",L"progress")==L"overlay"
+        style==L"overlay"
             ? aicli::ui::TaskbarWorkingStyle::OverlaySpinner
-            : aicli::ui::TaskbarWorkingStyle::ProgressBar);
+            : style==L"icon_dots"
+                ? aicli::ui::TaskbarWorkingStyle::IconDots
+                : aicli::ui::TaskbarWorkingStyle::ProgressBar);
     if(g_store.GetSetting(L"taskbar_working_enabled",L"1")==L"0"){
         g_taskbar_working_indicator.SetWorking(false);
         return;
@@ -657,7 +662,7 @@ void RefreshProjectDetails(bool force_git_refresh=false){
     g_store.SetSetting(L"last_project_id",project.id);
     SetText(g_hwnd,project.name.empty()?L"Aicli":project.name);
     SetText(g_detail_title,project.name);
-    SetText(g_detail_subtitle,project.type+L"  ·  "+(project.group.empty()?L"默认分组":project.group));
+    SetText(g_detail_subtitle,project.type+L"  ·  "+(project.group.empty()?DefaultGroupName():project.group));
     SetText(g_detail_folder,project.folder.empty()?L"未设置":project.folder);
     SetText(g_detail_command,project.command.empty()?L"未设置":project.command);
     SetText(g_detail_note,project.note.empty()?L"暂无备注":project.note);
@@ -677,8 +682,11 @@ bool InitializePersistentState() {
     g_project_types=g_store.LoadProjectTypes();
     g_groups=g_store.LoadGroups();
     if(g_groups.empty()){
-        g_store.AddGroup(L"默认分组");g_groups=g_store.LoadGroups();
+        g_store.AddGroup(DefaultGroupName());g_groups=g_store.LoadGroups();
     }
+    if(const auto builtin=std::find_if(g_groups.begin(),g_groups.end(),
+        [](const ProjectGroup& group){return group.builtin;});
+       builtin!=g_groups.end()) g_default_group_name=builtin->name;
     g_projects=g_store.LoadProjects();
     for(auto& project:g_projects){
         if(project.status==L"running"||project.status==L"paused"){
@@ -693,8 +701,8 @@ bool InitializePersistentState() {
     // this database cannot recreate the removed sample sessions later.
     if(g_store.GetSetting(L"seeded_projects",L"0")!=L"1")
         g_store.SetSetting(L"seeded_projects",L"1");
-    g_group_name=g_store.GetSetting(L"last_group",L"默认分组");
-    if(g_group_name!=kAllGroupsName&&g_group_name!=kStartedProjectsName&&std::none_of(g_groups.begin(),g_groups.end(),[&](const ProjectGroup& group){return group.name==g_group_name;}))g_group_name=L"默认分组";
+    g_group_name=g_store.GetSetting(L"last_group",DefaultGroupName());
+    if(g_group_name!=kAllGroupsName&&g_group_name!=kStartedProjectsName&&std::none_of(g_groups.begin(),g_groups.end(),[&](const ProjectGroup& group){return group.name==g_group_name;}))g_group_name=DefaultGroupName();
     g_last_project_id=g_store.GetSetting(L"last_project_id");
     g_startup_project_id=g_last_project_id;
     ApplyStoredTheme();
@@ -706,7 +714,7 @@ void UpdateGroupButton(){
         static_cast<std::size_t>(std::count_if(
             g_projects.begin(),g_projects.end(),[](const Project& project){
                 if(g_group_name==kStartedProjectsName)return g_island.HasSession(project.id);
-                const std::wstring group=project.group.empty()?L"默认分组":project.group;
+                const std::wstring group=project.group.empty()?DefaultGroupName():project.group;
                 return group==g_group_name;
             }));
     SetText(g_group,g_group_name);
@@ -721,7 +729,7 @@ void RefreshProjectList(){
     const std::wstring query=aicli::ui::GetStyledInputText(g_search);
     for(size_t i=0;i<g_projects.size();++i){
         const auto& project=g_projects[i];
-        const std::wstring group=project.group.empty()?L"默认分组":project.group;
+        const std::wstring group=project.group.empty()?DefaultGroupName():project.group;
         if(g_group_name==kStartedProjectsName){if(!g_island.HasSession(project.id))continue;}
         else if(g_group_name!=kAllGroupsName&&group!=g_group_name)continue;
         if(!query.empty()&&project.name.find(query)==std::wstring::npos&&
@@ -844,6 +852,12 @@ void Layout(){
         }
     }
     if(g_detail_subtitle){
+        const HFONT subtitleFont=noProjectSelection?g_font_git:g_font_small;
+        if(reinterpret_cast<HFONT>(SendMessageW(
+               g_detail_subtitle,WM_GETFONT,0,0))!=subtitleFont){
+            SendMessageW(g_detail_subtitle,WM_SETFONT,
+                         reinterpret_cast<WPARAM>(subtitleFont),TRUE);
+        }
         LONG_PTR subtitleStyle=GetWindowLongPtrW(g_detail_subtitle,GWL_STYLE);
         const LONG_PTR alignment=noProjectSelection?SS_CENTER:SS_LEFT;
         const LONG_PTR nextStyle=(subtitleStyle&~SS_TYPEMASK)|alignment;
@@ -1028,7 +1042,7 @@ void StartSession(bool restart=false){
     }
 }
 int ProjectIndexById(const std::wstring& project_id){for(size_t i=0;i<g_projects.size();++i)if(g_projects[i].id==project_id)return static_cast<int>(i);return -1;}
-bool SelectProjectById(const std::wstring& project_id){const int index=ProjectIndexById(project_id);if(index<0)return false;const bool visible_in_filter=g_group_name==kAllGroupsName||(g_group_name==kStartedProjectsName?g_island.HasSession(project_id):(g_projects[index].group.empty()?L"默认分组":g_projects[index].group)==g_group_name);if(!visible_in_filter){g_group_name=g_projects[index].group.empty()?L"默认分组":g_projects[index].group;SetText(g_group,g_group_name);g_store.SetSetting(L"last_group",g_group_name);}RefreshProjectList();for(size_t row=0;row<g_visible_project_indices.size();++row)if(g_visible_project_indices[row]==index){SendMessageW(g_list,LB_SETCURSEL,row,0);RefreshProjectDetails(true);Layout();return true;}return false;}
+bool SelectProjectById(const std::wstring& project_id){const int index=ProjectIndexById(project_id);if(index<0)return false;const bool visible_in_filter=g_group_name==kAllGroupsName||(g_group_name==kStartedProjectsName?g_island.HasSession(project_id):(g_projects[index].group.empty()?DefaultGroupName():g_projects[index].group)==g_group_name);if(!visible_in_filter){g_group_name=g_projects[index].group.empty()?DefaultGroupName():g_projects[index].group;SetText(g_group,g_group_name);g_store.SetSetting(L"last_group",g_group_name);}RefreshProjectList();for(size_t row=0;row<g_visible_project_indices.size();++row)if(g_visible_project_indices[row]==index){SendMessageW(g_list,LB_SETCURSEL,row,0);RefreshProjectDetails(true);Layout();return true;}return false;}
 void RefreshConversationsCache(){g_conversation_bridge.RefreshConversations(g_projects);}
 std::string ConversationsJson(){return g_conversation_bridge.ConversationsJson();}
 std::string EventsJson(const std::wstring& project_id,std::int64_t after){return g_conversation_bridge.EventsJson(project_id,after);}
@@ -1170,13 +1184,16 @@ void ReloadPersistentModels() {
     g_groups = g_store.LoadGroups();
     g_projects = g_store.LoadProjects();
     if (g_groups.empty()) {
-        g_store.AddGroup(L"默认分组");
+        g_store.AddGroup(DefaultGroupName());
         g_groups = g_store.LoadGroups();
     }
+    if(const auto builtin=std::find_if(g_groups.begin(),g_groups.end(),
+        [](const ProjectGroup& group){return group.builtin;});
+       builtin!=g_groups.end()) g_default_group_name=builtin->name;
     if (g_group_name != kAllGroupsName && g_group_name != kStartedProjectsName && std::none_of(g_groups.begin(), g_groups.end(), [&](const ProjectGroup& value) {
             return value.name == g_group_name;
         })) {
-        g_group_name = L"默认分组";
+        g_group_name = DefaultGroupName();
     }
     SetText(g_group, g_group_name);
     RefreshProjectList();
@@ -1559,7 +1576,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
             g_groups=g_store.LoadGroups();
             g_projects=g_store.LoadProjects();
             g_group_name=request->result.project.group.empty()
-                ?L"默认分组":request->result.project.group;
+                ?DefaultGroupName():request->result.project.group;
             g_last_project_id=project_id;
             g_store.SetSetting(L"last_group",g_group_name);
             g_store.SetSetting(L"last_project_id",project_id);
@@ -1703,6 +1720,8 @@ int WINAPI wWinMain(HINSTANCE instance,
         LR_DEFAULTCOLOR|LR_SHARED));
     if(!g_app_icon_large)g_app_icon_large=LoadIconW(nullptr,IDI_APPLICATION);
     if(!g_app_icon_small)g_app_icon_small=g_app_icon_large;
+    g_taskbar_working_indicator.SetIconDotResources(
+        instance,IDI_AICLI_WORKING_1);
 
     WNDCLASSEXW window_class{sizeof(window_class)};
     window_class.hInstance = instance;

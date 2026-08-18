@@ -1,3 +1,6 @@
 #include "resource.h"
 
 IDI_AICLI_APP ICON "../../assets/aicli.ico"
+IDI_AICLI_WORKING_1 ICON "../../assets/aicli-working-overlay-1.ico"
+IDI_AICLI_WORKING_2 ICON "../../assets/aicli-working-overlay-2.ico"
+IDI_AICLI_WORKING_3 ICON "../../assets/aicli-working-overlay-3.ico"

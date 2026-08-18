@@ -24,7 +24,10 @@ function New-RoundedRectanglePath {
 }
 
 function New-AppIconMaster {
-    param([int]$Size = 1024)
+    param(
+        [int]$Size = 1024,
+        [int]$WorkingStep = -1
+    )
 
     $bitmap = [Drawing.Bitmap]::new($Size, $Size, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
@@ -105,19 +108,52 @@ function New-AppIconMaster {
             $chevron.Dispose()
         }
 
-        $cursorBrush = [Drawing.Drawing2D.LinearGradientBrush]::new(
-            [Drawing.PointF]::new(141, 177),
-            [Drawing.PointF]::new(187, 177),
-            [Drawing.Color]::FromArgb(255, 103, 232, 249),
-            [Drawing.Color]::FromArgb(255, 96, 165, 250))
-        $cursor = [Drawing.Pen]::new($cursorBrush, 19.0)
-        try {
-            $cursor.StartCap = [Drawing.Drawing2D.LineCap]::Round
-            $cursor.EndCap = [Drawing.Drawing2D.LineCap]::Round
-            $graphics.DrawLine($cursor, 141, 177, 187, 177)
-        } finally {
-            $cursor.Dispose()
-            $cursorBrush.Dispose()
+        if ($WorkingStep -lt 0) {
+            $cursorBrush = [Drawing.Drawing2D.LinearGradientBrush]::new(
+                [Drawing.PointF]::new(141, 177),
+                [Drawing.PointF]::new(187, 177),
+                [Drawing.Color]::FromArgb(255, 103, 232, 249),
+                [Drawing.Color]::FromArgb(255, 96, 165, 250))
+            $cursor = [Drawing.Pen]::new($cursorBrush, 19.0)
+            try {
+                $cursor.StartCap = [Drawing.Drawing2D.LineCap]::Round
+                $cursor.EndCap = [Drawing.Drawing2D.LineCap]::Round
+                $graphics.DrawLine($cursor, 141, 177, 187, 177)
+            } finally {
+                $cursor.Dispose()
+                $cursorBrush.Dispose()
+            }
+        } else {
+            $trackBrush = [Drawing.Drawing2D.LinearGradientBrush]::new(
+                [Drawing.PointF]::new(141, 177),
+                [Drawing.PointF]::new(187, 177),
+                [Drawing.Color]::FromArgb(86, 103, 232, 249),
+                [Drawing.Color]::FromArgb(76, 96, 165, 250))
+            $track = [Drawing.Pen]::new($trackBrush, 7.0)
+            try {
+                $track.StartCap = [Drawing.Drawing2D.LineCap]::Round
+                $track.EndCap = [Drawing.Drawing2D.LineCap]::Round
+                $graphics.DrawLine($track, 141, 177, 187, 177)
+            } finally {
+                $track.Dispose()
+                $trackBrush.Dispose()
+            }
+
+            $dotCenters = @(145.0, 164.0, 183.0)
+            $dotColors = @(
+                @(103, 232, 249),
+                @(100, 199, 250),
+                @(96, 165, 250)
+            )
+            for ($dot = 0; $dot -lt $dotCenters.Count; $dot++) {
+                $alpha = if ($dot -le $WorkingStep) { 255 } else { 72 }
+                $color = $dotColors[$dot]
+                $brush = [Drawing.SolidBrush]::new(
+                    [Drawing.Color]::FromArgb($alpha, $color[0], $color[1], $color[2]))
+                try {
+                    $graphics.FillEllipse($brush, $dotCenters[$dot] - 8.0, 169.0, 16.0, 16.0)
+                } finally { $brush.Dispose() }
+            }
         }
 
         $sparkPoints = @(
@@ -158,6 +194,29 @@ function Save-ScaledPng {
         $graphics.Dispose()
         $bitmap.Dispose()
     }
+}
+
+function New-OverlayMaster {
+    param([Drawing.Bitmap]$Master)
+
+    $size = [int]($Master.Width / 2)
+    $bitmap = [Drawing.Bitmap]::new($size, $size, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.Clear([Drawing.Color]::Transparent)
+        $graphics.CompositingMode = [Drawing.Drawing2D.CompositingMode]::SourceCopy
+        $graphics.CompositingQuality = [Drawing.Drawing2D.CompositingQuality]::HighQuality
+        $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::HighQuality
+        $graphics.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $source = [Drawing.Rectangle]::new($size, $size, $size, $size)
+        $destination = [Drawing.Rectangle]::new(0, 0, $size, $size)
+        $graphics.DrawImage($Master, $destination, $source,
+                            [Drawing.GraphicsUnit]::Pixel)
+    } finally {
+        $graphics.Dispose()
+    }
+    return $bitmap
 }
 
 function Write-PngIcon {
@@ -212,6 +271,32 @@ try {
                   -OutputPath (Join-Path $outputFull 'aicli.ico')
 } finally {
     $master.Dispose()
+}
+
+$workingTemp = Join-Path ([IO.Path]::GetTempPath()) ("aicli-working-icon-" + [Guid]::NewGuid())
+New-Item -ItemType Directory -Force -Path $workingTemp | Out-Null
+try {
+    for ($step = 0; $step -lt 3; $step++) {
+        $workingMaster = New-AppIconMaster -WorkingStep $step
+        try {
+            $overlayMaster = New-OverlayMaster -Master $workingMaster
+            try {
+                $workingPngPaths = foreach ($size in $sizes) {
+                    $path = Join-Path $workingTemp "working-$step-$size.png"
+                    Save-ScaledPng -Master $overlayMaster -Size $size -Path $path
+                    $path
+                }
+                Write-PngIcon -PngPaths $workingPngPaths -Sizes $sizes `
+                              -OutputPath (Join-Path $outputFull "aicli-working-overlay-$($step + 1).ico")
+            } finally {
+                $overlayMaster.Dispose()
+            }
+        } finally {
+            $workingMaster.Dispose()
+        }
+    }
+} finally {
+    Remove-Item -LiteralPath $workingTemp -Recurse -Force
 }
 
 Write-Host "Generated AI CLI icon assets in $outputFull"

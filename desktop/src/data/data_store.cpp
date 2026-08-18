@@ -603,10 +603,6 @@ bool DataStore::RenameGroup(std::int64_t id, const std::wstring& new_name,
     sqlite3_bind_int64(query.get(), 1, id);
     if (sqlite3_step(query.get()) != SQLITE_ROW) return false;
     const auto old_name = ColumnText(query.get(), 0);
-    if (sqlite3_column_int(query.get(), 1) != 0) {
-        if (error) *error = L"默认分组不能重命名";
-        return false;
-    }
     if (IsBlank(new_name)) {
         if (error) *error = L"分组名称不能为空";
         return false;

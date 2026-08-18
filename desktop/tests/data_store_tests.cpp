@@ -111,8 +111,14 @@ int wmain(int argc, wchar_t** argv) {
         ok &= Check(default_group && default_group->builtin, L"default builtin group");
         if (default_group) {
             error.clear();
-            ok &= Check(!store.RenameGroup(default_group->id, L"默认", &error),
-                        L"default group cannot be renamed");
+            ok &= Check(store.RenameGroup(default_group->id, L"默认", &error),
+                        (L"default group can be renamed: " + error).c_str());
+            groups = store.LoadGroups();
+            const auto* renamed_default = Find(groups, [](const aicli::ProjectGroup& value) {
+                return value.name == L"默认";
+            });
+            ok &= Check(renamed_default && renamed_default->builtin,
+                        L"renamed default group remains builtin");
             error.clear();
             ok &= Check(!store.DeleteGroup(default_group->id, &error),
                         L"default group cannot be deleted");

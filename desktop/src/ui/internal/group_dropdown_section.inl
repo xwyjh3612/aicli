@@ -20,7 +20,7 @@ void ShowGroupDropdown(){
         const auto& group=g_groups[index];
         const auto count=static_cast<std::size_t>(std::count_if(
             g_projects.begin(),g_projects.end(),[&](const Project& project){
-                const std::wstring value=project.group.empty()?L"默认分组":project.group;
+                const std::wstring value=project.group.empty()?DefaultGroupName():project.group;
                 return value==group.name;
             }));
         add_entry(group.name,L"\xE8B7",count,index==0);

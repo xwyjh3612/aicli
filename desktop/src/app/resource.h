@@ -1,3 +1,6 @@
 #pragma once
 
 #define IDI_AICLI_APP 101
+#define IDI_AICLI_WORKING_1 102
+#define IDI_AICLI_WORKING_2 103
+#define IDI_AICLI_WORKING_3 104

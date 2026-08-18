@@ -92,6 +92,7 @@ enum : int {
     kMobileAccess = 2331,
     kSettingsDevices = 2332,
     kBindEmpty = 2333,
+    kTaskbarStyleIconDots = 2334,
 };
 
 enum : int {
@@ -180,6 +181,7 @@ struct State {
     HWND taskbar_working{};
     HWND taskbar_style_progress{};
     HWND taskbar_style_overlay{};
+    HWND taskbar_style_icon_dots{};
     HWND taskbar_scope_current{};
     HWND taskbar_scope_all{};
     HWND add{};
@@ -1256,9 +1258,12 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
          (item->CtlID == kTaskbarWorking &&
           state->store->GetSetting(L"taskbar_working_enabled", L"1") != L"0") ||
          (item->CtlID == kTaskbarStyleProgress &&
-          state->store->GetSetting(L"taskbar_working_style", L"progress") != L"overlay") ||
+          state->store->GetSetting(L"taskbar_working_style", L"progress") != L"overlay" &&
+          state->store->GetSetting(L"taskbar_working_style", L"progress") != L"icon_dots") ||
          (item->CtlID == kTaskbarStyleOverlay &&
           state->store->GetSetting(L"taskbar_working_style", L"progress") == L"overlay") ||
+         (item->CtlID == kTaskbarStyleIconDots &&
+          state->store->GetSetting(L"taskbar_working_style", L"progress") == L"icon_dots") ||
          (item->CtlID == kTaskbarScopeCurrent &&
           state->store->GetSetting(L"taskbar_working_scope", L"all") == L"current") ||
          (item->CtlID == kTaskbarScopeAll &&
@@ -1416,11 +1421,12 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         (item->CtlID == kTheme || item->CtlID == kThemeLight ||
          item->CtlID == kTaskbarStyleProgress ||
          item->CtlID == kTaskbarStyleOverlay ||
+         item->CtlID == kTaskbarStyleIconDots ||
          item->CtlID == kTaskbarScopeCurrent ||
          item->CtlID == kTaskbarScopeAll);
     if (segmented_choice) {
-        // Paired settings share one rounded base. Each child owns half of the
-        // inner surface and paints only its selected/hover interaction layer.
+        // Segmented settings share one rounded base. Each child paints only
+        // its selected or hover interaction layer.
         const COLORREF selector_fill = light ? RGB(238, 242, 247)
                                              : RGB(25, 29, 37);
         const COLORREF hover_fill = light ? RGB(229, 235, 243)
@@ -1465,6 +1471,7 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         const wchar_t* icon = item->CtlID == kTheme ? L"\xE708" :
                               item->CtlID == kThemeLight ? L"\xE706" :
                               item->CtlID == kTaskbarStyleOverlay ? L"\xE895" :
+                              item->CtlID == kTaskbarStyleIconDots ? L"\xE712" :
                               item->CtlID == kTaskbarScopeCurrent ? L"\xE8B7" :
                               item->CtlID == kTaskbarScopeAll ? L"\xE8A5" : nullptr;
         const HFONT icon_font = state->settings_icon_font
@@ -2034,7 +2041,7 @@ void LayoutSettingsContent(State& state) {
     if (state.settings_page == SettingsPage::Appearance) {
         const int right_inset = S(18);
         const int right_edge = right - right_inset;
-        const int selector_width = S(234);
+        const int selector_width = S(300);
         const int selector_inset = S(2);
         const int selector_left = right_edge - selector_width;
         const int selector_inner_width = selector_width - selector_inset * 2;
@@ -2055,9 +2062,21 @@ void LayoutSettingsContent(State& state) {
             segment(right_control,
                     selector_left + selector_inset + left_width, y, right_width);
         };
+        auto segmented_triplet = [&](HWND first_control, HWND second_control,
+                                     HWND third_control, int y) {
+            const int first_width = selector_inner_width / 3;
+            const int second_width = selector_inner_width / 3;
+            const int third_width = selector_inner_width - first_width - second_width;
+            const int first_left = selector_left + selector_inset;
+            segment(first_control, first_left, y, first_width);
+            segment(second_control, first_left + first_width, y, second_width);
+            segment(third_control, first_left + first_width + second_width,
+                    y, third_width);
+        };
         segmented_pair(state.theme, state.theme_light, 88);
-        segmented_pair(state.taskbar_style_progress,
-                       state.taskbar_style_overlay, 200);
+        segmented_triplet(state.taskbar_style_progress,
+                          state.taskbar_style_overlay,
+                          state.taskbar_style_icon_dots, 200);
         segmented_pair(state.taskbar_scope_current,
                        state.taskbar_scope_all, 256);
 
@@ -2185,7 +2204,7 @@ void PaintSettingsContent(State& state, HDC dc) {
     if (state.settings_page == SettingsPage::Appearance) {
         card({x, S(64), right, S(310)});
         const int selector_right = right - S(18);
-        const int selector_left = selector_right - S(234);
+        const int selector_left = selector_right - S(300);
         const COLORREF selector_fill = state.light_theme
             ? RGB(238, 242, 247) : RGB(25, 29, 37);
         const COLORREF selector_edge = state.light_theme
@@ -2202,7 +2221,7 @@ void PaintSettingsContent(State& state, HDC dc) {
         SelectObject(dc, state.settings_content_font ? state.settings_content_font : state.font);
         SetTextColor(dc, state.text_color);
         auto row_label = [&](const wchar_t* text, int y) {
-            RECT rect{x + S(20), S(y), right - S(280), S(y + 36)};
+            RECT rect{x + S(20), S(y), right - S(346), S(y + 36)};
             DrawTextW(dc, text, -1, &rect,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         };
@@ -2346,6 +2365,7 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     visible(state.taskbar_working, appearance);
     visible(state.taskbar_style_progress, appearance);
     visible(state.taskbar_style_overlay, appearance);
+    visible(state.taskbar_style_icon_dots, appearance);
     visible(state.taskbar_scope_current, appearance);
     visible(state.taskbar_scope_all, appearance);
     // The project/group/device list overlaps the connection form. Hide it
@@ -2484,9 +2504,15 @@ void RefreshList(State& state) {
     if (IsSettingsGroups(state)) {
         state.groups = state.store->LoadGroups();
         const auto projects = state.store->LoadProjects();
+        const auto default_group = std::find_if(
+            state.groups.begin(), state.groups.end(),
+            [](const ProjectGroup& group) { return group.builtin; });
+        const std::wstring default_group_name = default_group != state.groups.end()
+            ? default_group->name : L"默认分组";
         for (const auto& value : state.groups) {
             const auto count = std::count_if(projects.begin(), projects.end(), [&](const Project& project) {
-                const std::wstring group = project.group.empty() ? L"默认分组" : project.group;
+                const std::wstring group = project.group.empty()
+                    ? default_group_name : project.group;
                 return group == value.name;
             });
             const std::wstring label = value.name + L" (" + std::to_wstring(count) + L")";
@@ -2693,6 +2719,8 @@ void CreateControls(State& state) {
             kTaskbarWorking, state.content);
         state.taskbar_style_progress = MakeButton(state, L"进度条", kTaskbarStyleProgress, state.content);
         state.taskbar_style_overlay = MakeButton(state, L"图标转圈", kTaskbarStyleOverlay, state.content);
+        state.taskbar_style_icon_dots = MakeButton(
+            state, L"图标三点", kTaskbarStyleIconDots, state.content);
         state.taskbar_scope_current = MakeButton(state, L"当前项目", kTaskbarScopeCurrent, state.content);
         state.taskbar_scope_all = MakeButton(state, L"所有项目", kTaskbarScopeAll, state.content);
         state.save = MakeButton(state, L"保存设置", kSave, state.content);
@@ -2702,7 +2730,8 @@ void CreateControls(State& state) {
                               state.mobile_workspace_browse, state.mobile_access,
                               state.theme, state.theme_light,
                               state.taskbar_working, state.taskbar_style_progress,
-                              state.taskbar_style_overlay, state.taskbar_scope_current,
+                              state.taskbar_style_overlay, state.taskbar_style_icon_dots,
+                              state.taskbar_scope_current,
                               state.taskbar_scope_all, state.save,
                              state.firewall}) {
             if (control && state.settings_content_font)
@@ -2739,6 +2768,7 @@ void CreateControls(State& state) {
                               state.mobile_workspace_browse, state.mobile_access, state.theme,
                               state.theme_light, state.taskbar_working,
                               state.taskbar_style_progress, state.taskbar_style_overlay,
+                              state.taskbar_style_icon_dots,
                               state.taskbar_scope_current, state.taskbar_scope_all,
                               state.save, state.firewall,
                              state.list, state.add, state.remove,state.select,state.unbind,
@@ -2995,7 +3025,8 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                 return 0;
             }
             if (id == kTaskbarWorking || id == kTaskbarStyleProgress ||
-                id == kTaskbarStyleOverlay || id == kTaskbarScopeCurrent ||
+                id == kTaskbarStyleOverlay || id == kTaskbarStyleIconDots ||
+                id == kTaskbarScopeCurrent ||
                 id == kTaskbarScopeAll) {
                 if (id == kTaskbarWorking) {
                     const bool enabled = state->store->GetSetting(
@@ -3003,9 +3034,12 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                     state->store->SetSetting(L"taskbar_working_enabled", enabled ? L"0" : L"1");
                     SetWindowTextW(state->taskbar_working,
                         enabled ? L"关闭" : L"开启");
-                } else if (id == kTaskbarStyleProgress || id == kTaskbarStyleOverlay) {
+                } else if (id == kTaskbarStyleProgress ||
+                           id == kTaskbarStyleOverlay ||
+                           id == kTaskbarStyleIconDots) {
                     state->store->SetSetting(L"taskbar_working_style",
-                        id == kTaskbarStyleOverlay ? L"overlay" : L"progress");
+                        id == kTaskbarStyleOverlay ? L"overlay" :
+                        id == kTaskbarStyleIconDots ? L"icon_dots" : L"progress");
                 } else {
                     state->store->SetSetting(L"taskbar_working_scope",
                         id == kTaskbarScopeCurrent ? L"current" : L"all");
@@ -3013,6 +3047,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                 for (HWND control : {state->taskbar_working,
                                      state->taskbar_style_progress,
                                      state->taskbar_style_overlay,
+                                     state->taskbar_style_icon_dots,
                                      state->taskbar_scope_current,
                                      state->taskbar_scope_all}) {
                     InvalidateRect(control, nullptr, FALSE);

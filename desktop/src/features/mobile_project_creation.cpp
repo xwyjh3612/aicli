@@ -138,7 +138,7 @@ CreationOptions LoadCreationOptions(DataStore& store) {
 
     const auto preferred_group = std::find_if(
         options.groups.begin(), options.groups.end(),
-        [](const ProjectGroup& group) { return group.name == L"默认分组"; });
+        [](const ProjectGroup& group) { return group.builtin; });
     if (preferred_group != options.groups.end()) {
         options.default_group_id = preferred_group->id;
     } else if (!options.groups.empty()) {

@@ -12,8 +12,9 @@ namespace {
 constexpr int kOverlaySize = 16;
 constexpr int kOverlayDotCount = 8;
 constexpr UINT kOverlayFrameIntervalMs = 120;
-constexpr UINT_PTR kOverlayTimerId = 0xA1C14;
-constexpr wchar_t kOverlayIndicatorProperty[] = L"AiCli.TaskbarWorkingIndicator";
+constexpr std::array<UINT, 3> kIconDotFrameIntervalsMs{220, 220, 360};
+constexpr UINT_PTR kAnimationTimerId = 0xA1C14;
+constexpr wchar_t kIndicatorProperty[] = L"AiCli.TaskbarWorkingIndicator";
 
 void BlendPixel(std::uint32_t& destination, BYTE red, BYTE green, BYTE blue,
                 double alpha) {
@@ -128,19 +129,50 @@ void TaskbarWorkingIndicator::Attach(HWND window) {
     }
     Detach();
     window_ = window;
-    SetPropW(window_, kOverlayIndicatorProperty, this);
+    original_large_icon_ = reinterpret_cast<HICON>(
+        SendMessageW(window_, WM_GETICON, ICON_BIG, 0));
+    if (!original_large_icon_) {
+        original_large_icon_ = reinterpret_cast<HICON>(
+            GetClassLongPtrW(window_, GCLP_HICON));
+    }
+    original_small_icon_ = reinterpret_cast<HICON>(
+        SendMessageW(window_, WM_GETICON, ICON_SMALL2, 0));
+    if (!original_small_icon_) {
+        original_small_icon_ = reinterpret_cast<HICON>(
+            SendMessageW(window_, WM_GETICON, ICON_SMALL, 0));
+    }
+    if (!original_small_icon_) {
+        original_small_icon_ = reinterpret_cast<HICON>(
+            GetClassLongPtrW(window_, GCLP_HICONSM));
+    }
+    SetPropW(window_, kIndicatorProperty, this);
     Apply();
+}
+
+void TaskbarWorkingIndicator::SetIconDotResources(HINSTANCE instance,
+                                                  UINT first_resource_id) {
+    if (icon_dot_instance_ == instance &&
+        icon_dot_first_resource_id_ == first_resource_id) {
+        return;
+    }
+    RestoreWindowIcons();
+    DestroyIconDotFrames();
+    icon_dot_instance_ = instance;
+    icon_dot_first_resource_id_ = first_resource_id;
+    if (working_ && style_ == TaskbarWorkingStyle::IconDots) Apply();
 }
 
 void TaskbarWorkingIndicator::SetStyle(TaskbarWorkingStyle style) {
     if (style_ == style) return;
     style_ = style;
+    animation_frame_ = 0;
     Apply();
 }
 
 void TaskbarWorkingIndicator::SetWorking(bool working) {
     if (working_ == working) return;
     working_ = working;
+    animation_frame_ = 0;
     Apply();
 }
 
@@ -155,25 +187,28 @@ void TaskbarWorkingIndicator::OnTaskbarButtonCreated() {
 }
 
 void TaskbarWorkingIndicator::Detach() {
-    StopOverlayAnimation();
+    StopAnimation();
     ClearTaskbarVisuals();
     if (taskbar_) {
         taskbar_->Release();
         taskbar_ = nullptr;
     }
-    if (window_) RemovePropW(window_, kOverlayIndicatorProperty);
+    if (window_) RemovePropW(window_, kIndicatorProperty);
     window_ = nullptr;
     working_ = false;
-    overlay_frame_ = 0;
+    animation_frame_ = 0;
+    original_large_icon_ = nullptr;
+    original_small_icon_ = nullptr;
     DestroyOverlayFrames();
+    DestroyIconDotFrames();
 }
 
-void CALLBACK TaskbarWorkingIndicator::OverlayTimerProc(
+void CALLBACK TaskbarWorkingIndicator::AnimationTimerProc(
     HWND window, UINT, UINT_PTR timer_id, DWORD) {
     auto* indicator = reinterpret_cast<TaskbarWorkingIndicator*>(
-        GetPropW(window, kOverlayIndicatorProperty));
-    if (indicator && indicator->overlay_timer_id_ == timer_id) {
-        indicator->AdvanceOverlayFrame();
+        GetPropW(window, kIndicatorProperty));
+    if (indicator && indicator->animation_timer_id_ == timer_id) {
+        indicator->AdvanceAnimationFrame();
     }
 }
 
@@ -206,29 +241,95 @@ bool TaskbarWorkingIndicator::EnsureOverlayFrames() {
     return true;
 }
 
-void TaskbarWorkingIndicator::StartOverlayAnimation() {
-    if (!window_ || overlay_timer_id_) return;
-    overlay_timer_id_ = SetTimer(
-        window_, kOverlayTimerId, kOverlayFrameIntervalMs, OverlayTimerProc);
+bool TaskbarWorkingIndicator::EnsureIconDotFrames() {
+    if (icon_dot_large_frames_.front() && icon_dot_small_frames_.front()) {
+        return true;
+    }
+    if (!icon_dot_instance_ || !icon_dot_first_resource_id_) return false;
+    const int large_width = GetSystemMetrics(SM_CXICON);
+    const int large_height = GetSystemMetrics(SM_CYICON);
+    const int small_width = GetSystemMetrics(SM_CXSMICON);
+    const int small_height = GetSystemMetrics(SM_CYSMICON);
+    for (std::size_t index = 0; index < icon_dot_large_frames_.size(); ++index) {
+        const auto resource = MAKEINTRESOURCEW(
+            icon_dot_first_resource_id_ + static_cast<UINT>(index));
+        icon_dot_large_frames_[index] = static_cast<HICON>(LoadImageW(
+            icon_dot_instance_, resource, IMAGE_ICON, large_width, large_height,
+            LR_DEFAULTCOLOR));
+        icon_dot_small_frames_[index] = static_cast<HICON>(LoadImageW(
+            icon_dot_instance_, resource, IMAGE_ICON, small_width, small_height,
+            LR_DEFAULTCOLOR));
+        if (!icon_dot_large_frames_[index] || !icon_dot_small_frames_[index]) {
+            DestroyIconDotFrames();
+            return false;
+        }
+    }
+    return true;
 }
 
-void TaskbarWorkingIndicator::StopOverlayAnimation() {
-    if (window_ && overlay_timer_id_) KillTimer(window_, overlay_timer_id_);
-    overlay_timer_id_ = 0;
+void TaskbarWorkingIndicator::StartAnimation() {
+    if (!window_ || animation_timer_id_) return;
+    ScheduleAnimationFrame();
 }
 
-void TaskbarWorkingIndicator::AdvanceOverlayFrame() {
-    if (!working_ || style_ != TaskbarWorkingStyle::OverlaySpinner ||
-        !window_ || !EnsureInterface() || !EnsureOverlayFrames()) {
-        StopOverlayAnimation();
+void TaskbarWorkingIndicator::StopAnimation() {
+    if (window_ && animation_timer_id_) KillTimer(window_, animation_timer_id_);
+    animation_timer_id_ = 0;
+}
+
+void TaskbarWorkingIndicator::ScheduleAnimationFrame() {
+    if (!window_) return;
+    const UINT interval = style_ == TaskbarWorkingStyle::IconDots
+        ? kIconDotFrameIntervalsMs[animation_frame_ % kIconDotFrameIntervalsMs.size()]
+        : kOverlayFrameIntervalMs;
+    animation_timer_id_ = SetTimer(
+        window_, kAnimationTimerId, interval, AnimationTimerProc);
+}
+
+void TaskbarWorkingIndicator::AdvanceAnimationFrame() {
+    if (!working_ || !window_) {
+        StopAnimation();
         return;
     }
-    overlay_frame_ = (overlay_frame_ + 1) % overlay_frames_.size();
-    taskbar_->SetOverlayIcon(window_, overlay_frames_[overlay_frame_],
+    if (style_ == TaskbarWorkingStyle::OverlaySpinner) {
+        if (!EnsureInterface() || !EnsureOverlayFrames()) {
+            StopAnimation();
+            return;
+        }
+        animation_frame_ = (animation_frame_ + 1) % overlay_frames_.size();
+        taskbar_->SetOverlayIcon(window_, overlay_frames_[animation_frame_],
+                                 L"AI CLI 正在处理任务");
+        ScheduleAnimationFrame();
+        return;
+    }
+    if (style_ == TaskbarWorkingStyle::IconDots) {
+        if (!EnsureIconDotFrames()) {
+            StopAnimation();
+            RestoreWindowIcons();
+            return;
+        }
+        animation_frame_ = (animation_frame_ + 1) % icon_dot_large_frames_.size();
+        ApplyIconDotFrame();
+        ScheduleAnimationFrame();
+        return;
+    }
+    StopAnimation();
+}
+
+void TaskbarWorkingIndicator::ApplyIconDotFrame() {
+    if (!window_ || !EnsureInterface() || !EnsureIconDotFrames()) return;
+    const std::size_t frame = animation_frame_ % icon_dot_large_frames_.size();
+    taskbar_->SetOverlayIcon(window_, icon_dot_small_frames_[frame],
                              L"AI CLI 正在处理任务");
+    icon_dot_applied_ = true;
+}
+
+void TaskbarWorkingIndicator::RestoreWindowIcons() {
+    icon_dot_applied_ = false;
 }
 
 void TaskbarWorkingIndicator::ClearTaskbarVisuals() {
+    RestoreWindowIcons();
     if (!taskbar_ || !window_) return;
     taskbar_->SetProgressState(window_, TBPF_NOPROGRESS);
     taskbar_->SetOverlayIcon(window_, nullptr, L"");
@@ -241,24 +342,54 @@ void TaskbarWorkingIndicator::DestroyOverlayFrames() {
     }
 }
 
+void TaskbarWorkingIndicator::DestroyIconDotFrames() {
+    for (HICON& icon : icon_dot_large_frames_) {
+        if (icon) DestroyIcon(icon);
+        icon = nullptr;
+    }
+    for (HICON& icon : icon_dot_small_frames_) {
+        if (icon) DestroyIcon(icon);
+        icon = nullptr;
+    }
+}
+
 void TaskbarWorkingIndicator::Apply() {
-    if (!window_ || !EnsureInterface()) return;
+    if (!window_) return;
     if (!working_) {
-        StopOverlayAnimation();
+        StopAnimation();
         ClearTaskbarVisuals();
         return;
     }
     if (style_ == TaskbarWorkingStyle::ProgressBar) {
-        StopOverlayAnimation();
+        StopAnimation();
+        RestoreWindowIcons();
+        if (!EnsureInterface()) return;
         taskbar_->SetOverlayIcon(window_, nullptr, L"");
         taskbar_->SetProgressState(window_, TBPF_INDETERMINATE);
         return;
     }
-    taskbar_->SetProgressState(window_, TBPF_NOPROGRESS);
-    if (!EnsureOverlayFrames()) return;
-    taskbar_->SetOverlayIcon(window_, overlay_frames_[overlay_frame_],
-                             L"AI CLI 正在处理任务");
-    StartOverlayAnimation();
+    if (style_ == TaskbarWorkingStyle::OverlaySpinner) {
+        StopAnimation();
+        RestoreWindowIcons();
+        if (!EnsureInterface()) return;
+        taskbar_->SetProgressState(window_, TBPF_NOPROGRESS);
+        if (!EnsureOverlayFrames()) return;
+        animation_frame_ %= overlay_frames_.size();
+        taskbar_->SetOverlayIcon(window_, overlay_frames_[animation_frame_],
+                                 L"AI CLI 正在处理任务");
+        StartAnimation();
+        return;
+    }
+
+    StopAnimation();
+    if (EnsureInterface()) {
+        taskbar_->SetProgressState(window_, TBPF_NOPROGRESS);
+        taskbar_->SetOverlayIcon(window_, nullptr, L"");
+    }
+    if (!EnsureIconDotFrames()) return;
+    animation_frame_ %= icon_dot_large_frames_.size();
+    ApplyIconDotFrame();
+    StartAnimation();
 }
 
 } // namespace aicli::ui
