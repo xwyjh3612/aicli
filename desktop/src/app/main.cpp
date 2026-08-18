@@ -448,7 +448,7 @@ void RecreateMainFontsForDpi() {
     g_font_modal_subtitle = CreateMainFont(14, FW_NORMAL, L"Segoe UI");
     g_font_project_heading = CreateMainFont(22, FW_SEMIBOLD, L"Segoe UI");
     g_font_monospace = CreateMainFont(14, FW_NORMAL, L"Cascadia Mono", FIXED_PITCH);
-    g_font_empty_state_icon = CreateMainFont(32, FW_NORMAL, L"Segoe MDL2 Assets");
+    g_font_empty_state_icon = CreateMainFont(26, FW_NORMAL, L"Segoe MDL2 Assets");
     g_icon_font = CreateMainFont(16, FW_NORMAL, L"Segoe MDL2 Assets");
 
     ApplyMainFontsToControls();
@@ -826,7 +826,15 @@ void Layout(){
     const bool emptyProjects=g_projects.empty();
     const bool noProjectSelection=NoProjectSelection();
     const RECT previousEmptyStateIcon=g_empty_state_icon;
+    const RECT previousPrestartPanel=g_prestart_panel;
     if(g_detail_title){
+        const HFONT titleFont=noProjectSelection
+            ?g_font_medium:g_font_project_heading;
+        if(reinterpret_cast<HFONT>(SendMessageW(
+               g_detail_title,WM_GETFONT,0,0))!=titleFont){
+            SendMessageW(g_detail_title,WM_SETFONT,
+                         reinterpret_cast<WPARAM>(titleFont),TRUE);
+        }
         LONG_PTR titleStyle=GetWindowLongPtrW(g_detail_title,GWL_STYLE);
         const LONG_PTR alignment=noProjectSelection?SS_CENTER:SS_LEFT;
         const LONG_PTR nextStyle=(titleStyle&~SS_TYPEMASK)|alignment;
@@ -856,20 +864,20 @@ void Layout(){
     if(noProjectSelection){
         SetRectEmpty(&g_prestart_panel);SetRectEmpty(&g_prestart_folder_surface);
         SetRectEmpty(&g_prestart_command_surface);SetRectEmpty(&g_prestart_note_surface);
-        const int emptyHeight=S(148);
+        const int emptyHeight=S(132);
         const int emptyTop=terminal.top+std::max(
             S(22),static_cast<int>((terminal.bottom-terminal.top-emptyHeight)/2));
         const int iconWidth=S(48);
         const int iconLeft=terminal.left+
             (terminal.right-terminal.left-iconWidth)/2;
-        g_empty_state_icon={iconLeft,emptyTop,iconLeft+iconWidth,emptyTop+S(42)};
+        g_empty_state_icon={iconLeft,emptyTop,iconLeft+iconWidth,emptyTop+S(36)};
         SetText(g_detail_title,emptyProjects?L"还没有项目":L"该分组暂无项目");
         SetText(g_detail_subtitle,emptyProjects
             ?L"创建第一个项目后，它会显示在这里"
             :L"切换其他分组，或点击左上角 + 新建项目");
-        MoveMainChild(g_detail_title,terminal.left+S(28),emptyTop+S(50),
-                      terminal.right-terminal.left-S(56),S(32));
-        MoveMainChild(g_detail_subtitle,terminal.left+S(28),emptyTop+S(91),
+        MoveMainChild(g_detail_title,terminal.left+S(28),emptyTop+S(43),
+                      terminal.right-terminal.left-S(56),S(28));
+        MoveMainChild(g_detail_subtitle,terminal.left+S(28),emptyTop+S(78),
                       terminal.right-terminal.left-S(56),S(38));
     }else{
         SetRectEmpty(&g_empty_state_icon);
@@ -906,6 +914,8 @@ void Layout(){
         if(!IsRectEmpty(&g_empty_state_icon))
             InvalidateRect(g_hwnd,&g_empty_state_icon,FALSE);
     }
+    if(noProjectSelection&&!IsRectEmpty(&previousPrestartPanel))
+        InvalidateRect(g_hwnd,&previousPrestartPanel,FALSE);
     // The central surface is always the real Windows Terminal control.  Do
     // not create a second EDIT-based command line or a text-output fallback:
     // keyboard focus, shortcuts, selection and scrolling must stay native.
