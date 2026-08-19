@@ -37,8 +37,15 @@ function New-AppIconMaster {
         $graphics.CompositingQuality = [Drawing.Drawing2D.CompositingQuality]::HighQuality
         $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
         $graphics.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-        $scale = $Size / 256.0
-        $graphics.ScaleTransform($scale, $scale)
+        # Windows draws every app into the same taskbar icon slot. Scale the
+        # complete composition around its center so the visible plate fills
+        # that slot more closely while retaining a small antialiasing margin.
+        $artworkScale = 1.11
+        $deviceScale = [single](($Size / 256.0) * $artworkScale)
+        $offset = [single](($Size - 256.0 * $deviceScale) / 2.0)
+        $transform = [Drawing.Drawing2D.Matrix]::new(
+            $deviceScale, [single]0, [single]0, $deviceScale, $offset, $offset)
+        try { $graphics.Transform = $transform } finally { $transform.Dispose() }
 
         $surface = New-RoundedRectanglePath 22 22 212 212 56
         try {
@@ -212,16 +219,25 @@ function New-OverlayMaster {
         $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::AntiAlias
         $graphics.PixelOffsetMode = [Drawing.Drawing2D.PixelOffsetMode]::HighQuality
 
+        $cursorMask = [Drawing.Pen]::new(
+            [Drawing.Color]::FromArgb(255, 23, 40, 88), 96.0)
+        try {
+            $cursorMask.StartCap = [Drawing.Drawing2D.LineCap]::Round
+            $cursorMask.EndCap = [Drawing.Drawing2D.LineCap]::Round
+            $graphics.CompositingMode = [Drawing.Drawing2D.CompositingMode]::SourceOver
+            $graphics.DrawLine($cursorMask, 58.0, 218.0, 262.0, 218.0)
+        } finally { $cursorMask.Dispose() }
+
         $trackPen = [Drawing.Pen]::new(
-            [Drawing.Color]::FromArgb(255, 20, 32, 68), 84.0)
+            [Drawing.Color]::FromArgb(255, 20, 32, 68), 93.0)
         try {
             $trackPen.StartCap = [Drawing.Drawing2D.LineCap]::Round
             $trackPen.EndCap = [Drawing.Drawing2D.LineCap]::Round
             $graphics.CompositingMode = [Drawing.Drawing2D.CompositingMode]::SourceOver
-            $graphics.DrawLine($trackPen, 71.0, 196.0, 263.0, 196.0)
+            $graphics.DrawLine($trackPen, 79.0, 218.0, 292.0, 218.0)
         } finally { $trackPen.Dispose() }
 
-        $dotCenters = @(91.0, 167.0, 243.0)
+        $dotCenters = @(101.0, 185.0, 270.0)
         $dotColors = @(
             @(103, 232, 249),
             @(100, 199, 250),
@@ -233,8 +249,8 @@ function New-OverlayMaster {
             $brush = [Drawing.SolidBrush]::new(
                 [Drawing.Color]::FromArgb($alpha, $color[0], $color[1], $color[2]))
             try {
-                $graphics.FillEllipse($brush, $dotCenters[$dot] - 32.0,
-                                      164.0, 64.0, 64.0)
+                $graphics.FillEllipse($brush, $dotCenters[$dot] - 36.0,
+                                      182.0, 72.0, 72.0)
             } finally { $brush.Dispose() }
         }
     } finally {
