@@ -1,5 +1,7 @@
 #include "conpty_connection_bridge.h"
 
+#include "app/powershell_runtime.h"
+
 #include <conpty.h>
 #include <objbase.h>
 #include <userenv.h>
@@ -323,17 +325,16 @@ ConPtyConnectionBridge::ConPtyConnectionBridge(
     std::wstring working_directory,
     std::wstring startup_command,
     std::function<void(std::wstring_view)> output_observer,
-    std::function<void(std::uint32_t, std::uint32_t)> resize_observer) :
+    std::function<void(std::uint32_t, std::uint32_t)> resize_observer,
+    std::function<void(std::wstring_view)> input_observer) :
     working_directory_(std::move(working_directory)),
     startup_command_(std::move(startup_command)),
     output_observer_(std::move(output_observer)),
-    resize_observer_(std::move(resize_observer)) {
-    wchar_t system_directory[MAX_PATH]{};
-    const UINT length = GetSystemDirectoryW(system_directory, MAX_PATH);
-    std::filesystem::path shell = length > 0 && length < MAX_PATH
-        ? std::filesystem::path(system_directory) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe"
-        : std::filesystem::path(L"powershell.exe");
-    shell_command_line_ = L"\"" + shell.wstring() + L"\" -NoLogo -NoExit";
+    resize_observer_(std::move(resize_observer)),
+    input_observer_(std::move(input_observer)) {
+    const auto runtime = aicli::app::PowerShellRuntimeInfo();
+    shell_command_line_ = runtime.CommandLine();
+    shell_is_powershell7_ = runtime.IsPowerShell7();
     // Windows Terminal 1.24 uses grapheme-based width measurement by default.
     // Keeping ConPTY and TermControl on the same model prevents cursor drift
     // for CJK text, emoji and combining sequences.
@@ -383,8 +384,8 @@ void ConPtyConnectionBridge::Start() {
     const auto startup_input = BuildStartupInput();
     if (!startup_input.empty()) {
         const auto* first = reinterpret_cast<const char16_t*>(startup_input.data());
-        WriteInput(winrt::array_view<const char16_t>{
-            first, static_cast<uint32_t>(startup_input.size())});
+        WriteInputInternal(winrt::array_view<const char16_t>{
+            first, static_cast<uint32_t>(startup_input.size())}, false);
     }
 }
 
@@ -425,15 +426,26 @@ bool ConPtyConnectionBridge::CreateProcessAttachedToConPty() {
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     startup.lpAttributeList = attribute_list;
     PROCESS_INFORMATION process{};
-    std::vector<wchar_t> command_line(shell_command_line_.begin(), shell_command_line_.end());
-    command_line.push_back(L'\0');
     auto environment = BuildTerminalEnvironment();
+    const auto create_shell = [&](const std::wstring& value) {
+        std::vector<wchar_t> command_line(value.begin(), value.end());
+        command_line.push_back(L'\0');
+        return CreateProcessW(
+            nullptr, command_line.data(), nullptr, nullptr, FALSE,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            environment.data(),
+            working_directory_.empty() ? nullptr : working_directory_.c_str(),
+            &startup.StartupInfo, &process);
+    };
 
-    const BOOL created = CreateProcessW(
-        nullptr, command_line.data(), nullptr, nullptr, FALSE,
-        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-        environment.data(), working_directory_.empty() ? nullptr : working_directory_.c_str(),
-        &startup.StartupInfo, &process);
+    BOOL created = create_shell(shell_command_line_);
+    if (!created && shell_is_powershell7_ &&
+        aicli::app::ActivateWindowsPowerShellFallback()) {
+        const auto fallback = aicli::app::PowerShellRuntimeInfo();
+        shell_command_line_ = fallback.CommandLine();
+        shell_is_powershell7_ = false;
+        created = create_shell(shell_command_line_);
+    }
 
     DeleteProcThreadAttributeList(attribute_list);
     HeapFree(GetProcessHeap(), 0, attribute_list);
@@ -473,7 +485,20 @@ std::wstring ConPtyConnectionBridge::BuildStartupInput() const {
 }
 
 void ConPtyConnectionBridge::WriteInput(winrt::array_view<const char16_t> data) {
+    WriteInputInternal(data, true);
+}
+
+void ConPtyConnectionBridge::WriteInputInternal(
+    winrt::array_view<const char16_t> data,
+    bool observe_input) {
     if (data.empty()) return;
+    if (observe_input && input_observer_) {
+        try {
+            input_observer_(std::wstring_view{
+                reinterpret_cast<const wchar_t*>(data.data()), data.size()});
+        } catch (...) {
+        }
+    }
     const auto bytes = Utf8(std::wstring_view{
         reinterpret_cast<const wchar_t*>(data.data()), data.size()});
     std::scoped_lock lock(input_mutex_);

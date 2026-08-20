@@ -32,7 +32,8 @@ public:
                HWND owner,
                HWND status,
                std::function<void(std::wstring_view)> output_observer = {},
-               std::function<void(std::uint32_t, std::uint32_t)> resize_observer = {});
+               std::function<void(std::uint32_t, std::uint32_t)> resize_observer = {},
+               std::function<void(std::wstring_view)> input_observer = {});
     bool HasSession(std::wstring_view project_id) const;
     bool Activate(std::wstring_view project_id, bool focus = true);
     void Stop(std::wstring_view project_id);

@@ -24,7 +24,8 @@ struct ConPtyConnectionBridge :
         std::wstring working_directory,
         std::wstring startup_command,
         std::function<void(std::wstring_view)> output_observer = {},
-        std::function<void(std::uint32_t, std::uint32_t)> resize_observer = {});
+        std::function<void(std::uint32_t, std::uint32_t)> resize_observer = {},
+        std::function<void(std::wstring_view)> input_observer = {});
     ~ConPtyConnectionBridge();
 
     void Initialize(const winrt::Windows::Foundation::Collections::ValueSet& settings);
@@ -52,6 +53,8 @@ private:
     bool CreateProcessAttachedToConPty();
     void ReadLoop();
     void EmitOutput(std::wstring_view output) noexcept;
+    void WriteInputInternal(winrt::array_view<const char16_t> data,
+                            bool observe_input);
     std::wstring TransformDisplayOutput(std::wstring_view output);
     void SetState(winrt::Microsoft::Terminal::TerminalConnection::ConnectionState state) noexcept;
     std::wstring BuildStartupInput() const;
@@ -59,8 +62,10 @@ private:
     std::wstring working_directory_;
     std::wstring startup_command_;
     std::wstring shell_command_line_;
+    bool shell_is_powershell7_{};
     std::function<void(std::wstring_view)> output_observer_;
     std::function<void(std::uint32_t, std::uint32_t)> resize_observer_;
+    std::function<void(std::wstring_view)> input_observer_;
     uint32_t rows_{32};
     uint32_t columns_{120};
     DWORD pseudo_console_flags_{};

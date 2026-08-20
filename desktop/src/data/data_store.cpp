@@ -250,7 +250,7 @@ CREATE TABLE IF NOT EXISTS settings(
 bool DataStore::SeedDefaults(std::wstring* error) {
     if (!Execute("INSERT OR IGNORE INTO project_types(name,default_command,builtin) VALUES"
                  "('Codex','codex --yolo resume --last',1),"
-                 "('Claude','claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions',1);",
+                 "('Claude','claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }',1);",
                  error) ||
         !Execute("UPDATE project_types "
                  "SET default_command='codex --yolo resume --last' "
@@ -260,9 +260,17 @@ bool DataStore::SeedDefaults(std::wstring* error) {
                  "'codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last');",
                  error) ||
         !Execute("UPDATE project_types "
-                 "SET default_command='claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions' "
+                 "SET default_command='claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }' "
                  "WHERE builtin=1 AND name='Claude' "
-                 "AND default_command='claude --dangerously-skip-permissions --continue';",
+                 "AND default_command IN ("
+                 "'claude --dangerously-skip-permissions --continue',"
+                 "'claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions');",
+                 error) ||
+        !Execute("UPDATE projects "
+                 "SET command='claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }' "
+                 "WHERE type_name='Claude' AND command IN ("
+                 "'claude --dangerously-skip-permissions --continue',"
+                 "'claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions');",
                  error) ||
         !Execute("UPDATE projects "
                  "SET command='codex --yolo resume --last' "

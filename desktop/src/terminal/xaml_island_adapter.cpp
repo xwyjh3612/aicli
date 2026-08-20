@@ -34,6 +34,7 @@
 #include <winrt/Microsoft.Terminal.Core.h>
 #include <windows.ui.xaml.hosting.desktopwindowxamlsource.h>
 
+#include "app/powershell_runtime.h"
 #include "app/runtime_components.h"
 #include "core/text_utils.h"
 #include "terminal/conpty_connection_bridge.h"
@@ -315,7 +316,8 @@ public:
     bool Start(const std::wstring& project_id, const std::wstring& command,
                const std::wstring& cwd, const std::wstring& title, HWND owner, HWND status,
                std::function<void(std::wstring_view)> output_observer = {},
-               std::function<void(std::uint32_t, std::uint32_t)> resize_observer = {}) {
+               std::function<void(std::uint32_t, std::uint32_t)> resize_observer = {},
+               std::function<void(std::wstring_view)> input_observer = {}) {
         if (project_id.empty()) {
             last_error_ = L"project id is empty";
             return false;
@@ -334,7 +336,8 @@ public:
                 L"Microsoft.Terminal.Settings.Model.dll",
                 L"Microsoft.Terminal.Settings.Model.TerminalSettings");
             auto default_settings = settings_activation.ActivateInstance<Settings::Model::TerminalSettings>();
-            const std::wstring command_line = L"powershell.exe -NoLogo -NoExit";
+            const std::wstring command_line =
+                aicli::app::PowerShellRuntimeInfo().CommandLine();
             set_stage(L"configure TerminalSettings");
             default_settings.Commandline(command_line);
             default_settings.StartingDirectory(cwd);
@@ -374,7 +377,7 @@ public:
             session->conpty_connection =
                 winrt::make_self<aicli::terminal::ConPtyConnectionBridge>(
                     cwd, command, std::move(output_observer),
-                    std::move(resize_observer));
+                    std::move(resize_observer), std::move(input_observer));
             session->conpty_connection->SetLightTheme(light_theme_);
             session->connection = session->conpty_connection.as<
                 winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection>();
@@ -1368,10 +1371,12 @@ bool XamlIslandAdapter::Start(const std::wstring& project_id,
                               HWND owner,
                               HWND status,
                               std::function<void(std::wstring_view)> output_observer,
-                              std::function<void(std::uint32_t, std::uint32_t)> resize_observer) {
+                              std::function<void(std::uint32_t, std::uint32_t)> resize_observer,
+                              std::function<void(std::wstring_view)> input_observer) {
     return impl_ && impl_->Start(project_id, command, cwd, title, owner, status,
                                  std::move(output_observer),
-                                 std::move(resize_observer));
+                                 std::move(resize_observer),
+                                 std::move(input_observer));
 }
 
 bool XamlIslandAdapter::HasSession(std::wstring_view project_id) const {

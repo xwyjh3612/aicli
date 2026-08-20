@@ -10,6 +10,18 @@ set(AICLI_APPLICATION_USER_MODEL_ID "AiCli.Desktop.Dev_jw3zr00rmb0ym!App"
 set(AICLI_PACKAGE_IDENTITY_NAME "AiCli.Desktop.Dev"
     CACHE STRING "Identity Name written to the staged AppxManifest.xml")
 
+# AppxManifest.xml is the release-version source of truth. Generate the UI
+# constant from it so About and packaged/installer builds cannot drift.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/package/AppxManifest.xml"
+    AICLI_PACKAGE_MANIFEST_TEXT)
+string(REGEX MATCH
+    "<Identity[^>]*Version=\"([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)\""
+    AICLI_VERSION_MATCH "${AICLI_PACKAGE_MANIFEST_TEXT}")
+if (NOT AICLI_VERSION_MATCH)
+    message(FATAL_ERROR "AppxManifest.xml does not contain a valid package version")
+endif()
+set(AICLI_VERSION "${CMAKE_MATCH_1}")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ${AICLI_USE_QT_UI})
@@ -44,6 +56,7 @@ set(AICLI_COMMON_SOURCES
     src/agent/terminal_wire_codec.cpp
     src/app/application_activation.cpp
     src/app/project_launcher.cpp
+    src/app/powershell_runtime.cpp
     src/app/runtime_components.cpp
     src/app/single_instance.cpp
     src/core/process_metrics.cpp
@@ -105,6 +118,16 @@ add_executable(aicli_terminal_stream_tests
     src/core/text_utils.cpp
 )
 
+add_executable(aicli_terminal_working_detector_tests
+    tests/terminal_working_detector_tests.cpp
+    src/terminal/terminal_working_detector.cpp
+)
+
+add_executable(aicli_powershell_runtime_tests
+    tests/powershell_runtime_tests.cpp
+    src/app/powershell_runtime.cpp
+)
+
 if (AICLI_USE_QT_UI)
     add_executable(aicli_qt_project_list_tests
         tests/qt_project_list_tests.cpp
@@ -133,6 +156,14 @@ target_compile_definitions(aicli_data_store_tests PRIVATE
 )
 
 target_compile_definitions(aicli_terminal_stream_tests PRIVATE
+    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+)
+
+target_compile_definitions(aicli_terminal_working_detector_tests PRIVATE
+    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+)
+
+target_compile_definitions(aicli_powershell_runtime_tests PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
 )
 
@@ -168,6 +199,14 @@ target_include_directories(aicli_data_store_tests PRIVATE
 target_include_directories(aicli_terminal_stream_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "F:/deps/aicli"
+)
+
+target_include_directories(aicli_terminal_working_detector_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_include_directories(aicli_powershell_runtime_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 if (AICLI_USE_QT_UI)
@@ -241,6 +280,10 @@ target_link_libraries(aicli_terminal_stream_tests PRIVATE
     ole32
 )
 
+target_link_libraries(aicli_powershell_runtime_tests PRIVATE
+    advapi32
+)
+
 if (MSVC)
     # Merge the Windows 10/11 compatibility declaration into the executable's
     # real RT_MANIFEST resource. A manifest embedded from the .rc file is
@@ -254,6 +297,10 @@ if (MSVC)
     target_compile_options(aicli PRIVATE /W4 /EHsc /utf-8 /FS)
     target_compile_options(aicli_data_store_tests PRIVATE /W4 /EHsc /utf-8 /FS)
     target_compile_options(aicli_terminal_stream_tests PRIVATE /W4 /EHsc /utf-8 /FS)
+    target_compile_options(aicli_terminal_working_detector_tests PRIVATE
+        /W4 /EHsc /utf-8 /FS)
+    target_compile_options(aicli_powershell_runtime_tests PRIVATE
+        /W4 /EHsc /utf-8 /FS)
     if (AICLI_USE_QT_UI)
         target_compile_options(aicli_qt_project_list_tests PRIVATE /W4 /EHsc /utf-8 /FS)
     endif()

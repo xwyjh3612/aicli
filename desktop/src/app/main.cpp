@@ -33,6 +33,7 @@
 #include "agent/terminal_snapshot_publisher.h"
 #include "agent/terminal_stream_publisher.h"
 #include "app/application_activation.h"
+#include "app/powershell_runtime.h"
 #include "app/project_launcher.h"
 #include "app/single_instance.h"
 #include "app/runtime_components.h"
@@ -478,6 +479,12 @@ void SetStatusText(const std::wstring& text) {
     if (!text.empty()) {
         SetTimer(g_hwnd, kStatusClearTimerId, kStatusDisplayDurationMs, nullptr);
     }
+}
+
+void ShowPowerShellRuntimeNotice() {
+    if (aicli::app::PowerShellRuntimeInfo().IsPowerShell7()) return;
+    SetStatusText(
+        L"当前使用 Windows PowerShell 5.1（兼容模式），建议安装 PowerShell 7 后重启 AI CLI");
 }
 bool MoveMainChild(HWND control,int x,int y,int width,int height){
     if(!control||!IsWindow(control))return false;
@@ -987,23 +994,20 @@ void DeleteProject(){
 bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const std::wstring& title,const std::wstring& sessionAgent,const std::wstring& project_id){
     SetProjectWorkingState(project_id,false);
     g_terminal_streams.BeginSession(project_id);
-    std::shared_ptr<aicli::terminal::TerminalWorkingDetector> workingDetector;
     const auto workingProtocol=
         aicli::terminal::WorkingProtocolForSession(sessionAgent,cmd);
-    if(workingProtocol){
-        const HWND owner=g_hwnd;
-        workingDetector=std::make_shared<aicli::terminal::TerminalWorkingDetector>(
-            *workingProtocol,
-            [owner,project_id](bool working){
-                auto* message=new(std::nothrow)
-                    AgentWorkingStateMessage{project_id,working};
-                if(!message||!owner||
-                   !PostMessageW(owner,WM_AGENT_WORKING_STATE,0,
-                                 reinterpret_cast<LPARAM>(message))){
-                    delete message;
-                }
-            });
-    }
+    const HWND owner=g_hwnd;
+    auto workingDetector=std::make_shared<aicli::terminal::TerminalWorkingDetector>(
+        workingProtocol,
+        [owner,project_id](bool working){
+            auto* message=new(std::nothrow)
+                AgentWorkingStateMessage{project_id,working};
+            if(!message||!owner||
+               !PostMessageW(owner,WM_AGENT_WORKING_STATE,0,
+                             reinterpret_cast<LPARAM>(message))){
+                delete message;
+            }
+        });
     if(g_island.Start(
            project_id,cmd,cwd,title,g_hwnd,g_status,
            [project_id,workingDetector](std::wstring_view output){
@@ -1013,8 +1017,14 @@ bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const s
            },
            [project_id](std::uint32_t rows,std::uint32_t columns){
                g_terminal_streams.PublishResize(project_id,rows,columns);
+           },
+           [workingDetector](std::wstring_view input){
+               workingDetector->ObserveInput(input);
            })){
-        SetStatusText(L"");
+        if (aicli::app::PowerShellRuntimeInfo().IsPowerShell7())
+            SetStatusText(L"");
+        else
+            ShowPowerShellRuntimeNotice();
         Layout();
         return true;
     }
@@ -1294,7 +1304,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         g_detail_tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,h,nullptr,GetModuleHandleW(nullptr),nullptr);
         if(g_detail_tooltip){for(auto entry:{std::pair<HWND,const wchar_t*>{g_edit_project,L"编辑项目"},{g_open_project_folder,L"打开项目文件夹"}}){TOOLINFOW tool{sizeof(tool)};tool.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tool.hwnd=h;tool.uId=reinterpret_cast<UINT_PTR>(entry.first);tool.lpszText=const_cast<LPWSTR>(entry.second);SendMessageW(g_detail_tooltip,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&tool));}}
         g_status=CreateWindowW(L"STATIC",L"",WS_CHILD|WS_VISIBLE,0,0,0,0,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);ApplyMainFontsToControls();
-        g_island.Attach(h,RECT{250,60,500,400});g_island.SetTheme(g_light_theme);RefreshProjectDetails();ExtendCustomTitleBar(h);SetWindowPos(h,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);Layout();ConfigureRemoteAgent();UpdateHeaderTelemetry();SetTimer(h,1,2000,nullptr);PostMessageW(h,WM_RESTORE_LAST_SESSION,0,0);return 0;}
+        g_island.Attach(h,RECT{250,60,500,400});g_island.SetTheme(g_light_theme);RefreshProjectDetails();ExtendCustomTitleBar(h);SetWindowPos(h,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);Layout();ConfigureRemoteAgent();UpdateHeaderTelemetry();ShowPowerShellRuntimeNotice();SetTimer(h,1,2000,nullptr);PostMessageW(h,WM_RESTORE_LAST_SESSION,0,0);return 0;}
     case WM_ACTIVATE:
         // An owned modal surface becomes the thread's active window while it
         // is open.  That is an internal focus change, not an application

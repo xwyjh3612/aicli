@@ -1,5 +1,7 @@
 #include "ui/management_dialog.h"
 
+#include "aicli_build_identity.h"
+#include "app/powershell_runtime.h"
 #include "ui/styled_input.h"
 #include "ui/drawing_utils.h"
 #include "ui/theme.h"
@@ -93,6 +95,7 @@ enum : int {
     kSettingsDevices = 2332,
     kBindEmpty = 2333,
     kTaskbarStyleIconDots = 2334,
+    kSettingsAbout = 2335,
 };
 
 enum : int {
@@ -117,6 +120,7 @@ enum class SettingsPage {
     ProjectTypes,
     Groups,
     Devices,
+    About,
 };
 
 COLORREF BlendBackdrop(COLORREF base, COLORREF overlay, BYTE alpha) {
@@ -198,6 +202,7 @@ struct State {
     HWND settings_project_types{};
     HWND settings_groups{};
     HWND settings_devices{};
+    HWND settings_about{};
     HWND bind_empty{};
     HWND title_close{};
     HWND hovered_control{};
@@ -337,7 +342,7 @@ bool IsSettingsGroups(const State& state) {
 bool IsSettingsNavigationId(int id) {
     return id == kSettingsAppearance || id == kSettingsConnection ||
            id == kSettingsProjectTypes || id == kSettingsGroups ||
-           id == kSettingsDevices;
+           id == kSettingsDevices || id == kSettingsAbout;
 }
 
 bool IsActiveSettingsNavigation(const State& state, int id) {
@@ -347,6 +352,7 @@ bool IsActiveSettingsNavigation(const State& state, int id) {
     if (id == kSettingsProjectTypes) return state.settings_page == SettingsPage::ProjectTypes;
     if (id == kSettingsGroups) return state.settings_page == SettingsPage::Groups;
     if (id == kSettingsDevices) return state.settings_page == SettingsPage::Devices;
+    if (id == kSettingsAbout) return state.settings_page == SettingsPage::About;
     return false;
 }
 
@@ -357,6 +363,7 @@ HWND SettingsNavigationControl(const State& state, SettingsPage page) {
     case SettingsPage::ProjectTypes: return state.settings_project_types;
     case SettingsPage::Groups: return state.settings_groups;
     case SettingsPage::Devices: return state.settings_devices;
+    case SettingsPage::About: return state.settings_about;
     }
     return nullptr;
 }
@@ -1603,7 +1610,9 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         const wchar_t* subtitle = item->CtlID == kSettingsAppearance ? L"主题与显示" :
                                   item->CtlID == kSettingsConnection ? L"地址与 Agent" :
                                   item->CtlID == kSettingsProjectTypes ? L"CLI 启动配置" :
-                                  L"项目归类管理";
+                                  item->CtlID == kSettingsGroups ? L"项目归类管理" :
+                                  item->CtlID == kSettingsDevices ? L"手机授权状态" :
+                                  L"版本与终端环境";
         SelectObject(item->hDC, state->font);
         SetTextColor(item->hDC, disabled ? muted_color : text_color);
         RECT title_rect{rect.left + S(16), rect.top + S(7), rect.right - S(28), rect.top + S(29)};
@@ -1776,6 +1785,7 @@ void Layout(State& state) {
          button(state.settings_project_types, nav_x, top + S(158), nav_width, S(46));
          button(state.settings_groups, nav_x, top + S(206), nav_width, S(46));
          button(state.settings_devices, nav_x, top + S(254), nav_width, S(46));
+         button(state.settings_about, nav_x, top + S(302), nav_width, S(46));
          button(state.title_close, state.panel.right - S(54), top + S(4), S(32), S(32));
 
         // The content surface owns the full right pane.  Its painted content
@@ -1976,6 +1986,7 @@ int SettingsContentExtent(SettingsPage page) {
     case SettingsPage::ProjectTypes: return 590;
     case SettingsPage::Groups: return 590;
     case SettingsPage::Devices: return 520;
+    case SettingsPage::About: return 480;
     }
     return 390;
 }
@@ -2119,7 +2130,7 @@ void LayoutSettingsContent(State& state) {
         button(state.add, x, 492, S(122));
         button(state.save, x + S(134), 492, S(118));
         button(state.remove, x + S(264), 492, S(104));
-    } else {
+    } else if (state.settings_page == SettingsPage::Devices) {
         const int list_width=std::min(S(306),available/2);
         if(state.list){
             SetWindowPos(state.list,nullptr,x,S(126)-offset,list_width,S(350),
@@ -2169,6 +2180,9 @@ void PaintSettingsContent(State& state, HDC dc) {
     } else if(state.settings_page==SettingsPage::Devices){
         title=L"设备管理";
         subtitle=L"查看已授权手机、最近连接状态，或撤销设备访问权限。";
+    } else if(state.settings_page==SettingsPage::About){
+        title=L"关于";
+        subtitle=L"查看软件版本和当前交互终端运行环境。";
     }
 
     SelectObject(dc, state.settings_content_font ? state.settings_content_font : state.title_font);
@@ -2272,6 +2286,61 @@ void PaintSettingsContent(State& state, HDC dc) {
         RECT hint{x, S(548), right, S(578)};
         DrawTextW(dc, L"添加和修改名称会打开独立输入模态层；非空分组不能删除。", -1,
                   &hint, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }else if(state.settings_page==SettingsPage::About){
+        card({x,S(104),right,S(312)});
+        SelectObject(dc,state.title_font?state.title_font:state.settings_content_font);
+        SetTextColor(dc,state.text_color);
+        RECT app_name{x+S(24),S(118),right-S(24),S(154)};
+        DrawTextW(dc,L"AI CLI",-1,&app_name,
+                  DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
+        SetTextColor(dc,state.muted_color);
+        RECT app_detail{x+S(24),S(150),right-S(24),S(176)};
+        DrawTextW(dc,L"AI CLI 桌面工作区",-1,&app_detail,
+                  DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        HPEN divider=CreatePen(PS_SOLID,1,state.panel_edge);
+        HGDIOBJ old_divider=SelectObject(dc,divider);
+        MoveToEx(dc,x+S(24),S(184),nullptr);
+        LineTo(dc,right-S(24),S(184));
+        SelectObject(dc,old_divider);
+        DeleteObject(divider);
+
+        const auto runtime=aicli::app::PowerShellRuntimeInfo();
+        const std::wstring terminal=runtime.IsPowerShell7()
+            ?runtime.DisplayName()
+            :runtime.DisplayName()+L"（兼容模式）";
+        auto row=[&](const wchar_t* key,const std::wstring& value,int y){
+            SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
+            SetTextColor(dc,state.muted_color);
+            RECT key_rect{x+S(24),S(y),x+S(132),S(y+34)};
+            DrawTextW(dc,key,-1,&key_rect,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+            SelectObject(dc,state.settings_content_font?state.settings_content_font:state.font);
+            SetTextColor(dc,state.text_color);
+            RECT value_rect{x+S(136),S(y),right-S(24),S(y+34)};
+            DrawTextW(dc,value.c_str(),-1,&value_rect,
+                      DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+        };
+        row(L"软件名称",L"AI CLI",194);
+        row(L"版本号",AICLI_VERSION,232);
+        row(L"终端环境",terminal,270);
+
+        SelectObject(dc,state.settings_content_font?state.settings_content_font:state.font);
+        SetTextColor(dc,state.text_color);
+        RECT detection_title{x,S(326),right,S(354)};
+        DrawTextW(dc,L"PowerShell 检测说明",-1,&detection_title,
+                  DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+
+        SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
+        SetTextColor(dc,state.muted_color);
+        std::wstring detection_note=runtime.IsPowerShell7()
+            ?L"已自动使用检测到的 PowerShell 7。"
+            :L"当前未检测到 PowerShell 7，正在使用 Windows PowerShell 5.1 兼容模式。";
+        detection_note+=
+            L" AI CLI 支持常规安装和 Microsoft Store 版；如未自动识别到，请把 pwsh.exe 所在文件夹加入 PATH。"
+            L"安装、升级或修改 PATH 后，请完全退出并重启 AI CLI。";
+        RECT hint{x,S(358),right,S(454)};
+        DrawTextW(dc,detection_note.c_str(),-1,&hint,
+                  DT_LEFT|DT_TOP|DT_WORDBREAK);
     }else{
         SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
         SetTextColor(dc,state.palette.muted);
@@ -2696,6 +2765,7 @@ void CreateControls(State& state) {
         state.settings_project_types = MakeButton(state, L"项目类型", kSettingsProjectTypes);
         state.settings_groups = MakeButton(state, L"分组管理", kSettingsGroups);
         state.settings_devices = MakeButton(state, L"设备管理", kSettingsDevices);
+        state.settings_about = MakeButton(state, L"关于", kSettingsAbout);
         state.computer_name = MakeField(state, kComputerName, L"显示在手机端，例如：开发主机", state.content);
         state.listen = MakeField(state, kListen, L"0.0.0.0 表示所有网卡", state.content);
         state.port = MakeField(state, kPort, L"例如 4280", state.content);
@@ -2990,6 +3060,10 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
             }
             if(id==kSettingsDevices){
                 UpdateSettingsPage(*state,SettingsPage::Devices);
+                return 0;
+            }
+            if(id==kSettingsAbout){
+                UpdateSettingsPage(*state,SettingsPage::About);
                 return 0;
             }
             if(state->settings_page==SettingsPage::Devices&&

@@ -1,4 +1,5 @@
 #include "app/project_launcher.h"
+#include "app/powershell_runtime.h"
 
 #include <windows.h>
 
@@ -36,21 +37,6 @@ std::filesystem::path CommandPromptPath() {
             return std::filesystem::path(
                        std::wstring(buffer.data(), static_cast<size_t>(length))) /
                    L"cmd.exe";
-        }
-        buffer.resize(static_cast<size_t>(length) + 1);
-    }
-}
-
-std::filesystem::path PowerShellPath() {
-    std::vector<wchar_t> buffer(MAX_PATH);
-    for (;;) {
-        const UINT length = GetSystemDirectoryW(
-            buffer.data(), static_cast<UINT>(buffer.size()));
-        if (!length) return L"powershell.exe";
-        if (length < buffer.size()) {
-            return std::filesystem::path(
-                       std::wstring(buffer.data(), static_cast<size_t>(length))) /
-                   L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
         }
         buffer.resize(static_cast<size_t>(length) + 1);
     }
@@ -104,11 +90,20 @@ bool OpenCommandPromptAt(const std::wstring& working_directory,
 
 bool OpenPowerShellAt(const std::wstring& working_directory,
                       std::wstring* error_message) {
-    const std::filesystem::path powershell = PowerShellPath();
-    const std::wstring command_line =
-        L"\"" + powershell.wstring() + L"\" -NoLogo -NoExit";
-    return OpenShellAt(powershell, command_line, L"PowerShell",
-                       working_directory, error_message);
+    auto runtime = PowerShellRuntimeInfo();
+    if (OpenShellAt(runtime.executable, runtime.CommandLine(),
+                    runtime.DisplayName().c_str(), working_directory,
+                    error_message)) {
+        return true;
+    }
+    if (!runtime.IsPowerShell7() ||
+        !ActivateWindowsPowerShellFallback()) {
+        return false;
+    }
+    runtime = PowerShellRuntimeInfo();
+    return OpenShellAt(runtime.executable, runtime.CommandLine(),
+                       runtime.DisplayName().c_str(), working_directory,
+                       error_message);
 }
 
 } // namespace aicli::app

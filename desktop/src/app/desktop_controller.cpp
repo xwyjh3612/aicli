@@ -409,7 +409,7 @@ std::wstring DesktopController::DefaultCommandForType(const std::wstring& type) 
         if (value.name == type && !value.default_command.empty()) return value.default_command;
     }
     if (type == L"Claude") {
-        return L"claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions";
+        return L"claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }";
     }
     return L"codex --yolo resume --last";
 }

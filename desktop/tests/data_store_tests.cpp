@@ -65,8 +65,79 @@ int wmain(int argc, wchar_t** argv) {
                     L"Codex builtin type and command");
         ok &= Check(claude && claude->builtin &&
                         claude->default_command ==
-                            L"claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions",
+                            L"claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }",
                     L"Claude builtin type and command");
+
+        if (claude) {
+            constexpr wchar_t kLegacyClaudeCommand[] =
+                L"claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions";
+            constexpr wchar_t kCurrentClaudeCommand[] =
+                L"claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }";
+            error.clear();
+            ok &= Check(store.UpdateProjectType(
+                            claude->id, L"Claude", kLegacyClaudeCommand, &error),
+                        (L"prepare legacy Claude type migration: " + error).c_str());
+            aicli::Project legacy_claude_project;
+            legacy_claude_project.name = L"旧 Claude 默认命令";
+            legacy_claude_project.type = L"Claude";
+            legacy_claude_project.group = L"默认分组";
+            legacy_claude_project.folder = database.parent_path().wstring();
+            legacy_claude_project.command = kLegacyClaudeCommand;
+            error.clear();
+            ok &= Check(store.SaveProject(legacy_claude_project, &error),
+                        (L"prepare legacy Claude project migration: " + error).c_str());
+
+            store.Close();
+            error.clear();
+            ok &= Check(store.Initialize(database.wstring(), &error),
+                        (L"reinitialize for Claude migration: " + error).c_str());
+            types = store.LoadProjectTypes();
+            codex = Find(types, [](const aicli::ProjectType& value) {
+                return value.name == L"Codex";
+            });
+            claude = Find(types, [](const aicli::ProjectType& value) {
+                return value.name == L"Claude";
+            });
+            ok &= Check(claude && claude->default_command == kCurrentClaudeCommand,
+                        L"legacy Claude builtin command migrates to PowerShell-compatible if form");
+            const auto migrated_projects = store.LoadProjects();
+            const auto* migrated_project = Find(
+                migrated_projects, [&](const aicli::Project& value) {
+                    return value.id == legacy_claude_project.id;
+                });
+            ok &= Check(migrated_project &&
+                            migrated_project->command == kCurrentClaudeCommand,
+                        L"legacy Claude project command migrates exactly");
+
+            error.clear();
+            ok &= Check(store.UpdateProjectType(
+                            claude->id, L"Claude", L"claude custom", &error),
+                        (L"prepare custom Claude preservation: " + error).c_str());
+            store.Close();
+            error.clear();
+            ok &= Check(store.Initialize(database.wstring(), &error),
+                        (L"reinitialize custom Claude preservation: " + error).c_str());
+            types = store.LoadProjectTypes();
+            codex = Find(types, [](const aicli::ProjectType& value) {
+                return value.name == L"Codex";
+            });
+            claude = Find(types, [](const aicli::ProjectType& value) {
+                return value.name == L"Claude";
+            });
+            ok &= Check(claude && claude->default_command == L"claude custom",
+                        L"custom Claude command is not overwritten by migration");
+            error.clear();
+            ok &= Check(claude && store.UpdateProjectType(
+                            claude->id, L"Claude", kCurrentClaudeCommand, &error),
+                        (L"restore Claude preset after migration test: " + error).c_str());
+            types = store.LoadProjectTypes();
+            codex = Find(types, [](const aicli::ProjectType& value) {
+                return value.name == L"Codex";
+            });
+            claude = Find(types, [](const aicli::ProjectType& value) {
+                return value.name == L"Claude";
+            });
+        }
         ok &= Check(codex && store.DefaultProjectTypeId() == codex->id,
                     L"Codex is the fallback default project type");
         if (claude) {
