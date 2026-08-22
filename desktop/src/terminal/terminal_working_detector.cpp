@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cwchar>
 #include <cwctype>
+#include <limits>
 #include <utility>
 
 namespace aicli::terminal {
@@ -21,6 +22,74 @@ bool IsCsiFinal(wchar_t value) {
     return value >= 0x40 && value <= 0x7e;
 }
 
+enum class EnhancedKey {
+    None,
+    Submit,
+    Cancel,
+};
+
+bool ParseUnsigned(std::wstring_view value, unsigned* result) {
+    if (value.empty() || !result) return false;
+    unsigned parsed = 0;
+    for (const wchar_t character : value) {
+        if (character < L'0' || character > L'9') return false;
+        const unsigned digit = static_cast<unsigned>(character - L'0');
+        if (parsed > (std::numeric_limits<unsigned>::max() - digit) / 10u) {
+            return false;
+        }
+        parsed = parsed * 10u + digit;
+    }
+    *result = parsed;
+    return true;
+}
+
+EnhancedKey ParseEnhancedKey(std::wstring_view input) {
+    // Opencode can enable Kitty's keyboard protocol.  In that mode Enter is
+    // encoded as CSI 13 u (optionally with a modifier parameter) rather than
+    // as a bare CR, and modifyOtherKeys uses CSI 27;...;13 ~.
+    for (size_t start = input.find(L"\x1b["); start != std::wstring_view::npos;
+         start = input.find(L"\x1b[", start + 2)) {
+        const size_t end = input.find_first_of(L"u~", start + 2);
+        if (end == std::wstring_view::npos) continue;
+        const wchar_t final = input[end];
+        const std::wstring_view parameters = input.substr(start + 2, end - start - 2);
+        unsigned first = 0;
+        if (parameters.empty()) continue;
+
+        size_t separator = parameters.find(L';');
+        const std::wstring_view first_parameter =
+            parameters.substr(0, separator == std::wstring_view::npos
+                                    ? parameters.size() : separator);
+        if (!ParseUnsigned(first_parameter, &first)) continue;
+
+        unsigned key_code = first;
+        unsigned modifiers = 1;
+        if (separator != std::wstring_view::npos) {
+            size_t next = parameters.find(L';', separator + 1);
+            const std::wstring_view second_parameter = parameters.substr(
+                separator + 1,
+                next == std::wstring_view::npos
+                    ? parameters.size() - separator - 1
+                    : next - separator - 1);
+            unsigned parsed_modifiers = 0;
+            if (!ParseUnsigned(second_parameter, &parsed_modifiers)) continue;
+            modifiers = parsed_modifiers;
+
+            if (final == L'~' && first == 27 &&
+                next != std::wstring_view::npos) {
+                const std::wstring_view third_parameter = parameters.substr(next + 1);
+                if (!ParseUnsigned(third_parameter, &key_code)) continue;
+            }
+        }
+
+        if (key_code == 13) return EnhancedKey::Submit;
+        if (key_code == 3 || (key_code == 99 && (modifiers & 4u) != 0)) {
+            return EnhancedKey::Cancel;
+        }
+    }
+    return EnhancedKey::None;
+}
+
 } // namespace
 
 std::optional<AgentTitleProtocol> WorkingProtocolForSession(
@@ -30,9 +99,6 @@ std::optional<AgentTitleProtocol> WorkingProtocolForSession(
         return value.size() == expected.size() &&
                _wcsnicmp(value.data(), expected.data(), value.size()) == 0;
     };
-    if (equals(type, L"Claude")) return AgentTitleProtocol::Claude;
-    if (equals(type, L"Codex")) return AgentTitleProtocol::Codex;
-
     const auto contains = [](std::wstring_view value, std::wstring_view needle) {
         return std::search(
                    value.begin(), value.end(), needle.begin(), needle.end(),
@@ -40,8 +106,14 @@ std::optional<AgentTitleProtocol> WorkingProtocolForSession(
                        return std::towlower(left) == std::towlower(right);
                    }) != value.end();
     };
+    // OpenCode does not publish the Claude/Codex title protocol.  A project
+    // may still retain the built-in Codex type after its command is changed,
+    // so the actual command must take precedence over the display type here.
+    if (contains(command, L"opencode")) return std::nullopt;
     if (contains(command, L"claude")) return AgentTitleProtocol::Claude;
     if (contains(command, L"codex")) return AgentTitleProtocol::Codex;
+    if (equals(type, L"Claude")) return AgentTitleProtocol::Claude;
+    if (equals(type, L"Codex")) return AgentTitleProtocol::Codex;
     return std::nullopt;
 }
 
@@ -110,12 +182,18 @@ void TerminalWorkingDetector::ObserveInput(std::wstring_view input) {
     bool submitted = false;
     bool cancelled = false;
     bool editing = false;
+    const EnhancedKey enhanced_key = ParseEnhancedKey(input);
+    if (enhanced_key == EnhancedKey::Submit) {
+        submitted = true;
+    } else if (enhanced_key == EnhancedKey::Cancel) {
+        cancelled = true;
+    }
     if (input.starts_with(L"\x1b[200~")) {
         // Bracketed paste can contain CR characters that are part of the
         // pasted text. The real Enter key arrives separately.
         editing = true;
     } else {
-        if (input.front() == L'\x1b') {
+        if (input.front() == L'\x1b' && enhanced_key == EnhancedKey::None) {
             const wchar_t final = input.back();
             const bool navigation_key = input.size() == 1 ||
                 final == L'A' || final == L'B' || final == L'C' ||

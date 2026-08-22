@@ -1,5 +1,6 @@
 # Native desktop build and staged runtime
 /desktop/build/
+/desktop/build-debug/
 /desktop/build-qt/
 /desktop/bin/
 /desktop/installer/output/

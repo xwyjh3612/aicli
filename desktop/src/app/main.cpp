@@ -17,6 +17,7 @@
 #include <cwctype>
 #include <cwchar>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <mutex>
 #include <string_view>
@@ -113,6 +114,73 @@ constexpr UINT_PTR kProjectSpinnerTimerId = 3;
 constexpr UINT_PTR kGitSpinnerTimerId = 4;
 constexpr UINT_PTR kStatusClearTimerId = 5;
 constexpr UINT kStatusDisplayDurationMs = 15000;
+
+#ifdef AICLI_DEBUG_BUILD
+std::mutex g_working_detector_log_mutex;
+std::atomic<unsigned> g_working_detector_log_lines{};
+
+std::filesystem::path WorkingDetectorLogPath() {
+    std::vector<wchar_t> buffer(32768);
+    const DWORD length = GetModuleFileNameW(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (!length || length >= buffer.size()) return L"working-detector.log";
+    return std::filesystem::path(std::wstring(buffer.data(), length))
+        .parent_path() / L"working-detector.log";
+}
+
+std::wstring TerminalChunkSummary(std::wstring_view value) {
+    std::wostringstream result;
+    result << L"len=" << value.size() << L" units=";
+    const size_t shown = std::min<size_t>(value.size(), 64);
+    for (size_t index = 0; index < shown; ++index) {
+        wchar_t unit[8]{};
+        swprintf_s(unit, L"%04X", static_cast<unsigned>(value[index]));
+        if (index) result << L' ';
+        result << unit;
+    }
+    if (shown < value.size()) result << L" ...";
+    return result.str();
+}
+
+void ResetWorkingDetectorLog() {
+    std::scoped_lock lock(g_working_detector_log_mutex);
+    g_working_detector_log_lines = 0;
+    std::ofstream stream(WorkingDetectorLogPath(),
+                         std::ios::binary | std::ios::trunc);
+    stream << "AiCli Debug working detector trace\r\n";
+}
+
+void LogWorkingDetector(std::wstring_view project_id,
+                        std::wstring_view event,
+                        std::wstring_view details = {}) {
+    if (g_working_detector_log_lines.fetch_add(1) >= 4000) return;
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t timestamp[32]{};
+    swprintf_s(timestamp, L"%02u:%02u:%02u.%03u", now.wHour, now.wMinute,
+               now.wSecond, now.wMilliseconds);
+    std::wstring line = timestamp;
+    line += L" [";
+    line.append(project_id);
+    line += L"] ";
+    line.append(event);
+    if (!details.empty()) {
+        line += L" | ";
+        line.append(details);
+    }
+    line += L"\r\n";
+    const std::string utf8 = aicli::text::Utf8Text(line);
+    std::scoped_lock lock(g_working_detector_log_mutex);
+    std::ofstream stream(WorkingDetectorLogPath(),
+                         std::ios::binary | std::ios::app);
+    stream.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+}
+#else
+std::wstring TerminalChunkSummary(std::wstring_view) { return {}; }
+void ResetWorkingDetectorLog() {}
+void LogWorkingDetector(std::wstring_view, std::wstring_view,
+                        std::wstring_view = {}) {}
+#endif
 constexpr UINT kProjectSpinnerIntervalMs = 75;
 constexpr UINT kGitSpinnerIntervalMs = 80;
 constexpr UINT kProjectListItemHeight = 40;
@@ -996,10 +1064,18 @@ bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const s
     g_terminal_streams.BeginSession(project_id);
     const auto workingProtocol=
         aicli::terminal::WorkingProtocolForSession(sessionAgent,cmd);
+    const std::wstring protocolName=!workingProtocol.has_value()
+        ?L"generic"
+        :(*workingProtocol==aicli::terminal::AgentTitleProtocol::Claude
+            ?L"claude":L"codex");
+    LogWorkingDetector(project_id,L"session-start",
+        L"type="+sessionAgent+L" protocol="+protocolName+L" command="+cmd);
     const HWND owner=g_hwnd;
     auto workingDetector=std::make_shared<aicli::terminal::TerminalWorkingDetector>(
         workingProtocol,
         [owner,project_id](bool working){
+            LogWorkingDetector(project_id,L"detector-callback",
+                               working?L"working=true":L"working=false");
             auto* message=new(std::nothrow)
                 AgentWorkingStateMessage{project_id,working};
             if(!message||!owner||
@@ -1011,6 +1087,8 @@ bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const s
     if(g_island.Start(
            project_id,cmd,cwd,title,g_hwnd,g_status,
            [project_id,workingDetector](std::wstring_view output){
+               LogWorkingDetector(project_id,L"output",
+                                  TerminalChunkSummary(output));
                g_terminal_streams.PublishOutput(project_id,output);
                g_terminal_snapshots.Queue(project_id);
                if(workingDetector)workingDetector->Observe(output);
@@ -1018,7 +1096,9 @@ bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const s
            [project_id](std::uint32_t rows,std::uint32_t columns){
                g_terminal_streams.PublishResize(project_id,rows,columns);
            },
-           [workingDetector](std::wstring_view input){
+           [project_id,workingDetector](std::wstring_view input){
+               LogWorkingDetector(project_id,L"input",
+                                  TerminalChunkSummary(input));
                workingDetector->ObserveInput(input);
            })){
         if (aicli::app::PowerShellRuntimeInfo().IsPowerShell7())
@@ -1602,7 +1682,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     }
     case WM_PAIRING_PENDING:{std::unique_ptr<aicli::agent::PendingPairing> pairing(reinterpret_cast<aicli::agent::PendingPairing*>(l));if(!pairing)return 0;g_pending_pairing=*pairing;if(g_binding_dialog){LayoutBindingDialog(g_binding_dialog);InvalidateRect(g_binding_dialog,nullptr,FALSE);}else if(pairing->submitted&&!pairing->authorized&&!pairing->rejected){const std::wstring text=L"手机名称："+pairing->device.name+L"\n型号："+pairing->device.model+L"\n设备 ID："+pairing->device.phone_id+L"\n\n确认后该手机可远程操作管理员终端。";const bool approve=MessageBoxW(h,text.c_str(),L"确认绑定手机",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES;std::wstring error;if(!g_remote_agent.ConfirmPairing(pairing->info.pairing_id,approve,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);}UpdateDeviceHeader();return 0;}
     case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message&&!message->online)SetStatusText(aicli::agent::IsMobileAccessEnabled(g_store)?message->text:L"手机访问服务已关闭");UpdateHeaderTelemetry();return 0;}
-    case WM_AGENT_WORKING_STATE:{std::unique_ptr<AgentWorkingStateMessage> message(reinterpret_cast<AgentWorkingStateMessage*>(l));if(message)SetProjectWorkingState(message->project_id,message->working);return 0;}
+    case WM_AGENT_WORKING_STATE:{std::unique_ptr<AgentWorkingStateMessage> message(reinterpret_cast<AgentWorkingStateMessage*>(l));if(message){LogWorkingDetector(message->project_id,L"ui-working-message",message->working?L"working=true":L"working=false");SetProjectWorkingState(message->project_id,message->working);}return 0;}
     case WM_GIT_STATUS_READY:{
         std::unique_ptr<GitStatusMessage> message(
             reinterpret_cast<GitStatusMessage*>(l));
@@ -1681,6 +1761,8 @@ int WINAPI wWinMain(HINSTANCE instance,
         winrt::uninit_apartment();
         return 0;
     }
+
+    ResetWorkingDetectorLog();
 
     aicli::app::SingleInstanceGuard single_instance;
     std::wstring single_instance_error;

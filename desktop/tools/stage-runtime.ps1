@@ -9,6 +9,7 @@ param(
     [string]$ApplicationLogo = ''
 )
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 Add-Type -AssemblyName System.Drawing
 
 if ($PackageIdentityName -notmatch '^[A-Za-z0-9.-]+$') {

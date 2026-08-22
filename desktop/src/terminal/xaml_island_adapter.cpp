@@ -377,7 +377,8 @@ public:
             session->conpty_connection =
                 winrt::make_self<aicli::terminal::ConPtyConnectionBridge>(
                     cwd, command, std::move(output_observer),
-                    std::move(resize_observer), std::move(input_observer));
+                    std::move(resize_observer), input_observer);
+            session->input_observer = std::move(input_observer);
             session->conpty_connection->SetLightTheme(light_theme_);
             session->connection = session->conpty_connection.as<
                 winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection>();
@@ -877,6 +878,7 @@ public:
         switch (message.message) {
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
+            ObservePhysicalKey(message.wParam, message.lParam);
             return HandleClipboardKeyDown(message.wParam, message.lParam);
         case WM_CHAR:
         case WM_SYSCHAR:
@@ -887,6 +889,21 @@ public:
             return false;
         default:
             return false;
+        }
+    }
+    void ObservePhysicalKey(WPARAM key, LPARAM key_details) noexcept {
+        auto* session = ActiveSession();
+        if (!session || !session->input_observer || key != VK_RETURN) return;
+        const bool auto_repeat = (key_details & (1LL << 30)) != 0;
+        if (auto_repeat) return;
+        try {
+            // TermControl may translate Enter to an enhanced keyboard sequence
+            // or combine it with adjacent text before ITerminalConnection sees
+            // it.  Observe the physical key as a reliable submission boundary;
+            // the connection observer remains responsible for editing and
+            // cancellation input.
+            session->input_observer(std::wstring_view{L"\r", 1});
+        } catch (...) {
         }
     }
     void FocusActiveTerminal() noexcept {
@@ -971,6 +988,7 @@ private:
         winrt::Microsoft::Terminal::Settings::Model::TerminalSettings unfocused_settings{nullptr};
         winrt::Microsoft::Terminal::TerminalConnection::ITerminalConnection connection{nullptr};
         winrt::com_ptr<aicli::terminal::ConPtyConnectionBridge> conpty_connection;
+        std::function<void(std::wstring_view)> input_observer;
         winrt::Windows::UI::Xaml::Controls::Primitives::ScrollBar native_scrollbar{nullptr};
         winrt::Windows::UI::Xaml::Media::SolidColorBrush scrollbar_idle_brush{nullptr};
         winrt::Windows::UI::Xaml::Media::SolidColorBrush scrollbar_hover_brush{nullptr};

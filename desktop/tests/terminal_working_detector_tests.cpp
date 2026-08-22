@@ -68,6 +68,8 @@ bool TestProtocolSelection() {
     ok &= Check(WorkingProtocolForSession(L"Codex", L"custom") ==
                     AgentTitleProtocol::Codex,
                 "Codex type selects Codex title protocol");
+    ok &= Check(!WorkingProtocolForSession(L"Codex", L"opencode").has_value(),
+                "OpenCode command uses the generic fallback even with Codex type");
     ok &= Check(!WorkingProtocolForSession(L"Shell", L"pwsh").has_value(),
                 "unrelated sessions do not select a title protocol");
     return ok;
@@ -256,6 +258,54 @@ bool TestGenericCliSubmissionGate() {
     return ok;
 }
 
+bool TestEnhancedKeyboardSubmissionGate() {
+    constexpr auto lease = 250ms;
+    StateRecorder recorder;
+    TerminalWorkingDetector detector(
+        std::nullopt,
+        [&](bool working) { recorder.Push(working); }, lease);
+
+    detector.Observe(L"Opencode prompt");
+    detector.ObserveInput(L"question");
+    detector.Observe(L"question");
+    std::this_thread::sleep_for(50ms);
+    bool ok = Check(recorder.Snapshot().empty(),
+                    "enhanced-keyboard text entry stays idle");
+
+    detector.ObserveInput(L"\x1b[13u");
+    detector.Observe(L"\x1b[2K\r");
+    std::this_thread::sleep_for(50ms);
+    ok &= Check(recorder.Snapshot().empty(),
+                "Kitty Enter does not spin on control-only repaint");
+    detector.Observe(L"Opencode is working");
+    ok &= Check(recorder.WaitFor({true}),
+                "Kitty CSI 13 u opens the generic fallback gate");
+    ok &= Check(recorder.WaitFor({true, false}, 1s),
+                "enhanced-keyboard fallback expires normally");
+
+    StateRecorder combined_recorder;
+    TerminalWorkingDetector combined(
+        std::nullopt,
+        [&](bool working) { combined_recorder.Push(working); }, lease);
+    combined.ObserveInput(L"prompt text\x1b[13u");
+    combined.Observe(L"combined-batch output");
+    ok &= Check(combined_recorder.WaitFor({true}),
+                "enhanced Enter is found inside a combined input batch");
+
+    StateRecorder modified_recorder;
+    TerminalWorkingDetector modified(
+        std::nullopt,
+        [&](bool working) { modified_recorder.Push(working); }, lease);
+    modified.ObserveInput(L"\x1b[27;5;13~");
+    modified.Observe(L"Opencode modified-key output");
+    ok &= Check(modified_recorder.WaitFor({true}),
+                "modifyOtherKeys Enter opens the generic fallback gate");
+    modified.ObserveInput(L"\x1b[99;5u");
+    ok &= Check(modified_recorder.WaitFor({true, false}),
+                "enhanced-keyboard Ctrl+C clears the fallback immediately");
+    return ok;
+}
+
 bool TestIdleOverridesActivityInSameBatch() {
     StateRecorder recorder;
     constexpr auto lease = 250ms;
@@ -298,6 +348,7 @@ int main() {
     ok &= TestActivityLeaseAndFiltering();
     ok &= TestIdleOverridesActivityInSameBatch();
     ok &= TestGenericCliSubmissionGate();
+    ok &= TestEnhancedKeyboardSubmissionGate();
     if (ok) std::cout << "AI CLI terminal working detector tests passed.\n";
     return ok ? 0 : 1;
 }
