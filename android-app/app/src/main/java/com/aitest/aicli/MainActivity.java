@@ -754,7 +754,7 @@ public final class MainActivity extends AppCompatActivity {
 
         rebuildingGroups = true;
         List<String> labels = new ArrayList<>();
-        int selectedIndex = 0;
+        String selectedLabel = "全部";
         for (int index = 0; index < displayedGroups.size(); index++) {
             String group = displayedGroups.get(index);
             int count = 0;
@@ -767,11 +767,13 @@ public final class MainActivity extends AppCompatActivity {
             String label = ALL_GROUPS.equals(group) ? "全部"
                     : RUNNING_GROUP.equals(group) ? "正在运行" : group;
             labels.add(label + " (" + count + ")");
-            if (group.equals(selectedGroup)) selectedIndex = index;
+            if (group.equals(selectedGroup)) {
+                selectedLabel = label;
+            }
         }
         ArrayAdapter<String> adapter = new ArrayAdapter<>(this, R.layout.item_group_dropdown, labels);
         groupSelector.setAdapter(adapter);
-        if (!labels.isEmpty()) groupSelector.setText(labels.get(selectedIndex), false);
+        if (!labels.isEmpty()) groupSelector.setText(selectedLabel, false);
         groupSelectorLayout.setVisibility(View.VISIBLE);
         rebuildingGroups = false;
     }
