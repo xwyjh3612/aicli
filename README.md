@@ -59,11 +59,19 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 
 ~~~powershell
 $cmake = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
-& $cmake -S desktop -B desktop\build-nonqt -G 'Visual Studio 17 2022' -A x64 -DAICLI_USE_QT_UI=OFF -DAICLI_SKIP_PACKAGED_ACTIVATION=ON -DCMAKE_RUNTIME_OUTPUT_DIRECTORY='C:/project/ai_code/codex_tool/desktop/bin/NonQt'
-& $cmake --build desktop\build-nonqt --config Debug --target aicli -- /m:2
+& $cmake -S desktop -B desktop\build -G 'Visual Studio 17 2022' -A x64 `
+    '-DAICLI_USE_QT_UI=OFF' `
+    '-DAICLI_SKIP_PACKAGED_ACTIVATION=OFF' `
+    '-DAICLI_PACKAGE_IDENTITY_NAME=AiCli.Desktop.Debug' `
+    '-DAICLI_APPLICATION_USER_MODEL_ID=AiCli.Desktop.Debug_jw3zr00rmb0ym!App' `
+    '-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=C:/project/ai_code/codex_tool/desktop/bin'
+& $cmake --build desktop\build --config Debug --target aicli -- /m:2
+& .\desktop\tools\register-runtime.ps1 -Output .\desktop\bin\Debug
 ~~~
 
-AICLI_SKIP_PACKAGED_ACTIVATION=ON 用于本地调试，允许直接启动可执行文件。正式安装包应使用构建脚本默认的 packaged activation 流程。
+日常非 Qt 编译统一使用 `desktop/build`。Debug 使用独立的
+`AiCli.Desktop.Debug` 包身份，注册后可与已安装的 Release 版本同时运行。
+正式安装包仍使用安装包脚本的独立构建目录和 packaged activation 流程。
 
 Qt UI 可通过 AICLI_USE_QT_UI=ON 构建。当前 Qt 开发环境和运行时注册细节参见 desktop/README.md。
 
@@ -126,16 +134,16 @@ AICLI_RELEASE_KEY_PASSWORD
 构建非 Qt 测试：
 
 ~~~powershell
-& $cmake --build desktop\build-nonqt --config Debug --target aicli_data_store_tests aicli_terminal_stream_tests aicli_terminal_working_detector_tests aicli_powershell_runtime_tests -- /m:2
+& $cmake --build desktop\build --config Debug --target aicli_data_store_tests aicli_terminal_stream_tests aicli_terminal_working_detector_tests aicli_powershell_runtime_tests -- /m:2
 ~~~
 
 运行示例：
 
 ~~~powershell
-& .\desktop\bin\NonQt\Debug\aicli_terminal_working_detector_tests.exe
-& .\desktop\bin\NonQt\Debug\aicli_terminal_stream_tests.exe
-& .\desktop\bin\NonQt\Debug\aicli_powershell_runtime_tests.exe
-& .\desktop\bin\NonQt\Debug\aicli_data_store_tests.exe "$env:TEMP\aicli-data-store-test.db"
+& .\desktop\bin\Debug\aicli_terminal_working_detector_tests.exe
+& .\desktop\bin\Debug\aicli_terminal_stream_tests.exe
+& .\desktop\bin\Debug\aicli_powershell_runtime_tests.exe
+& .\desktop\bin\Debug\aicli_data_store_tests.exe "$env:TEMP\aicli-data-store-test.db"
 ~~~
 
 aicli_data_store_tests 必须传入一个临时 SQLite 数据库路径。

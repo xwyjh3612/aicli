@@ -2291,12 +2291,12 @@ void PaintSettingsContent(State& state, HDC dc) {
         SelectObject(dc,state.title_font?state.title_font:state.settings_content_font);
         SetTextColor(dc,state.text_color);
         RECT app_name{x+S(24),S(118),right-S(24),S(154)};
-        DrawTextW(dc,L"AI CLI",-1,&app_name,
+        DrawTextW(dc,L"AiCli",-1,&app_name,
                   DT_LEFT|DT_VCENTER|DT_SINGLELINE);
         SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
         SetTextColor(dc,state.muted_color);
         RECT app_detail{x+S(24),S(150),right-S(24),S(176)};
-        DrawTextW(dc,L"AI CLI 桌面工作区",-1,&app_detail,
+        DrawTextW(dc,L"AiCli 桌面工作区",-1,&app_detail,
                   DT_LEFT|DT_VCENTER|DT_SINGLELINE);
         HPEN divider=CreatePen(PS_SOLID,1,state.panel_edge);
         HGDIOBJ old_divider=SelectObject(dc,divider);
@@ -2320,7 +2320,7 @@ void PaintSettingsContent(State& state, HDC dc) {
             DrawTextW(dc,value.c_str(),-1,&value_rect,
                       DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
         };
-        row(L"软件名称",L"AI CLI",194);
+        row(L"软件名称",L"AiCli",194);
         row(L"版本号",AICLI_VERSION,232);
         row(L"终端环境",terminal,270);
 
@@ -2336,8 +2336,8 @@ void PaintSettingsContent(State& state, HDC dc) {
             ?L"已自动使用检测到的 PowerShell 7。"
             :L"当前未检测到 PowerShell 7，正在使用 Windows PowerShell 5.1 兼容模式。";
         detection_note+=
-            L" AI CLI 支持常规安装和 Microsoft Store 版；如未自动识别到，请把 pwsh.exe 所在文件夹加入 PATH。"
-            L"安装、升级或修改 PATH 后，请完全退出并重启 AI CLI。";
+            L" AiCli 支持常规安装和 Microsoft Store 版；如未自动识别到，请把 pwsh.exe 所在文件夹加入 PATH。"
+            L"安装、升级或修改 PATH 后，请完全退出并重启 AiCli。";
         RECT hint{x,S(358),right,S(454)};
         DrawTextW(dc,detection_note.c_str(),-1,&hint,
                   DT_LEFT|DT_TOP|DT_WORDBREAK);

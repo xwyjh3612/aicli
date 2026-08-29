@@ -38,7 +38,7 @@ void LayoutProjectDialog(HWND h){
     // both their fill and outline, so they occupy the complete field rectangle
     // instead of exposing a strip of modal background around the child HWND.
     auto placeEdit=[&](HWND control,RECT outer){if(!control)return;aicli::ui::LayoutStyledInput(control,outer,S(1),S(5));};
-    auto placeDropDown=[&](HWND control,RECT outer){if(!control)return;const int w=outer.right-outer.left,h=outer.bottom-outer.top;MoveWindow(control,outer.left,outer.top,w,h,TRUE);ApplyRoundedRegion(control,w,h,S(6));};
+    auto placeDropDown=[&](HWND control,RECT outer){if(!control)return;const int w=outer.right-outer.left,h=outer.bottom-outer.top;MoveWindow(control,outer.left,outer.top,w,h,TRUE);ApplyRoundedRegion(control,w,h,S(12));};
     auto placeButton=[&](HWND control,RECT outer){if(!control)return;MoveWindow(control,outer.left,outer.top,outer.right-outer.left,outer.bottom-outer.top,TRUE);ApplyRoundedRegion(control,outer.right-outer.left,outer.bottom-outer.top,S(7));};
     placeEdit(g_d_name,g_d_name_rect);placeEdit(g_d_note,g_d_note_rect);placeDropDown(g_d_type,g_d_type_rect);placeDropDown(g_d_group,g_d_group_rect);placeEdit(g_d_folder,g_d_folder_rect);placeEdit(g_d_command,g_d_command_rect);
     RECT browse{g_d_folder_rect.right+S(10),g_d_folder_rect.top,g_project_panel.right-padding,g_d_folder_rect.bottom}; placeButton(g_d_folder_browse,browse);

@@ -226,7 +226,9 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         const COLORREF fill=down?g_theme.pressed:
             ((focused||open)?g_theme.field_focus:(hover?g_theme.hover:g_theme.field));
         const COLORREF stroke=(focused||open)?accent:border;
-        HBRUSH brush=CreateSolidBrush(fill);FillRect(item->hDC,&r,brush);DeleteObject(brush);
+        // The common button pass has already cleared the control to the
+        // dialog surface colour. Painting a rectangular field fill here
+        // leaves visible square corners behind the anti-aliased rounded path.
         DrawSmoothRoundedRect(item->hDC,r,ScaleUiF(6.0f),fill,stroke,1.0f);
 
         const wchar_t* fieldIcon=item->CtlID==ID_D_TYPE?L"\xE756":L"\xE8B7";
