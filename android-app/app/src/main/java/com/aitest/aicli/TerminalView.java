@@ -730,7 +730,7 @@ public final class TerminalView extends View {
             menu.add(0, MENU_COPY, 0, "复制")
                     .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
             menu.add(0, MENU_CANCEL, 1, "取消")
-                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+                    .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
             return true;
         }
 

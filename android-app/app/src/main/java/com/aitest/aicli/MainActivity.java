@@ -249,7 +249,7 @@ public final class MainActivity extends AppCompatActivity {
             selectedGroup = displayedGroups.get(position);
             getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit()
                     .putString("selected_group", selectedGroup).apply();
-            renderSelectedGroup(true);
+            renderSelectedGroup(true, false);
         });
 
         computerSelector.setOnItemClickListener((parent, view, position, id) -> {
@@ -779,6 +779,10 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void renderSelectedGroup(boolean selectFirst) {
+        renderSelectedGroup(selectFirst, true);
+    }
+
+    private void renderSelectedGroup(boolean selectFirst, boolean closeDrawerOnSelection) {
         List<AicliClient.Conversation> groupItems = new ArrayList<>();
         for (AicliClient.Conversation conversation : allConversations) {
             String group = conversation.group.isEmpty() ? "默认分组" : conversation.group;
@@ -835,7 +839,7 @@ public final class MainActivity extends AppCompatActivity {
         if (selected == null) selected = filtered.get(0);
         updateProjectHeader(selected);
         if (!selected.id.equals(selectedConversationId) || selectedConversation == null) {
-            selectConversation(selected);
+            selectConversation(selected, closeDrawerOnSelection);
         }
         else {
             selectedConversation = selected;
@@ -860,6 +864,11 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void selectConversation(AicliClient.Conversation conversation) {
+        selectConversation(conversation, true);
+    }
+
+    private void selectConversation(AicliClient.Conversation conversation,
+                                    boolean closeDrawerOnSelection) {
         if (client == null) return;
         client.closeEvents();
         final AicliClient requestClient = client;
@@ -869,7 +878,9 @@ public final class MainActivity extends AppCompatActivity {
         rememberSelectedConversation(conversation.id);
         updateProjectHeader(conversation);
         conversationAdapter.select(conversation.id);
-        drawerLayout.closeDrawer(GravityCompat.START);
+        if (closeDrawerOnSelection) {
+            drawerLayout.closeDrawer(GravityCompat.START);
+        }
         lastEventId = 0L;
         terminalRenderer.selectSession(conversation.id);
         terminalRenderer.followBottom();

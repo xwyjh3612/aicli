@@ -257,6 +257,62 @@ TerminalReplayBatch TerminalStreamPublisher::Replay(
     return result;
 }
 
+TerminalReplayBatch TerminalStreamPublisher::CompactReplay(
+    const std::wstring& project_id,
+    std::size_t maximum_lines) {
+    TerminalReplayBatch result;
+    std::scoped_lock lock(mutex_);
+    const auto iterator = streams_.find(project_id);
+    if (iterator == streams_.end()) return result;
+
+    auto& state = iterator->second;
+    if (state.snapshot.lines.empty()) return result;
+    result.session_id = state.session_id;
+    const std::uint64_t stream_last_sequence = state.next_sequence - 1;
+    const std::uint64_t base_sequence = state.chunks.empty()
+        ? stream_last_sequence
+        : state.chunks.front().sequence - 1;
+    const std::uint64_t snapshot_sequence = std::clamp(
+        state.snapshot.sequence, base_sequence, stream_last_sequence);
+    result.last_sequence = snapshot_sequence;
+
+    auto token = NewSessionId();
+    state.history_snapshots.push_back({
+        token, state.snapshot.lines, GetTickCount64()});
+    TrimHistorySnapshots(state);
+
+    maximum_lines = std::clamp<std::size_t>(maximum_lines, 1, kBootstrapLines);
+    std::size_t start_line = state.snapshot.lines.size() > maximum_lines
+        ? state.snapshot.lines.size() - maximum_lines
+        : 0;
+    std::vector<std::string> bootstrap_lines(
+        state.snapshot.lines.begin() + start_line,
+        state.snapshot.lines.end());
+    auto bootstrap = BootstrapEvent(
+        project_id, state, snapshot_sequence, token, bootstrap_lines,
+        start_line, state.snapshot.lines.size());
+    while (bootstrap.size() > kMaximumWireMessageBytes &&
+           bootstrap_lines.size() > 1) {
+        bootstrap_lines.erase(bootstrap_lines.begin());
+        ++start_line;
+        bootstrap = BootstrapEvent(
+            project_id, state, snapshot_sequence, token, bootstrap_lines,
+            start_line, state.snapshot.lines.size());
+    }
+
+    // Deliberately omit chunks newer than the stable snapshot. They are the
+    // high-volume repaint being compacted; the next snapshot advances the
+    // phone directly to a newer sequence without replaying those bytes.
+    result.events.push_back(ResetEvent(
+        project_id, state, snapshot_sequence, state.snapshot.rows,
+        state.snapshot.columns, true,
+        "traffic-compaction"));
+    if (bootstrap.size() <= kMaximumWireMessageBytes) {
+        result.events.push_back(std::move(bootstrap));
+    }
+    return result;
+}
+
 TerminalHistoryPage TerminalStreamPublisher::History(
     const std::wstring& project_id,
     const std::wstring& history_token,

@@ -1156,6 +1156,10 @@ void ConfigureRemoteAgent(){
            std::uint64_t after){
             return g_terminal_streams.Replay(project,session,after);
         });
+    g_remote_agent.SetTerminalCompactCallback(
+        [](const std::wstring& project){
+            return g_terminal_streams.CompactReplay(project,80);
+        });
     g_remote_agent.SetTerminalHistoryCallback(
         [](const std::wstring& project,const std::wstring& token,
            std::size_t before,std::size_t limit){

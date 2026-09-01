@@ -41,7 +41,20 @@ constexpr std::size_t kMaximumAttachmentBytes = 6 * 1024 * 1024;
 constexpr std::size_t kPackedBatchTargetBytes = 512 * 1024;
 constexpr std::size_t kMaximumQueuedTerminalBytes = 8 * 1024 * 1024;
 constexpr auto kPackedBatchDelay = std::chrono::milliseconds(20);
+// A resumed CLI can repaint an entire long conversation as fresh VT output.
+// Bound that burst per phone by periodically replacing it with a small screen
+// snapshot, then return to lossless live frames once the stream is quiet.
+constexpr auto kSenderIdlePoll = std::chrono::milliseconds(100);
+constexpr std::uint64_t kTerminalRateWindowMs = 500;
+constexpr std::size_t kTerminalHighRateBytes = 96 * 1024;
+constexpr std::uint64_t kCompactSnapshotIntervalMs = 750;
+constexpr std::uint64_t kCompactQuietDelayMs = 700;
 constexpr wchar_t kMobileAccessEnabledSetting[] = L"mobile_access_enabled";
+
+bool IsTerminalDeltaEvent(std::string_view event_json) {
+    return event_json.find("\"type\":\"terminal.data\"") != std::string_view::npos ||
+           event_json.find("\"type\":\"terminal.resize\"") != std::string_view::npos;
+}
 
 std::int64_t Now() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -266,6 +279,11 @@ struct RemoteAgent::WsClient {
     std::mutex pending_mutex;
     std::deque<std::string> pending_events;
     std::size_t pending_bytes{};
+    bool compact_terminal{};
+    std::uint64_t terminal_rate_started_ms{};
+    std::size_t terminal_rate_bytes{};
+    std::uint64_t last_terminal_event_ms{};
+    std::uint64_t last_compact_send_ms{};
     std::shared_ptr<WsClient>* connection_handle{};
 };
 
@@ -407,6 +425,7 @@ void RemoteAgent::SetConversationsCallback(ConversationsCallback callback) { std
 void RemoteAgent::SetCreateProjectCallback(CreateProjectCallback callback) { std::scoped_lock l(mutex_); create_project_callback_=std::move(callback); }
 void RemoteAgent::SetEventsCallback(EventsCallback callback) { std::scoped_lock l(mutex_); events_callback_=std::move(callback); }
 void RemoteAgent::SetTerminalReplayCallback(TerminalReplayCallback callback) { std::scoped_lock l(mutex_); terminal_replay_callback_=std::move(callback); }
+void RemoteAgent::SetTerminalCompactCallback(TerminalCompactCallback callback) { std::scoped_lock l(mutex_); terminal_compact_callback_=std::move(callback); }
 void RemoteAgent::SetTerminalHistoryCallback(TerminalHistoryCallback callback) { std::scoped_lock l(mutex_); terminal_history_callback_=std::move(callback); }
 void RemoteAgent::SetStatusCallback(StatusCallback callback) { std::scoped_lock l(mutex_); status_callback_=std::move(callback); }
 
@@ -489,12 +508,13 @@ void RemoteAgent::JoinWebSocketSender() {
 void RemoteAgent::WebSocketSenderLoop() {
     for (;;) {
         std::unique_lock sender_lock(websocket_sender_mutex_);
-        websocket_sender_cv_.wait(sender_lock, [this] {
+        const bool notified = websocket_sender_cv_.wait_for(
+            sender_lock, kSenderIdlePoll, [this] {
             return websocket_sender_stop_ || websocket_sender_wakeup_;
         });
         if (websocket_sender_stop_) return;
-        websocket_sender_wakeup_ = false;
-        if (websocket_sender_cv_.wait_for(
+        if (notified) websocket_sender_wakeup_ = false;
+        if (notified && websocket_sender_cv_.wait_for(
                 sender_lock, kPackedBatchDelay,
                 [this] { return websocket_sender_stop_; })) {
             return;
@@ -509,7 +529,10 @@ void RemoteAgent::WebSocketSenderLoop() {
             std::scoped_lock lock(mutex_);
             clients = websocket_clients_;
         }
-        for (const auto& client : clients) FlushPackedClient(client);
+        for (const auto& client : clients) {
+            FlushPackedClient(client);
+            FlushCompactClient(client);
+        }
 
         std::scoped_lock lock(mutex_);
         websocket_clients_.erase(
@@ -528,12 +551,56 @@ void RemoteAgent::QueuePackedEvent(const std::shared_ptr<WsClient>& client,
     {
         std::scoped_lock lock(client->pending_mutex);
         const std::size_t added = event_json.size() + 4;
-        if (added > kMaximumQueuedTerminalBytes ||
-            client->pending_bytes > kMaximumQueuedTerminalBytes - added) {
-            overflow = true;
-        } else {
-            client->pending_events.push_back(event_json);
-            client->pending_bytes += added;
+        const auto now = GetTickCount64();
+        const bool terminal_data =
+            event_json.find("\"type\":\"terminal.data\"") != std::string::npos;
+        const bool session_start =
+            event_json.find("\"reason\":\"session-start\"") != std::string::npos;
+
+        if (session_start) {
+            client->compact_terminal = true;
+            client->last_terminal_event_ms = now;
+            client->last_compact_send_ms = 0;
+            client->terminal_rate_started_ms = now;
+            client->terminal_rate_bytes = 0;
+            client->pending_events.clear();
+            client->pending_bytes = 0;
+        } else if (terminal_data) {
+            client->last_terminal_event_ms = now;
+            if (client->terminal_rate_started_ms == 0 ||
+                now - client->terminal_rate_started_ms > kTerminalRateWindowMs) {
+                client->terminal_rate_started_ms = now;
+                client->terminal_rate_bytes = 0;
+            }
+            client->terminal_rate_bytes += added;
+            if (!client->compact_terminal &&
+                client->terminal_rate_bytes >= kTerminalHighRateBytes) {
+                client->compact_terminal = true;
+                client->last_compact_send_ms = 0;
+                std::deque<std::string> retained;
+                std::size_t retained_bytes = 0;
+                while (!client->pending_events.empty()) {
+                    auto pending = std::move(client->pending_events.front());
+                    client->pending_events.pop_front();
+                    if (IsTerminalDeltaEvent(pending)) continue;
+                    retained_bytes += pending.size() + 4;
+                    retained.push_back(std::move(pending));
+                }
+                client->pending_events = std::move(retained);
+                client->pending_bytes = retained_bytes;
+            }
+        }
+
+        const bool suppress_for_compaction = client->compact_terminal &&
+            IsTerminalDeltaEvent(event_json);
+        if (!suppress_for_compaction) {
+            if (added > kMaximumQueuedTerminalBytes ||
+                client->pending_bytes > kMaximumQueuedTerminalBytes - added) {
+                overflow = true;
+            } else {
+                client->pending_events.push_back(event_json);
+                client->pending_bytes += added;
+            }
         }
     }
     if (overflow) {
@@ -554,6 +621,30 @@ void RemoteAgent::QueuePackedEvent(const std::shared_ptr<WsClient>& client,
     websocket_sender_cv_.notify_one();
 }
 
+bool RemoteAgent::SendPackedEvents(
+    const std::shared_ptr<WsClient>& client,
+    const std::vector<std::string>& events) {
+    if (!client || events.empty()) return true;
+    const auto packet = wire::PackTerminalEvents(events);
+    std::scoped_lock write(client->write_mutex);
+    auto* connection = client->connection.load();
+    if (client->closed || !client->ready || !connection) return false;
+    if (!packet.empty() && packet.size() <= kMaximumWireMessageBytes) {
+        return mg_websocket_write(
+                   connection, MG_WEBSOCKET_OPCODE_BINARY,
+                   reinterpret_cast<const char*>(packet.data()),
+                   packet.size()) > 0;
+    }
+    for (const auto& event : events) {
+        if (event.size() > kMaximumWireMessageBytes ||
+            mg_websocket_write(connection, MG_WEBSOCKET_OPCODE_TEXT,
+                               event.data(), event.size()) <= 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void RemoteAgent::FlushPackedClient(const std::shared_ptr<WsClient>& client) {
     if (!client || client->closed || !client->ready || !client->packed_terminal) {
         return;
@@ -565,6 +656,19 @@ void RemoteAgent::FlushPackedClient(const std::shared_ptr<WsClient>& client) {
         std::vector<std::string> events;
         {
             std::scoped_lock lock(client->pending_mutex);
+            if (client->compact_terminal) {
+                std::deque<std::string> retained;
+                std::size_t retained_bytes = 0;
+                while (!client->pending_events.empty()) {
+                    auto event = std::move(client->pending_events.front());
+                    client->pending_events.pop_front();
+                    if (IsTerminalDeltaEvent(event)) continue;
+                    retained_bytes += event.size() + 4;
+                    retained.push_back(std::move(event));
+                }
+                client->pending_events = std::move(retained);
+                client->pending_bytes = retained_bytes;
+            }
             std::size_t bytes = 0;
             while (!client->pending_events.empty()) {
                 const auto& next = client->pending_events.front();
@@ -580,32 +684,20 @@ void RemoteAgent::FlushPackedClient(const std::shared_ptr<WsClient>& client) {
         }
         if (events.empty()) return;
 
-        const auto packet = wire::PackTerminalEvents(events);
-        std::scoped_lock write(client->write_mutex);
-        auto* connection = client->connection.load();
-        if (client->closed || !client->ready || !connection) return;
-
-        bool sent = false;
-        if (!packet.empty() && packet.size() <= kMaximumWireMessageBytes) {
-            sent = mg_websocket_write(
-                       connection, MG_WEBSOCKET_OPCODE_BINARY,
-                       reinterpret_cast<const char*>(packet.data()),
-                       packet.size()) > 0;
-        } else {
-            // A packet can only exceed the cap when one legacy JSON event is
-            // already near 1 MB. Text fallback retains the old behavior.
-            sent = true;
-            for (const auto& event : events) {
-                if (event.size() > kMaximumWireMessageBytes ||
-                    mg_websocket_write(connection,
-                                       MG_WEBSOCKET_OPCODE_TEXT,
-                                       event.data(), event.size()) <= 0) {
-                    sent = false;
-                    break;
-                }
+        {
+            std::scoped_lock lock(client->pending_mutex);
+            if (client->compact_terminal) {
+                events.erase(
+                    std::remove_if(events.begin(), events.end(),
+                                   [](const auto& event) {
+                                       return IsTerminalDeltaEvent(event);
+                                   }),
+                    events.end());
             }
         }
-        if (!sent) {
+        if (events.empty()) return;
+
+        if (!SendPackedEvents(client, events)) {
             client->closed = true;
             return;
         }
@@ -622,6 +714,53 @@ void RemoteAgent::FlushPackedClient(const std::shared_ptr<WsClient>& client) {
             websocket_sender_wakeup_ = true;
         }
         websocket_sender_cv_.notify_one();
+    }
+}
+
+void RemoteAgent::FlushCompactClient(
+    const std::shared_ptr<WsClient>& client) {
+    if (!client || client->closed || !client->ready ||
+        !client->packed_terminal) return;
+
+    const auto now = GetTickCount64();
+    std::uint64_t observed_last_event = 0;
+    bool quiet = false;
+    {
+        std::scoped_lock lock(client->pending_mutex);
+        if (!client->compact_terminal) return;
+        quiet = client->last_terminal_event_ms != 0 &&
+                now - client->last_terminal_event_ms >= kCompactQuietDelayMs;
+        if (!quiet && client->last_compact_send_ms != 0 &&
+            now - client->last_compact_send_ms < kCompactSnapshotIntervalMs) {
+            return;
+        }
+        observed_last_event = client->last_terminal_event_ms;
+    }
+
+    // Snapshot creation is owned by TerminalStreamPublisher. Calling through
+    // the callback here keeps the network worker independent of the UI-hosted
+    // terminal while still allowing it to jump over suppressed VT sequences.
+    TerminalCompactCallback compact_callback;
+    {
+        std::scoped_lock lock(mutex_);
+        compact_callback = terminal_compact_callback_;
+    }
+    if (!compact_callback || client->project_id.empty()) return;
+    auto compact = compact_callback(client->project_id);
+    if (compact.events.empty()) return;
+    if (!SendPackedEvents(client, compact.events)) {
+        client->closed = true;
+        return;
+    }
+
+    const auto sent_at = GetTickCount64();
+    std::scoped_lock lock(client->pending_mutex);
+    client->last_compact_send_ms = sent_at;
+    if (quiet && client->last_terminal_event_ms == observed_last_event &&
+        sent_at - client->last_terminal_event_ms >= kCompactQuietDelayMs) {
+        client->compact_terminal = false;
+        client->terminal_rate_started_ms = sent_at;
+        client->terminal_rate_bytes = 0;
     }
 }
 

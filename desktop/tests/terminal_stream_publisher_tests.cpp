@@ -85,6 +85,24 @@ int main() {
                     "incremental replay preserves terminal sequence numbers");
     }
 
+    publisher.PublishOutput(project, L"high-volume-frame-after-snapshot");
+    const auto compact = publisher.CompactReplay(project, 80);
+    ok &= Check(compact.events.size() == 2,
+                "compact replay contains only reset and bounded snapshot");
+    if (compact.events.size() == 2) {
+        const auto reset = nlohmann::json::parse(compact.events[0]);
+        const auto bootstrap = nlohmann::json::parse(compact.events[1]);
+        ok &= Check(reset.value("baseSequence", 0ULL) == 1,
+                    "compact replay jumps to the rendered snapshot sequence");
+        ok &= Check(reset.at("payload").value("reason", "") ==
+                        "traffic-compaction",
+                    "compact reset identifies traffic compaction");
+        ok &= Check(bootstrap.at("payload").at("lines").size() == 80,
+                    "compact replay limits the visible snapshot to 80 rows");
+        ok &= Check(compact.last_sequence == 1,
+                    "compact replay does not claim unsent VT after the snapshot");
+    }
+
     std::vector<std::string> wire_events;
     for (int frame = 0; frame < 80; ++frame) {
         wire_events.push_back(

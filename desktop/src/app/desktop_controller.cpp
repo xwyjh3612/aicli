@@ -236,6 +236,10 @@ void DesktopController::ConfigureRemoteAgent() {
                std::uint64_t after) {
             return terminal_streams_.Replay(project, session, after);
         });
+    remote_agent_.SetTerminalCompactCallback(
+        [this](const std::wstring& project) {
+            return terminal_streams_.CompactReplay(project, 80);
+        });
     remote_agent_.SetTerminalHistoryCallback(
         [this](const std::wstring& project, const std::wstring& token,
                std::size_t before, std::size_t limit) {

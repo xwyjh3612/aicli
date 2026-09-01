@@ -56,12 +56,15 @@
         <com.google.android.material.textfield.TextInputEditText
             android:id="@+id/projectNameInput"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
             android:hint="例如：BlackBox"
             android:imeOptions="actionDone"
             android:inputType="textCapSentences"
             android:maxLength="80"
             android:maxLines="1"
+            android:minHeight="56dp"
+            android:singleLine="true"
             android:textColor="@color/aicli_text"
             android:textColorHint="@color/aicli_text_tertiary" />
     </com.google.android.material.textfield.TextInputLayout>
@@ -85,9 +88,12 @@
         <com.google.android.material.textfield.MaterialAutoCompleteTextView
             android:id="@+id/projectTypeSelector"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
             android:inputType="none"
             android:maxLines="1"
+            android:minHeight="56dp"
+            android:singleLine="true"
             android:textColor="@color/aicli_text"
             android:textSize="15sp" />
     </com.google.android.material.textfield.TextInputLayout>
@@ -111,9 +117,12 @@
         <com.google.android.material.textfield.MaterialAutoCompleteTextView
             android:id="@+id/projectGroupSelector"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
             android:inputType="none"
             android:maxLines="1"
+            android:minHeight="56dp"
+            android:singleLine="true"
             android:textColor="@color/aicli_text"
             android:textSize="15sp" />
     </com.google.android.material.textfield.TextInputLayout>

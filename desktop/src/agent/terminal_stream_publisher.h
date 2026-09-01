@@ -41,6 +41,8 @@ public:
     TerminalReplayBatch Replay(const std::wstring& project_id,
                                const std::wstring& requested_session_id,
                                std::uint64_t after_sequence);
+    TerminalReplayBatch CompactReplay(const std::wstring& project_id,
+                                      std::size_t maximum_lines = 80);
     TerminalHistoryPage History(const std::wstring& project_id,
                                 const std::wstring& history_token,
                                 std::size_t before_line,

@@ -76,6 +76,8 @@ public:
         std::function<TerminalReplayBatch(const std::wstring& project_id,
                                           const std::wstring& terminal_session_id,
                                           std::uint64_t after_sequence)>;
+    using TerminalCompactCallback =
+        std::function<TerminalReplayBatch(const std::wstring& project_id)>;
     using TerminalHistoryCallback =
         std::function<TerminalHistoryPage(const std::wstring& project_id,
                                           const std::wstring& history_token,
@@ -103,6 +105,7 @@ public:
     void SetCreateProjectCallback(CreateProjectCallback callback);
     void SetEventsCallback(EventsCallback callback);
     void SetTerminalReplayCallback(TerminalReplayCallback callback);
+    void SetTerminalCompactCallback(TerminalCompactCallback callback);
     void SetTerminalHistoryCallback(TerminalHistoryCallback callback);
     void SetStatusCallback(StatusCallback callback);
 
@@ -175,6 +178,9 @@ private:
     void QueuePackedEvent(const std::shared_ptr<WsClient>& client,
                           const std::string& event_json);
     void FlushPackedClient(const std::shared_ptr<WsClient>& client);
+    void FlushCompactClient(const std::shared_ptr<WsClient>& client);
+    bool SendPackedEvents(const std::shared_ptr<WsClient>& client,
+                          const std::vector<std::string>& events);
 
     mutable std::recursive_mutex mutex_;
     DataStore* store_{};
@@ -203,6 +209,7 @@ private:
     CreateProjectCallback create_project_callback_;
     EventsCallback events_callback_;
     TerminalReplayCallback terminal_replay_callback_;
+    TerminalCompactCallback terminal_compact_callback_;
     TerminalHistoryCallback terminal_history_callback_;
     StatusCallback status_callback_;
 };
