@@ -394,6 +394,20 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
     }
     SelectObject(item->hDC,text_font);DrawTextW(item->hDC,text,-1,&r,text_format);
 }
+constexpr std::uint32_t kProjectSpinnerPhaseSalt=0x5350494eu;
+constexpr std::uint32_t kProjectPulsePhaseSalt=0x50554c53u;
+
+float ProjectAnimationPhase(std::wstring_view projectId,std::uint32_t salt) noexcept{
+    // A persistent ID keeps each row's phase stable across refreshes, filtering
+    // and reordering. Separate salts give spinning and breathing distinct phases.
+    std::uint32_t hash=2166136261u^salt;
+    for(const wchar_t unit:projectId){
+        hash^=static_cast<std::uint32_t>(unit);
+        hash*=16777619u;
+    }
+    return static_cast<float>(hash%36000u)/100.0f;
+}
+
 void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     if(item->itemID==(UINT)-1)return;
     const int projectIndex=static_cast<int>(
@@ -475,6 +489,8 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         Gdiplus::SolidBrush iconBrush(SmoothColor(stateColor));
         const float cx=iconX+iconSize/2.0f,cy=iconY+iconSize/2.0f;
         if(workingSpinner){
+            const float spinnerAngle=std::fmod(g_project_spinner_angle+
+                ProjectAnimationPhase(project.id,kProjectSpinnerPhaseSalt),360.0f);
             Gdiplus::Pen trackPen(SmoothColor(stateColor,65),ScaleUiF(1.65f));
             Gdiplus::Pen spinnerPen(SmoothColor(stateColor),ScaleUiF(2.35f));
             trackPen.SetStartCap(Gdiplus::LineCapRound);
@@ -485,10 +501,11 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
                                  iconSize-ScaleUiF(4.0f),iconSize-ScaleUiF(4.0f));
             graphics.DrawArc(&spinnerPen,iconX+ScaleUiF(2.0f),iconY+ScaleUiF(2.0f),
                              iconSize-ScaleUiF(4.0f),iconSize-ScaleUiF(4.0f),
-                             g_project_spinner_angle,112.0f);
+                             spinnerAngle,112.0f);
         }else if(stateIcon==StateIcon::Running){
-            const float pulse=(std::sin(
-                g_project_idle_pulse_angle*3.14159265f/180.0f)+1.0f)*0.5f;
+            const float pulseAngle=std::fmod(g_project_idle_pulse_angle+
+                ProjectAnimationPhase(project.id,kProjectPulsePhaseSalt),360.0f);
+            const float pulse=(std::sin(pulseAngle*3.14159265f/180.0f)+1.0f)*0.5f;
             const float diameter=ScaleUiF(8.0f+2.0f*pulse);
             const auto channel=[pulse](BYTE low,BYTE high){
                 return static_cast<BYTE>(low+(high-low)*pulse+0.5f);

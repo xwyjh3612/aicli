@@ -1773,10 +1773,6 @@ public final class MainActivity extends AppCompatActivity {
         for (AicliClient.Conversation conversation : conversations) {
             if (!savedId.equals(conversation.id)) continue;
             pendingConversationId = savedId;
-            selectedGroup = conversation.group.isEmpty()
-                    ? "默认分组" : conversation.group;
-            getSharedPreferences(APP_PREFS, MODE_PRIVATE).edit()
-                    .putString("selected_group", selectedGroup).apply();
             return;
         }
     }
