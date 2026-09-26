@@ -18,6 +18,24 @@ std::wstring DefaultProjectTypeName(){
     if(found!=g_project_types.end())return found->name;
     return g_project_types.empty()?L"Codex":g_project_types.front().name;
 }
+std::wstring NormalizedProjectFolder(const std::wstring& folder){
+    std::error_code error;
+    std::filesystem::path path=std::filesystem::weakly_canonical(folder,error);
+    if(error){
+        error.clear();
+        path=std::filesystem::absolute(folder,error);
+        if(error)path=folder;
+    }
+    std::wstring normalized=path.lexically_normal().wstring();
+    while(normalized.size()>3&&(normalized.back()==L'\\'||normalized.back()==L'/'))normalized.pop_back();
+    return normalized;
+}
+bool ProjectFolderAlreadyUsed(const std::wstring& folder){
+    const std::wstring normalized=NormalizedProjectFolder(folder);
+    return std::any_of(g_projects.begin(),g_projects.end(),[&](const Project& project){
+        return !project.folder.empty()&&_wcsicmp(NormalizedProjectFolder(project.folder).c_str(),normalized.c_str())==0;
+    });
+}
 void LayoutProjectDialog(HWND h){
     RECT client{}; GetClientRect(h,&client);
     const int dpi=std::max(96,static_cast<int>(GetDpiForWindow(h)));
@@ -220,6 +238,8 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
             if(g_project_draft.name.empty()){MessageBoxW(h,L"项目名称不能为空。",L"项目详情",MB_OK|MB_ICONWARNING);return 0;}
             std::error_code folderError;
             if(g_project_draft.folder.empty()||!std::filesystem::is_directory(g_project_draft.folder,folderError)){MessageBoxW(h,L"请选择一个存在的项目文件夹。",L"项目详情",MB_OK|MB_ICONWARNING);return 0;}
+            if(!g_project_dialog_edit&&ProjectFolderAlreadyUsed(g_project_draft.folder)&&
+               MessageBoxW(h,L"该文件夹已经创建项目，是否确认添加？",L"确认添加项目",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)!=IDYES)return 0;
             if(g_project_draft.command.empty())g_project_draft.command=DefaultProjectCommand(g_project_draft.type);
             const bool knownType=std::any_of(g_project_types.begin(),g_project_types.end(),[&](const ProjectType& value){return _wcsicmp(value.name.c_str(),g_project_draft.type.c_str())==0;});
             const bool knownGroup=std::any_of(g_groups.begin(),g_groups.end(),[&](const ProjectGroup& value){return _wcsicmp(value.name.c_str(),g_project_draft.group.c_str())==0;});

@@ -96,6 +96,7 @@ enum : int {
     kBindEmpty = 2333,
     kTaskbarStyleIconDots = 2334,
     kSettingsAbout = 2335,
+    kKeepAwake = 2336,
 };
 
 enum : int {
@@ -183,6 +184,7 @@ struct State {
     HWND theme{};
     HWND theme_light{};
     HWND taskbar_working{};
+    HWND keep_awake{};
     HWND taskbar_style_progress{};
     HWND taskbar_style_overlay{};
     HWND taskbar_style_icon_dots{};
@@ -1264,6 +1266,8 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
          (item->CtlID == kThemeLight && state->light_theme) ||
          (item->CtlID == kTaskbarWorking &&
           state->store->GetSetting(L"taskbar_working_enabled", L"1") != L"0") ||
+         (item->CtlID == kKeepAwake &&
+          state->store->GetSetting(L"keep_awake_while_working", L"0") != L"0") ||
          (item->CtlID == kTaskbarStyleProgress &&
           state->store->GetSetting(L"taskbar_working_style", L"progress") != L"overlay" &&
           state->store->GetSetting(L"taskbar_working_style", L"progress") != L"icon_dots") ||
@@ -1374,7 +1378,8 @@ void DrawButton(const DRAWITEMSTRUCT* item) {
         return;
     }
 
-    const bool taskbar_toggle = state && item->CtlID == kTaskbarWorking;
+    const bool taskbar_toggle = state &&
+        (item->CtlID == kTaskbarWorking || item->CtlID == kKeepAwake);
     if (taskbar_toggle) {
         // A binary setting reads more naturally as a compact switch than as
         // a second action button. Keep the full HWND rectangular so the
@@ -1981,7 +1986,7 @@ void Paint(State& state, HDC dc) {
 
 int SettingsContentExtent(SettingsPage page) {
     switch (page) {
-    case SettingsPage::Appearance: return 370;
+    case SettingsPage::Appearance: return 430;
     case SettingsPage::Connection: return 635;
     case SettingsPage::ProjectTypes: return 590;
     case SettingsPage::Groups: return 590;
@@ -2103,6 +2108,18 @@ void LayoutSettingsContent(State& state) {
             RedrawWindow(state.taskbar_working, nullptr, nullptr,
                          RDW_INVALIDATE | RDW_NOERASE);
         }
+        if (state.keep_awake) {
+            const int toggle_width = S(50);
+            const int toggle_height = S(28);
+            SetWindowPos(state.keep_awake, nullptr,
+                         right_edge - toggle_width, S(312) - offset,
+                         toggle_width, toggle_height,
+                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+                             SWP_NOREDRAW | SWP_NOSENDCHANGING);
+            SetWindowRgn(state.keep_awake, nullptr, TRUE);
+            RedrawWindow(state.keep_awake, nullptr, nullptr,
+                         RDW_INVALIDATE | RDW_NOERASE);
+        }
     } else if (state.settings_page == SettingsPage::Connection) {
         const int label_width = S(120);
         const int field_x = x + label_width;
@@ -2216,7 +2233,7 @@ void PaintSettingsContent(State& state, HDC dc) {
     };
 
     if (state.settings_page == SettingsPage::Appearance) {
-        card({x, S(64), right, S(310)});
+        card({x, S(64), right, S(366)});
         const int selector_right = right - S(18);
         const int selector_left = selector_right - S(300);
         const COLORREF selector_fill = state.light_theme
@@ -2243,9 +2260,10 @@ void PaintSettingsContent(State& state, HDC dc) {
         row_label(L"任务栏缓冲动画", 144);
         row_label(L"缓冲样式", 200);
         row_label(L"作用范围", 256);
+        row_label(L"任务运行中保持唤醒", 312);
         HPEN divider = CreatePen(PS_SOLID, 1, state.panel_edge);
         HGDIOBJ old_pen = SelectObject(dc, divider);
-        for (int y : {136, 192, 248}) {
+        for (int y : {136, 192, 248, 304}) {
             MoveToEx(dc, x + S(20), S(y), nullptr);
             LineTo(dc, right - S(20), S(y));
         }
@@ -2437,6 +2455,7 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     visible(state.taskbar_style_icon_dots, appearance);
     visible(state.taskbar_scope_current, appearance);
     visible(state.taskbar_scope_all, appearance);
+    visible(state.keep_awake, appearance);
     // The project/group/device list overlaps the connection form. Hide it
     // before revealing connection fields; otherwise each EDIT receives its
     // first WM_PAINT while still clipped by the higher-z-order list, and the
@@ -2793,13 +2812,19 @@ void CreateControls(State& state) {
             state, L"图标三点", kTaskbarStyleIconDots, state.content);
         state.taskbar_scope_current = MakeButton(state, L"当前项目", kTaskbarScopeCurrent, state.content);
         state.taskbar_scope_all = MakeButton(state, L"所有项目", kTaskbarScopeAll, state.content);
+        state.keep_awake = MakeButton(
+            state,
+            state.store->GetSetting(L"keep_awake_while_working", L"0") == L"0"
+                ? L"关闭" : L"开启",
+            kKeepAwake, state.content);
         state.save = MakeButton(state, L"保存设置", kSave, state.content);
         state.firewall = MakeButton(state, L"配置防火墙", kFirewall, state.content);
         for (HWND control : {state.computer_name, state.listen, state.port, state.local,
                               state.remote, state.mobile_workspace_root,
                               state.mobile_workspace_browse, state.mobile_access,
                               state.theme, state.theme_light,
-                              state.taskbar_working, state.taskbar_style_progress,
+                              state.taskbar_working, state.keep_awake,
+                              state.taskbar_style_progress,
                               state.taskbar_style_overlay, state.taskbar_style_icon_dots,
                               state.taskbar_scope_current,
                               state.taskbar_scope_all, state.save,
@@ -2840,7 +2865,7 @@ void CreateControls(State& state) {
                               state.taskbar_style_progress, state.taskbar_style_overlay,
                               state.taskbar_style_icon_dots,
                               state.taskbar_scope_current, state.taskbar_scope_all,
-                              state.save, state.firewall,
+                              state.keep_awake, state.save, state.firewall,
                              state.list, state.add, state.remove,state.select,state.unbind,
                              state.bind_empty}) {
             if (control) {
@@ -3098,7 +3123,8 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                 }
                 return 0;
             }
-            if (id == kTaskbarWorking || id == kTaskbarStyleProgress ||
+            if (id == kTaskbarWorking || id == kKeepAwake ||
+                id == kTaskbarStyleProgress ||
                 id == kTaskbarStyleOverlay || id == kTaskbarStyleIconDots ||
                 id == kTaskbarScopeCurrent ||
                 id == kTaskbarScopeAll) {
@@ -3108,6 +3134,13 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                     state->store->SetSetting(L"taskbar_working_enabled", enabled ? L"0" : L"1");
                     SetWindowTextW(state->taskbar_working,
                         enabled ? L"关闭" : L"开启");
+                } else if (id == kKeepAwake) {
+                    const bool enabled = state->store->GetSetting(
+                        L"keep_awake_while_working", L"0") != L"0";
+                    state->store->SetSetting(L"keep_awake_while_working",
+                                             enabled ? L"0" : L"1");
+                    SetWindowTextW(state->keep_awake,
+                                   enabled ? L"关闭" : L"开启");
                 } else if (id == kTaskbarStyleProgress ||
                            id == kTaskbarStyleOverlay ||
                            id == kTaskbarStyleIconDots) {
@@ -3119,6 +3152,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                         id == kTaskbarScopeCurrent ? L"current" : L"all");
                 }
                 for (HWND control : {state->taskbar_working,
+                                     state->keep_awake,
                                      state->taskbar_style_progress,
                                      state->taskbar_style_overlay,
                                      state->taskbar_style_icon_dots,
