@@ -4,7 +4,13 @@
 /desktop/bin/
 /desktop/installer/output/
 /target/
-/release/
+
+# Keep the distributable installers and their checksums in Git
+/release/*
+!/release/AI-CLI-Setup-1.0.0.3-x64.exe
+!/release/AI-CLI-Setup-1.0.0.3-x64.exe.sha256
+!/release/AI-CLI-Android-1.1.0-release.apk
+!/release/AI-CLI-Android-1.1.0-release.apk.sha256
 
 # Android/Gradle build state
 /android-app/.gradle/
