@@ -45,14 +45,15 @@ desktop\bin\Qt\Debug\aicli.exe
 The build automatically runs `windeployqt` and `stage-runtime.ps1`. The latter
 stages Windows Terminal, WinUI, ConPTY, OpenSSL, resources, and the package
 manifest. Directly launching `aicli.exe` forwards to the registered packaged
-instance required by WinUI/XAML Island. Large dependencies and generated
-Windows Terminal metadata remain on `F:`; the runnable app stays in the workspace.
+instance required by WinUI/XAML Island. Shared dependencies and reusable
+Windows Terminal headers remain on `F:`. Compilation, runtime staging and
+generated resources stay on `C:`; see [the shared dependency layout](../tools/dependency-layout.md).
 
 ## Data-store tests
 
 ```powershell
 & $cmake --build desktop\build-qt --config Debug --target aicli_data_store_tests -- /m:2
-& .\desktop\bin\Qt\Debug\aicli_data_store_tests.exe F:\codex_tool-target\desktop\tests\aicli-data-store-test.db
+& .\desktop\bin\Qt\Debug\aicli_data_store_tests.exe "$env:TEMP\aicli-data-store-test.db"
 ```
 
 The test covers built-in project-type/group protection, dynamic type and group

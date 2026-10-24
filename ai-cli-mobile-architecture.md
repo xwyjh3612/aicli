@@ -529,18 +529,18 @@ Qt 6.8.3 MSVC x64 位于 `F:\Qt\6.8.3\msvc2022_64`。CMake 构建后会自动执
 
 ```powershell
 & $cmake --build desktop\build-qt --config Debug --target aicli_data_store_tests -- /m:2
-.\desktop\bin\Qt\Debug\aicli_data_store_tests.exe F:\codex_tool-target\desktop\tests\aicli-data-store-test.db
+.\desktop\bin\Qt\Debug\aicli_data_store_tests.exe "$env:TEMP\aicli-data-store-test.db"
 ```
 
 ### 11.3 Android
 
 ```powershell
-$env:JAVA_HOME='F:\android\Java\jdk-17.0.11'
-$env:ANDROID_HOME='F:\android\sdk'
-$env:ANDROID_SDK_ROOT='F:\android\sdk'
-$env:GRADLE_USER_HOME='F:\android\.gradle'
-F:\android\.gradle\wrapper\dists\gradle-8.2-bin\bbg7u40eoinfdyxsxr3z4i7ta\gradle-8.2\bin\gradle.bat --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+. .\tools\dependency-paths.ps1
+$dependencies = Set-AicliAndroidBuildEnvironment
+& (Join-Path $dependencies.gradle 'bin\gradle.bat') -p android-app --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
 ```
+
+SDK、JDK、Gradle 和下载的 Java/Android 依赖共用 `F:\android` 下的目录，Gradle 编译/转换缓存和模拟器数据保存在 C 盘。其他通用依赖使用 `F:\deps`；路径统一读取根目录 `dependencies.json`，见 [共享依赖规划](tools/dependency-layout.md)。
 
 APK：
 
@@ -553,9 +553,11 @@ android-app\app\build\outputs\apk\debug\app-debug.apk
 局域网可直接使用二维码中的内网地址。开发机也可使用 ADB 反向映射：
 
 ```powershell
-F:\android\sdk\platform-tools\adb.exe -s 607faa8d reverse tcp:4280 tcp:4280
-.\tools\run-android-pairing-test.ps1 -LocalAddressOverride https://127.0.0.1:4280
+& (Join-Path $dependencies.androidSdk 'platform-tools\adb.exe') -s 607faa8d reverse tcp:4280 tcp:4280
+.\tools\run-android-pairing-test.ps1 -QrScreenshot .\local-screenshots\pairing-current.png -LocalAddressOverride https://127.0.0.1:4280
 ```
+
+配对页截图放在 `local-screenshots`，联调日志保存在 `%LOCALAPPDATA%\BuildCache\aicli\pairing-test`。
 
 ## 12. 已完成验证
 

@@ -198,6 +198,18 @@
                     app:strokeColor="@color/aicli_outline_strong"
                     app:strokeWidth="1dp" />
 
+                <TextView
+                    android:id="@+id/imageUploadStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:accessibilityLiveRegion="polite"
+                    android:textColor="@color/aicli_text_secondary"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
+
                 <LinearLayout
                     android:id="@+id/inputBar"
                     android:layout_width="match_parent"
@@ -208,6 +220,28 @@
                     android:minHeight="50dp"
                     android:orientation="horizontal"
                     android:visibility="gone">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/composerMenuButton"
+                        style="@style/Widget.Material3.Button.IconButton.Filled"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:layout_marginEnd="8dp"
+                        android:contentDescription="展开功能菜单"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:minHeight="0dp"
+                        android:padding="0dp"
+                        app:backgroundTint="@color/aicli_surface_high"
+                        app:cornerRadius="20dp"
+                        app:icon="@drawable/ic_add"
+                        app:iconGravity="textStart"
+                        app:iconPadding="0dp"
+                        app:iconSize="20dp"
+                        app:iconTint="@color/aicli_text_secondary"
+                        app:strokeColor="@color/aicli_outline_strong"
+                        app:strokeWidth="1dp" />
 
                     <EditText
                         android:id="@+id/messageInput"
@@ -232,22 +266,22 @@
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/sendButton"
                         style="@style/Widget.Material3.Button.IconButton.Filled"
-                        android:layout_width="38dp"
-                        android:layout_height="38dp"
-                        android:contentDescription="展开终端按键"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:contentDescription="发送"
+                        android:enabled="false"
                         android:insetTop="0dp"
                         android:insetBottom="0dp"
                         android:minWidth="0dp"
+                        android:minHeight="0dp"
                         android:padding="0dp"
-                        app:backgroundTint="@color/aicli_surface_high"
-                        app:cornerRadius="19dp"
-                        app:icon="@drawable/ic_add"
+                        app:backgroundTint="@color/aicli_primary"
+                        app:cornerRadius="20dp"
+                        app:icon="@drawable/ic_send"
                         app:iconGravity="textStart"
                         app:iconPadding="0dp"
                         app:iconSize="20dp"
-                        app:iconTint="@color/aicli_text_secondary"
-                        app:strokeColor="@color/aicli_outline_strong"
-                        app:strokeWidth="1dp" />
+                        app:iconTint="@color/aicli_text" />
                 </LinearLayout>
 
                 <!--

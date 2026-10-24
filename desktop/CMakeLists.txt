@@ -1,6 +1,35 @@
 cmake_minimum_required(VERSION 3.26)
 project(aicli LANGUAGES C CXX RC)
 
+if (CMAKE_BINARY_DIR MATCHES "^[Ff]:")
+    message(FATAL_ERROR "F: is reserved for shared dependencies. Configure the build directory on C:.")
+endif()
+
+set(AICLI_DEPENDENCY_MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../dependencies.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${AICLI_DEPENDENCY_MANIFEST_PATH}")
+file(READ "${AICLI_DEPENDENCY_MANIFEST_PATH}" AICLI_DEPENDENCY_MANIFEST)
+function(aicli_shared_dependency name output)
+    string(JSON root_name GET "${AICLI_DEPENDENCY_MANIFEST}" packages "${name}" root)
+    string(JSON relative_path GET "${AICLI_DEPENDENCY_MANIFEST}" packages "${name}" path)
+    string(TOUPPER "${root_name}" root_variable)
+    if (DEFINED ENV{AICLI_${root_variable}_ROOT} AND NOT "$ENV{AICLI_${root_variable}_ROOT}" STREQUAL "")
+        set(root_path "$ENV{AICLI_${root_variable}_ROOT}")
+    else()
+        string(JSON root_path GET "${AICLI_DEPENDENCY_MANIFEST}" roots "${root_name}")
+    endif()
+    file(TO_CMAKE_PATH "${root_path}/${relative_path}" dependency_path)
+    set(${output} "${dependency_path}" PARENT_SCOPE)
+endfunction()
+
+aicli_shared_dependency(civetweb AICLI_CIVETWEB_ROOT)
+aicli_shared_dependency(qrcodegen AICLI_QRCODEGEN_ROOT)
+aicli_shared_dependency(nlohmann AICLI_NLOHMANN_ROOT)
+aicli_shared_dependency(openssl AICLI_OPENSSL_ROOT)
+aicli_shared_dependency(conpty AICLI_CONPTY_ROOT)
+aicli_shared_dependency(cppwinrt AICLI_CPPWINRT_ROOT)
+aicli_shared_dependency(terminalWinrt AICLI_TERMINAL_WINRT_ROOT)
+aicli_shared_dependency(qt AICLI_QT_ROOT)
+
 option(AICLI_SKIP_PACKAGED_ACTIVATION "Run the desktop executable directly for local UI smoke tests" OFF)
 option(AICLI_USE_QT_UI "Build the Qt desktop UI instead of the legacy Win32 UI" ON)
 set(AICLI_DATA_DIRECTORY_OVERRIDE "" CACHE STRING
@@ -36,8 +65,8 @@ if (NOT CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
 endif()
 
 if (AICLI_USE_QT_UI)
-    if (EXISTS "F:/Qt/6.8.3/msvc2022_64/lib/cmake/Qt6")
-        list(PREPEND CMAKE_PREFIX_PATH "F:/Qt/6.8.3/msvc2022_64")
+    if (EXISTS "${AICLI_QT_ROOT}/lib/cmake/Qt6")
+        list(PREPEND CMAKE_PREFIX_PATH "${AICLI_QT_ROOT}")
     endif()
     find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets Test)
 endif()
@@ -64,8 +93,8 @@ set(AICLI_COMMON_SOURCES
     src/data/data_store.cpp
     src/features/git_repository.cpp
     src/features/mobile_project_creation.cpp
-    "F:/deps/aicli/civetweb-1.16/src/civetweb.c"
-    "F:/deps/aicli/qrcodegen/qrcodegen.cpp"
+    "${AICLI_CIVETWEB_ROOT}/src/civetweb.c"
+    "${AICLI_QRCODEGEN_ROOT}/qrcodegen.cpp"
     src/terminal/conpty_connection_bridge.cpp
     src/terminal/terminal_working_detector.cpp
     src/terminal/xaml_island_adapter.cpp
@@ -173,23 +202,23 @@ if (AICLI_USE_QT_UI)
     )
 endif()
 
-set_source_files_properties("F:/deps/aicli/civetweb-1.16/src/civetweb.c" PROPERTIES LANGUAGE C)
+set_source_files_properties("${AICLI_CIVETWEB_ROOT}/src/civetweb.c" PROPERTIES LANGUAGE C)
 
 target_include_directories(aicli PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_BINARY_DIR}/generated"
-    "F:/deps/aicli/Microsoft.Windows.Console.ConPTY.1.24.260710001/package/inc"
-    "F:/deps/cppwinrt-2.0.230207.1/sdkplus"
-    "F:/deps/cppwinrt-2.0.230207.1/sdk"
-    "F:/deps/cppwinrt-2.0.230207.1"
+    "${AICLI_CONPTY_ROOT}/inc"
+    "${AICLI_CPPWINRT_ROOT}/sdkplus"
+    "${AICLI_CPPWINRT_ROOT}/sdk"
+    "${AICLI_CPPWINRT_ROOT}"
     "D:/Windows Kits/10/Include/10.0.22621.0/cppwinrt"
     "D:/Windows Kits/10/Include/10.0.22621.0/um"
     "D:/Windows Kits/10/Include/10.0.22621.0/shared"
-    "F:/codex_tool-target/desktop/winrt-1.24.11911.0-complete"
-    "F:/deps/aicli/civetweb-1.16/include"
-    "F:/deps/aicli"
-    "F:/deps/aicli/qrcodegen"
-    "F:/deps/aicli/openssl/include"
+    "${AICLI_TERMINAL_WINRT_ROOT}"
+    "${AICLI_CIVETWEB_ROOT}/include"
+    "${AICLI_NLOHMANN_ROOT}"
+    "${AICLI_QRCODEGEN_ROOT}"
+    "${AICLI_OPENSSL_ROOT}/include"
 )
 
 target_include_directories(aicli_data_store_tests PRIVATE
@@ -198,7 +227,7 @@ target_include_directories(aicli_data_store_tests PRIVATE
 
 target_include_directories(aicli_terminal_stream_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    "F:/deps/aicli"
+    "${AICLI_NLOHMANN_ROOT}"
 )
 
 target_include_directories(aicli_terminal_working_detector_tests PRIVATE
@@ -232,11 +261,11 @@ target_link_libraries(aicli PRIVATE
     userenv
     crypt32
     psapi
-    "F:/deps/aicli/Microsoft.Windows.Console.ConPTY.1.24.260710001/package/runtimes/win-x64/lib/uap10.0/conpty.lib"
-    "$<$<CONFIG:Debug>:F:/deps/aicli/openssl/lib/VC/x64/MDd/libssl.lib>"
-    "$<$<NOT:$<CONFIG:Debug>>:F:/deps/aicli/openssl/lib/VC/x64/MD/libssl.lib>"
-    "$<$<CONFIG:Debug>:F:/deps/aicli/openssl/lib/VC/x64/MDd/libcrypto.lib>"
-    "$<$<NOT:$<CONFIG:Debug>>:F:/deps/aicli/openssl/lib/VC/x64/MD/libcrypto.lib>"
+    "${AICLI_CONPTY_ROOT}/runtimes/win-x64/lib/uap10.0/conpty.lib"
+    "$<$<CONFIG:Debug>:${AICLI_OPENSSL_ROOT}/lib/VC/x64/MDd/libssl.lib>"
+    "$<$<NOT:$<CONFIG:Debug>>:${AICLI_OPENSSL_ROOT}/lib/VC/x64/MD/libssl.lib>"
+    "$<$<CONFIG:Debug>:${AICLI_OPENSSL_ROOT}/lib/VC/x64/MDd/libcrypto.lib>"
+    "$<$<NOT:$<CONFIG:Debug>>:${AICLI_OPENSSL_ROOT}/lib/VC/x64/MD/libcrypto.lib>"
 )
 
 if (AICLI_USE_QT_UI)
@@ -249,7 +278,7 @@ endif()
 
 if (AICLI_USE_QT_UI)
     add_custom_command(TARGET aicli POST_BUILD
-        COMMAND "F:/Qt/6.8.3/msvc2022_64/bin/windeployqt.exe"
+        COMMAND "${AICLI_QT_ROOT}/bin/windeployqt.exe"
             "$<$<CONFIG:Debug>:--debug>"
             "$<$<NOT:$<CONFIG:Debug>>:--release>"
             --no-translations

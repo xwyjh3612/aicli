@@ -1,10 +1,22 @@
 param(
-    [string]$TerminalRoot = 'F:\deps\terminal-v1.20.11381.0\terminal-1.20.11381.0',
+    [string]$TerminalRoot = '',
     [string]$Configuration = 'Debug',
     [string]$Platform = 'x64'
 )
 
 $ErrorActionPreference = 'Stop'
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+. (Join-Path $repositoryRoot 'tools\dependency-paths.ps1')
+$dependencies = Get-AicliDependencyPaths
+if (!$TerminalRoot) { $TerminalRoot = $dependencies.terminalSource }
+$buildRoot = Join-Path (Get-AicliBuildCacheRoot) 'third-party\windows-terminal\1.20.11381.0'
+$workingSource = Join-Path $buildRoot 'source'
+New-Item -ItemType Directory -Path $workingSource -Force | Out-Null
+# Terminal writes generated files into its source tree. Use one shared,
+# rebuildable C: working copy rather than writing build state into F:.
+& robocopy $TerminalRoot $workingSource /E /XD .git .vs bin obj /NFL /NDL /NJH /NJS /NP
+if ($LASTEXITCODE -ge 8) { throw "Terminal source staging failed: $LASTEXITCODE" }
+$TerminalRoot = $workingSource
 $msbuild = 'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe'
 if (!(Test-Path -LiteralPath $msbuild)) { throw "MSBuild not found: $msbuild" }
 if (!(Test-Path -LiteralPath (Join-Path $TerminalRoot 'src\dep\fmt\include\fmt'))) {
@@ -45,7 +57,7 @@ if ($LASTEXITCODE) { throw "TerminalSettingsModel build failed: $LASTEXITCODE" }
 if ($LASTEXITCODE) { throw "TerminalControl build failed: $LASTEXITCODE" }
 
 $artifact = Join-Path $TerminalRoot "bin\$Platform\$Configuration\Microsoft.Terminal.Control"
-$publish = 'F:\codex_tool-target\desktop\TerminalControl-v1.20'
+$publish = Join-Path $buildRoot "artifacts\$Platform\$Configuration"
 New-Item -ItemType Directory -Force -Path $publish | Out-Null
 Copy-Item (Join-Path $artifact 'Microsoft.Terminal.Control.dll'),
           (Join-Path $artifact 'Microsoft.Terminal.Control.winmd'),

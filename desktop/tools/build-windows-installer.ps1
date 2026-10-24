@@ -9,6 +9,8 @@ $ErrorActionPreference = 'Stop'
 
 $desktopRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $desktopRoot '..'))
+. (Join-Path $repositoryRoot 'tools\dependency-paths.ps1')
+$dependencies = Get-AicliDependencyPaths
 $useQtUi = $Qt.IsPresent
 $releaseDirectory = Join-Path $desktopRoot $(if ($useQtUi) { 'bin\Qt\Release' } else { 'bin\Release' })
 $packageIdentity = if ($useQtUi) { 'AiCli.Desktop.QtRelease' } else { 'AiCli.Desktop.Release' }
@@ -24,21 +26,16 @@ $publishDirectory = Join-Path $repositoryRoot 'release'
 $stageRuntime = Join-Path $desktopRoot 'tools\stage-runtime.ps1'
 
 if (!$BuildDirectory) {
-    if (Test-Path -LiteralPath 'F:\') {
-        $BuildDirectory = if ($useQtUi) {
-            'F:\codex_tool-target\desktop\build-qt-release'
-        } else {
-            'F:\codex_tool-target\desktop\build-nonqt-release'
-        }
+    $BuildDirectory = Join-Path $desktopRoot $(if ($useQtUi) {
+        'build-qt-release'
     } else {
-        $BuildDirectory = Join-Path $env:LOCALAPPDATA $(if ($useQtUi) {
-            'AI CLI\build-qt-release'
-        } else {
-            'AI CLI\build-nonqt-release'
-        })
-    }
+        'build-nonqt-release'
+    })
 }
 $BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
+if ([IO.Path]::GetPathRoot($BuildDirectory) -eq 'F:\') {
+    throw 'F: is reserved for shared dependencies. Choose a build directory on C:.'
+}
 $isolatedRuntimeRoot = Join-Path $BuildDirectory 'runtime'
 
 $cmakeCandidates = @(
@@ -50,7 +47,7 @@ if (!$cmake) { throw 'cmake.exe was not found.' }
 
 if (!$InnoCompiler) {
     $innoCandidates = @(
-        'F:\tools\InnoSetup7\ISCC.exe',
+        (Join-Path $dependencies.innoSetup 'ISCC.exe'),
         'C:\Program Files\Inno Setup 7\ISCC.exe',
         'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
     )
@@ -140,7 +137,7 @@ if (!(Test-Path -LiteralPath $installerPath -PathType Leaf)) {
     throw "Installer was not generated: $installerPath"
 }
 
-$hash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash
+$hash = Get-AicliFileSha256 -LiteralPath $installerPath
 $hashPath = "$installerPath.sha256"
 [IO.File]::WriteAllText(
     $hashPath,

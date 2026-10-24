@@ -13,8 +13,8 @@
     "status": "source-downloaded; public-dependencies-restored; TerminalControlLib-and-dll-built"
   },
   "paths": {
-    "windowsAppSdkPackage": "F:/deps/windowsappsdk-1.7.250606001-pkg",
-    "buildRoot": "F:/codex_tool-target/desktop-build",
-    "outputRoot": "F:/codex_tool-target/desktop"
+    "manifest": "../dependencies.json",
+    "buildRoot": "desktop/build",
+    "outputRoot": "desktop/bin"
   }
 }

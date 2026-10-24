@@ -2,7 +2,6 @@ package com.aitest.aicli;
 
 import android.Manifest;
 import android.content.ContentResolver;
-import android.content.res.ColorStateList;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -58,6 +57,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Collections;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -124,7 +125,9 @@ public final class MainActivity extends AppCompatActivity {
     private View inputBar;
     private MaterialButton startProjectButton;
     private MaterialButton wrapButton;
+    private MaterialButton composerMenuButton;
     private MaterialButton sendButton;
+    private TextView imageUploadStatus;
     private View closeProjectButton;
     private EditText messageInput;
     private RecyclerView conversationList;
@@ -152,6 +155,34 @@ public final class MainActivity extends AppCompatActivity {
     private ActivityResultLauncher<String> cameraPermissionLauncher;
     private Uri pendingCameraUri;
     private File pendingCameraFile;
+    private ImageUploadBatch imageUploadBatch;
+
+    private static final class PendingImage {
+        final Uri uri;
+        final File cameraFile;
+
+        PendingImage(Uri uri, File cameraFile) {
+            this.uri = uri;
+            this.cameraFile = cameraFile;
+        }
+    }
+
+    private static final class ImageUploadBatch {
+        final AicliClient client;
+        final String conversationId;
+        final long serverGeneration;
+        final ArrayDeque<PendingImage> pending = new ArrayDeque<>();
+        int total;
+        int completed;
+        int uploaded;
+        boolean uploading;
+
+        ImageUploadBatch(AicliClient client, String conversationId, long serverGeneration) {
+            this.client = client;
+            this.conversationId = conversationId;
+            this.serverGeneration = serverGeneration;
+        }
+    }
 
     private void initializeDeviceIdentity() {
         SharedPreferences preferences = getSharedPreferences("device_identity", MODE_PRIVATE);
@@ -219,7 +250,9 @@ public final class MainActivity extends AppCompatActivity {
         inputBar = findViewById(R.id.inputBar);
         startProjectButton = findViewById(R.id.startProjectButton);
         wrapButton = findViewById(R.id.wrapButton);
+        composerMenuButton = findViewById(R.id.composerMenuButton);
         sendButton = findViewById(R.id.sendButton);
+        imageUploadStatus = findViewById(R.id.imageUploadStatus);
         closeProjectButton = findViewById(R.id.closeProjectButton);
         messageInput = findViewById(R.id.messageInput);
         conversationList = findViewById(R.id.conversationList);
@@ -266,7 +299,8 @@ public final class MainActivity extends AppCompatActivity {
                 showCreateProjectSheet());
         findViewById(R.id.closeDrawerButton).setOnClickListener(view ->
                 drawerLayout.closeDrawer(GravityCompat.START));
-        sendButton.setOnClickListener(view -> handleComposerAction());
+        composerMenuButton.setOnClickListener(view -> toggleComposerMenu());
+        sendButton.setOnClickListener(view -> sendInput());
         startProjectButton.setOnClickListener(view -> startSelectedProject());
         closeProjectButton.setOnClickListener(view -> confirmCloseSelectedProject());
         wrapButton.setOnClickListener(view -> toggleSoftWrap());
@@ -354,6 +388,7 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        cancelImageUploads();
         if (visibleWindowLayoutListener != null && drawerLayout != null &&
                 drawerLayout.getViewTreeObserver().isAlive()) {
             drawerLayout.getViewTreeObserver().removeOnGlobalLayoutListener(
@@ -870,6 +905,7 @@ public final class MainActivity extends AppCompatActivity {
     private void selectConversation(AicliClient.Conversation conversation,
                                     boolean closeDrawerOnSelection) {
         if (client == null) return;
+        if (!conversation.id.equals(selectedConversationId)) cancelImageUploads();
         client.closeEvents();
         final AicliClient requestClient = client;
         final long requestGeneration = serverGeneration;
@@ -912,6 +948,10 @@ public final class MainActivity extends AppCompatActivity {
 
     private void sendInput() {
         if (selectedConversationId == null || client == null) return;
+        if (isCurrentImageUpload(imageUploadBatch)) {
+            Toast.makeText(this, "请等待图片上传完成后再发送", Toast.LENGTH_SHORT).show();
+            return;
+        }
         String input = messageInput.getText().toString();
         if (input.isEmpty()) return;
         String conversationId = selectedConversationId;
@@ -930,11 +970,7 @@ public final class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void handleComposerAction() {
-        if (messageInput.getText().length() > 0) {
-            sendInput();
-            return;
-        }
+    private void toggleComposerMenu() {
         if (terminalKeyPanelVisible) {
             hideTerminalKeyPanel(true);
         } else {
@@ -944,13 +980,19 @@ public final class MainActivity extends AppCompatActivity {
 
     private void registerImageLaunchers() {
         galleryLauncher = registerForActivityResult(
-                new ActivityResultContracts.GetContent(), uri -> {
-                    if (uri != null) importImage(uri);
-                });
+                new ActivityResultContracts.GetMultipleContents(),
+                uris -> importImages(uris, null));
         cameraLauncher = registerForActivityResult(
                 new ActivityResultContracts.TakePicture(), saved -> {
-                    if (saved && pendingCameraUri != null) importImage(pendingCameraUri);
-                    else deletePendingCameraFile();
+                    if (saved && pendingCameraUri != null) {
+                        Uri uri = pendingCameraUri;
+                        File file = pendingCameraFile;
+                        pendingCameraUri = null;
+                        pendingCameraFile = null;
+                        importImages(Collections.singletonList(uri), file);
+                    } else {
+                        deletePendingCameraFile();
+                    }
                 });
         cameraPermissionLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestPermission(), granted -> {
@@ -985,107 +1027,165 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void deletePendingCameraFile() {
-        if (pendingCameraFile != null && pendingCameraFile.exists()) {
-            //noinspection ResultOfMethodCallIgnored
-            pendingCameraFile.delete();
-        }
+        deleteCameraFile(pendingCameraFile);
         pendingCameraFile = null;
         pendingCameraUri = null;
     }
 
-    private void importImage(Uri uri) {
-        Toast.makeText(this, "正在处理图片…", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            try {
-                ContentResolver resolver = getContentResolver();
-                Bitmap bitmap;
-                if (android.os.Build.VERSION.SDK_INT >= 28) {
-                    bitmap = ImageDecoder.decodeBitmap(
-                            ImageDecoder.createSource(resolver, uri),
-                            (decoder, info, source) -> {
-                                decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
-                                int width = info.getSize().getWidth();
-                                int height = info.getSize().getHeight();
-                                int largest = Math.max(width, height);
-                                if (largest > 2048) {
-                                    float scale = 2048f / largest;
-                                    decoder.setTargetSize(
-                                            Math.max(1, Math.round(width * scale)),
-                                            Math.max(1, Math.round(height * scale)));
-                                }
-                            });
-                } else {
-                    BitmapFactory.Options bounds = new BitmapFactory.Options();
-                    bounds.inJustDecodeBounds = true;
-                    try (InputStream input = resolver.openInputStream(uri)) {
-                        BitmapFactory.decodeStream(input, null, bounds);
-                    }
-                    BitmapFactory.Options options = new BitmapFactory.Options();
-                    int largest = Math.max(bounds.outWidth, bounds.outHeight);
-                    while (largest / options.inSampleSize > 2048) options.inSampleSize *= 2;
-                    try (InputStream input = resolver.openInputStream(uri)) {
-                        bitmap = BitmapFactory.decodeStream(input, null, options);
-                    }
-                }
-                if (bitmap == null) throw new IOException("无法读取所选图片");
-                uploadBitmap(bitmap);
-            } catch (Exception error) {
-                runOnUiThread(() -> Toast.makeText(this,
-                        "图片读取失败：" + error.getMessage(), Toast.LENGTH_LONG).show());
-            } finally {
-                if (pendingCameraUri != null && pendingCameraUri.equals(uri)) {
-                    deletePendingCameraFile();
-                }
-            }
-        }, "aicli-image-import").start();
+    private static void deleteCameraFile(File file) {
+        if (file != null && file.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();
+        }
     }
 
-    private void uploadBitmap(Bitmap original) {
-        if (selectedConversationId == null || client == null) return;
+    private void importImages(List<Uri> uris, File cameraFile) {
+        if (uris == null || uris.isEmpty() || selectedConversationId == null || client == null) {
+            deleteCameraFile(cameraFile);
+            return;
+        }
+        if (!isCurrentImageUpload(imageUploadBatch)) {
+            cancelImageUploads();
+            imageUploadBatch = new ImageUploadBatch(client, selectedConversationId, serverGeneration);
+        }
+        ImageUploadBatch batch = imageUploadBatch;
+        for (Uri uri : new LinkedHashSet<>(uris)) {
+            if (uri == null) continue;
+            batch.pending.addLast(new PendingImage(uri, cameraFile));
+            batch.total++;
+        }
+        updateComposerAction();
+        uploadNextImage(batch);
+    }
+
+    private boolean isCurrentImageUpload(ImageUploadBatch batch) {
+        return batch != null && batch == imageUploadBatch && !isFinishing() && !isDestroyed()
+                && batch.client == client && batch.serverGeneration == serverGeneration
+                && batch.conversationId.equals(selectedConversationId);
+    }
+
+    private void cancelImageUploads() {
+        if (imageUploadBatch != null) {
+            for (PendingImage image : imageUploadBatch.pending) deleteCameraFile(image.cameraFile);
+            imageUploadBatch.pending.clear();
+            imageUploadBatch = null;
+        }
+        updateComposerAction();
+    }
+
+    private void uploadNextImage(ImageUploadBatch batch) {
+        if (!isCurrentImageUpload(batch) || batch.uploading) return;
+        PendingImage image = batch.pending.pollFirst();
+        if (image == null) {
+            imageUploadBatch = null;
+            updateComposerAction();
+            if (batch.uploaded > 0) {
+                Toast.makeText(this, "已上传 " + batch.uploaded + " 张图片，可继续添加或补充问题后发送",
+                        Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        batch.uploading = true;
+        updateComposerAction();
+        // Decode, compress and upload one image at a time to bound memory use
+        // and preserve the selection order when appending image references.
         new Thread(() -> {
-            Bitmap prepared = original;
             try {
-                final int maximumDimension = 2048;
-                int width = original.getWidth();
-                int height = original.getHeight();
-                int largest = Math.max(width, height);
-                if (largest > maximumDimension) {
-                    float scale = maximumDimension / (float) largest;
-                    prepared = Bitmap.createScaledBitmap(original,
-                            Math.max(1, Math.round(width * scale)),
-                            Math.max(1, Math.round(height * scale)), true);
-                }
-                ByteArrayOutputStream output = new ByteArrayOutputStream();
-                int quality = 88;
-                prepared.compress(Bitmap.CompressFormat.JPEG, quality, output);
-                while (output.size() > 5 * 1024 * 1024 && quality > 55) {
-                    output.reset();
-                    quality -= 8;
-                    prepared.compress(Bitmap.CompressFormat.JPEG, quality, output);
-                }
-                if (output.size() > 5 * 1024 * 1024) throw new IOException("图片压缩后仍超过 5MB");
-                byte[] bytes = output.toByteArray();
-                String conversationId = selectedConversationId;
-                runOnUiThread(() -> Toast.makeText(this,
-                        "正在上传图片…", Toast.LENGTH_SHORT).show());
-                client.uploadImage(conversationId, bytes, "image/jpeg",
-                        new AicliClient.AttachmentCallback() {
-                    @Override public void onSuccess(String path) {
-                        runOnUiThread(() -> insertUploadedImagePath(path));
-                    }
-                    @Override public void onError(String message) {
-                        runOnUiThread(() -> Toast.makeText(MainActivity.this,
-                                "图片上传失败：" + message, Toast.LENGTH_LONG).show());
-                    }
+                byte[] bytes = prepareImage(image.uri);
+                runOnUiThread(() -> {
+                    if (!isCurrentImageUpload(batch)) return;
+                    batch.client.uploadImage(batch.conversationId, bytes, "image/jpeg",
+                            new AicliClient.AttachmentCallback() {
+                        @Override public void onSuccess(String path) {
+                            runOnUiThread(() -> finishImageUpload(batch, path, null));
+                        }
+                        @Override public void onError(String message) {
+                            runOnUiThread(() -> finishImageUpload(batch, null, message));
+                        }
+                    });
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> Toast.makeText(this,
-                        "图片处理失败：" + error.getMessage(), Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> finishImageUpload(batch, null, error.getMessage()));
             } finally {
-                if (!prepared.isRecycled()) prepared.recycle();
-                if (prepared != original && !original.isRecycled()) original.recycle();
+                deleteCameraFile(image.cameraFile);
             }
         }, "aicli-image-upload").start();
+    }
+
+    private void finishImageUpload(ImageUploadBatch batch, String path, String error) {
+        if (!isCurrentImageUpload(batch)) return;
+        batch.uploading = false;
+        batch.completed++;
+        if (path != null && !path.isEmpty()) {
+            insertUploadedImagePath(path);
+            batch.uploaded++;
+        } else {
+            Toast.makeText(this, "第 " + batch.completed + " 张图片上传失败："
+                    + (error == null ? "电脑没有返回图片路径" : error), Toast.LENGTH_LONG).show();
+        }
+        uploadNextImage(batch);
+    }
+
+    private byte[] prepareImage(Uri uri) throws IOException {
+        ContentResolver resolver = getContentResolver();
+        Bitmap original = null;
+        Bitmap prepared = null;
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                original = ImageDecoder.decodeBitmap(
+                        ImageDecoder.createSource(resolver, uri),
+                        (decoder, info, source) -> {
+                            decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
+                            int width = info.getSize().getWidth();
+                            int height = info.getSize().getHeight();
+                            int largest = Math.max(width, height);
+                            if (largest > 2048) {
+                                float scale = 2048f / largest;
+                                decoder.setTargetSize(
+                                        Math.max(1, Math.round(width * scale)),
+                                        Math.max(1, Math.round(height * scale)));
+                            }
+                        });
+            } else {
+                BitmapFactory.Options bounds = new BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                try (InputStream input = resolver.openInputStream(uri)) {
+                    BitmapFactory.decodeStream(input, null, bounds);
+                }
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inSampleSize = 1;
+                int largest = Math.max(bounds.outWidth, bounds.outHeight);
+                while (largest / options.inSampleSize > 2048) options.inSampleSize *= 2;
+                try (InputStream input = resolver.openInputStream(uri)) {
+                    original = BitmapFactory.decodeStream(input, null, options);
+                }
+            }
+            if (original == null) throw new IOException("无法读取所选图片");
+            prepared = original;
+            final int maximumDimension = 2048;
+            int width = original.getWidth();
+            int height = original.getHeight();
+            int largest = Math.max(width, height);
+            if (largest > maximumDimension) {
+                float scale = maximumDimension / (float) largest;
+                prepared = Bitmap.createScaledBitmap(original,
+                        Math.max(1, Math.round(width * scale)),
+                        Math.max(1, Math.round(height * scale)), true);
+            }
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            int quality = 88;
+            prepared.compress(Bitmap.CompressFormat.JPEG, quality, output);
+            while (output.size() > 5 * 1024 * 1024 && quality > 55) {
+                output.reset();
+                quality -= 8;
+                prepared.compress(Bitmap.CompressFormat.JPEG, quality, output);
+            }
+            if (output.size() > 5 * 1024 * 1024) throw new IOException("图片压缩后仍超过 5MB");
+            return output.toByteArray();
+        } finally {
+            if (prepared != null && !prepared.isRecycled()) prepared.recycle();
+            if (original != null && !original.isRecycled()) original.recycle();
+        }
     }
 
     private void insertUploadedImagePath(String path) {
@@ -1100,8 +1200,6 @@ public final class MainActivity extends AppCompatActivity {
         }
         messageInput.setText(current + reference + " ");
         messageInput.setSelection(messageInput.length());
-        hideTerminalKeyPanel(true);
-        Toast.makeText(this, "图片已上传，可补充问题后发送", Toast.LENGTH_SHORT).show();
     }
 
     private void showTerminalKeyPanel() {
@@ -1269,29 +1367,23 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void updateComposerAction() {
-        if (sendButton == null || messageInput == null) return;
+        if (sendButton == null || composerMenuButton == null || messageInput == null) return;
         boolean hasInput = messageInput.getText().length() > 0;
-        int color;
-        if (hasInput) {
-            sendButton.setIconResource(R.drawable.ic_send);
-            sendButton.setContentDescription("发送");
-            color = ContextCompat.getColor(this, R.color.aicli_primary);
-            sendButton.setStrokeWidth(0);
-            sendButton.setIconTint(ColorStateList.valueOf(
-                    ContextCompat.getColor(this, R.color.aicli_text)));
-        } else {
-            sendButton.setIconResource(terminalKeyPanelVisible
-                    ? R.drawable.ic_panel_return : R.drawable.ic_add);
-            sendButton.setContentDescription(terminalKeyPanelVisible
-                    ? "返回输入键盘" : "展开终端按键");
-            color = ContextCompat.getColor(this, R.color.aicli_surface_high);
-            sendButton.setStrokeWidth(dpToPx(1));
-            sendButton.setStrokeColor(ColorStateList.valueOf(
-                    ContextCompat.getColor(this, R.color.aicli_outline_strong)));
-            sendButton.setIconTint(ColorStateList.valueOf(
-                    ContextCompat.getColor(this, R.color.aicli_text_secondary)));
+        boolean uploading = isCurrentImageUpload(imageUploadBatch);
+        sendButton.setEnabled(hasInput && !uploading);
+        sendButton.setAlpha(sendButton.isEnabled() ? 1f : 0.4f);
+        composerMenuButton.setIconResource(terminalKeyPanelVisible
+                ? R.drawable.ic_panel_return : R.drawable.ic_add);
+        composerMenuButton.setContentDescription(terminalKeyPanelVisible
+                ? "返回输入键盘" : "展开功能菜单");
+        boolean running = selectedConversation != null
+                && "running".equalsIgnoreCase(selectedConversation.status);
+        imageUploadStatus.setVisibility(uploading && running ? View.VISIBLE : View.GONE);
+        if (uploading) {
+            imageUploadStatus.setText("正在上传图片（"
+                    + Math.min(imageUploadBatch.completed + 1, imageUploadBatch.total)
+                    + "/" + imageUploadBatch.total + "）");
         }
-        sendButton.setBackgroundTintList(ColorStateList.valueOf(color));
     }
 
     private int dpToPx(int dp) {
@@ -1848,6 +1940,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void hideConversation() {
+        cancelImageUploads();
         if (client != null) client.closeEvents();
         selectedConversation = null;
         updateProjectHeader(null);

@@ -2,9 +2,12 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $projectDirectory = Split-Path -Parent $PSScriptRoot
-$javaHome = "F:\Android\Java\jdk-17.0.11"
-$androidSdk = "F:\Android\sdk"
-$gradleHome = "F:\Android\.gradle\wrapper\dists\gradle-8.2-bin\bbg7u40eoinfdyxsxr3z4i7ta\gradle-8.2"
+$repositoryRoot = Split-Path -Parent $projectDirectory
+. (Join-Path $repositoryRoot 'tools\dependency-paths.ps1')
+$dependencies = Set-AicliAndroidBuildEnvironment
+$javaHome = $dependencies.java17
+$androidSdk = $dependencies.androidSdk
+$gradleHome = $dependencies.gradle
 $gradle = Join-Path $gradleHome "bin\gradle.bat"
 $keytool = Join-Path $javaHome "bin\keytool.exe"
 $buildTools = Join-Path $androidSdk "build-tools\35.0.0"
@@ -17,7 +20,7 @@ foreach ($required in @($gradle, $keytool, $apksigner, $aapt)) {
     }
 }
 
-$signingDirectory = "F:\Android\AI-CLI\signing"
+$signingDirectory = Join-Path $env:LOCALAPPDATA 'AiCli\signing'
 $keystore = Join-Path $signingDirectory "ai-cli-release.p12"
 $protectedPasswordFile = Join-Path $signingDirectory "release-password.dpapi"
 $keyAlias = "aicli-release"
@@ -30,6 +33,9 @@ if (Test-Path -LiteralPath $protectedPasswordFile) {
         "aicli-release", $securePassword)
     $password = $credential.GetNetworkCredential().Password
 } else {
+    if (Test-Path -LiteralPath $keystore) {
+        throw "The existing release key has no DPAPI password file: $protectedPasswordFile"
+    }
     $randomBytes = New-Object byte[] 36
     $randomGenerator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     try {
@@ -62,10 +68,6 @@ if (-not (Test-Path -LiteralPath $keystore)) {
     }
 }
 
-$env:JAVA_HOME = $javaHome
-$env:ANDROID_HOME = $androidSdk
-$env:ANDROID_SDK_ROOT = $androidSdk
-$env:GRADLE_USER_HOME = "F:\Android\.gradle"
 $env:AICLI_RELEASE_KEYSTORE = $keystore
 $env:AICLI_RELEASE_STORE_PASSWORD = $password
 $env:AICLI_RELEASE_KEY_ALIAS = $keyAlias
@@ -110,7 +112,7 @@ if (-not $versionMatch.Success) {
 $versionName = $versionMatch.Groups[1].Value
 $publishedApk = Join-Path $releaseDirectory "AI-CLI-Android-$versionName-release.apk"
 Copy-Item -LiteralPath $builtApk -Destination $publishedApk -Force
-$hash = (Get-FileHash -LiteralPath $publishedApk -Algorithm SHA256).Hash
+$hash = Get-AicliFileSha256 -LiteralPath $publishedApk
 $repositoryRoot = Split-Path -Parent $projectDirectory
 $publishDirectory = Join-Path $repositoryRoot "release"
 New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null

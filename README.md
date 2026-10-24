@@ -13,7 +13,7 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 - 自动恢复 Claude 当前目录的最近会话；没有会话时创建新会话。
 - 通过标题协议和通用终端输出检测 CLI 工作状态，在项目列表及任务栏显示动画。
 - 使用 SQLite 保存项目、类型、分组、设备、设置和会话事件。
-- Android 端支持扫码配对、HTTPS/WSS、终端同步和消息输入。
+- Android 端支持扫码配对、HTTPS/WSS、终端同步、消息输入和多张图片上传；左侧“＋”随时展开功能菜单。
 - 设置页显示应用版本和实际使用的 PowerShell 环境。
 
 桌面端当前版本为 1.0.0.3，Android 端当前版本为 1.1.0。
@@ -45,7 +45,7 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 - Windows App SDK/WinRT、ConPTY、OpenSSL、CivetWeb 和 QR Code 依赖。
 - PowerShell 7 推荐但不是必需；软件支持常规安装和 Microsoft Store 版，并可回退到 Windows PowerShell 5.1。
 
-桌面 CMake 文件和工具脚本仍包含当前开发机的依赖路径，例如 F:/deps、F:/Qt 和 F:/codex_tool-target。在其他机器上构建前，需要调整为本机路径或准备相同的依赖目录。
+共享依赖路径统一声明在根目录 `dependencies.json`：Android/Java 使用现有 `F:/android`，C/C++ 通用依赖使用 `F:/deps`，Qt 和公共工具分别使用 `F:/Qt`、`F:/tools`。同一版本跨项目共用一份。编译缓存和产物位于 C 盘，具体目录见 [共享依赖规划](tools/dependency-layout.md)。
 
 ### Android 客户端
 
@@ -180,13 +180,14 @@ PowerShell 7 检测支持常规安装和 Microsoft Store 版。如未自动识�
 - 非 Qt Win32 是当前主维护路径；除非任务明确要求，不要修改 qt_* 源文件。
 - 调整终端链路前先阅读 desktop/README.md 和运行时暂存脚本。
 - 桌面版本号以 desktop/package/AppxManifest.xml 为单一来源，CMake 会生成 UI 使用的版本常量。
-- 构建输出、暂存运行时、签名材料、安装包和 APK 不应提交到 Git。
+- 构建缓存、暂存运行时和签名材料不应提交到 Git；指定的 `release` 安装包和校验文件保留在版本管理中，便于其他电脑直接安装。
 - 提交前建议运行 git diff --check 和 git status --short。
 
 ## 相关文档
 
 - desktop/README.md：桌面构建和 Windows Terminal 运行时细节。
 - android-app/README.md：Android 客户端和 Release 构建说明。
+- tools/dependency-layout.md：F 盘共享依赖和 C 盘缓存规划。
 - ai-cli-mobile-architecture.md：桌面 Agent 与移动端架构。
 - 开发上下文备份-2026-08-18.md：历史开发上下文备份。
 

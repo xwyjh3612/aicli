@@ -1,22 +1,29 @@
 param(
     [string]$DeviceId = '607faa8d',
-    [string]$QrScreenshot = 'F:\codex_tool-target\desktop\pairing-current.png',
-    [string]$Workspace = 'C:\project\aitest\codex_tool',
+    [string]$QrScreenshot = '',
+    [string]$Workspace = '',
     [string]$LocalAddressOverride = ''
 )
 
 $ErrorActionPreference = 'Stop'
-$adb = 'F:\android\sdk\platform-tools\adb.exe'
+if (!$Workspace) { $Workspace = Join-Path $PSScriptRoot '..' }
+$Workspace = [IO.Path]::GetFullPath($Workspace)
+. (Join-Path $Workspace 'tools\dependency-paths.ps1')
+$dependencies = Set-AicliAndroidBuildEnvironment
+$adb = Join-Path $dependencies.androidSdk 'platform-tools\adb.exe'
+$java = Join-Path $dependencies.java17 'bin\java.exe'
+$outputRoot = Join-Path (Get-AicliBuildCacheRoot) 'aicli\pairing-test'
+if (!$QrScreenshot) { $QrScreenshot = Join-Path $Workspace 'local-screenshots\pairing-current.png' }
 $mainApk = Join-Path $Workspace 'android-app\app\build\outputs\apk\debug\app-debug.apk'
 $testApk = Join-Path $Workspace 'android-app\app\build\outputs\apk\androidTest\debug\app-debug-androidTest.apk'
-$zxing = Get-ChildItem 'F:\android\.gradle\caches\modules-2\files-2.1\com.google.zxing\core\3.5.3' `
+$zxing = Get-ChildItem (Join-Path $dependencies.gradleArtifacts 'com.google.zxing\core\3.5.3') `
     -Recurse -Filter '*.jar' | Select-Object -First 1 -ExpandProperty FullName
 if (!(Test-Path -LiteralPath $adb) -or !(Test-Path -LiteralPath $mainApk) -or
     !(Test-Path -LiteralPath $testApk) -or !(Test-Path -LiteralPath $QrScreenshot) -or !$zxing) {
     throw 'Android pairing test dependencies are incomplete.'
 }
 
-$qr = & java -cp ((Join-Path $Workspace 'tools') + ';' + $zxing) QrDecode $QrScreenshot
+$qr = & $java -cp $zxing (Join-Path $Workspace 'tools\QrDecode.java') $QrScreenshot
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($qr)) {
     throw 'The desktop pairing QR could not be decoded.'
 }
@@ -45,7 +52,7 @@ public static class AicliPairingTestNative {
 '@
 }
 
-$outputRoot = 'F:\codex_tool-target\desktop'
+New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 $stdout = Join-Path $outputRoot 'android-pair-test.out'
 $stderr = Join-Path $outputRoot 'android-pair-test.err'
 foreach ($path in @($stdout, $stderr)) {
@@ -59,7 +66,7 @@ $arguments = @(
     'com.aitest.aicli.test/androidx.test.runner.AndroidJUnitRunner'
 )
 $test = Start-Process -FilePath $adb -ArgumentList $arguments `
-    -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+    -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
 $deadline = (Get-Date).AddSeconds(190)
 while (!$test.HasExited -and (Get-Date) -lt $deadline) {
     $desktop = Get-Process aicli -ErrorAction SilentlyContinue |

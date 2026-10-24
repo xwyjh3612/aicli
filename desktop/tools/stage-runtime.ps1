@@ -1,8 +1,8 @@
 param(
-    [string]$Output = 'C:\project\aitest\codex_tool\desktop\bin\Debug',
-    [string]$TerminalPackage = 'C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.11911.0_x64__8wekyb3d8bbwe',
-    [string]$ConptyPackage = 'F:\deps\aicli\Microsoft.Windows.Console.ConPTY.1.24.260710001\package',
-    [string]$WorkingRoot = 'F:\codex_tool-target\desktop\runtime-stage',
+    [string]$Output = '',
+    [string]$TerminalPackage = '',
+    [string]$ConptyPackage = '',
+    [string]$WorkingRoot = '',
     [string]$Configuration = 'Debug',
     [string]$Platform = 'x64',
     [string]$PackageIdentityName = 'AiCli.Desktop.Dev',
@@ -11,6 +11,19 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 Add-Type -AssemblyName System.Drawing
+$desktopRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+. (Join-Path $desktopRoot '..\tools\dependency-paths.ps1')
+$dependencies = Get-AicliDependencyPaths
+$runtimeCacheRoot = Join-Path (Get-AicliBuildCacheRoot) 'aicli\runtime-stage'
+if (!$Output) { $Output = Join-Path $desktopRoot 'bin\Debug' }
+if (!$TerminalPackage) { $TerminalPackage = $dependencies.terminalRuntime }
+if (!$ConptyPackage) { $ConptyPackage = $dependencies.conpty }
+if (!$WorkingRoot) {
+    $WorkingRoot = Join-Path $runtimeCacheRoot "$PackageIdentityName\$Configuration"
+}
+if ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Output)) -eq 'F:\') {
+    throw 'F: is reserved for shared dependencies. Choose an output directory on C:.'
+}
 
 if ($PackageIdentityName -notmatch '^[A-Za-z0-9.-]+$') {
     throw "Invalid package identity name: $PackageIdentityName"
@@ -38,8 +51,8 @@ function Copy-FileIfDifferent {
         $sourceInfo = Get-Item -LiteralPath $Source
         $destinationInfo = Get-Item -LiteralPath $Destination
         if ($sourceInfo.Length -eq $destinationInfo.Length) {
-            $sourceHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
-            $destinationHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
+            $sourceHash = Get-AicliFileSha256 -LiteralPath $Source
+            $destinationHash = Get-AicliFileSha256 -LiteralPath $Destination
             if ($sourceHash -eq $destinationHash) { return }
         }
     }
@@ -281,7 +294,13 @@ $terminalFiles = @(
     'Microsoft.Terminal.TerminalConnection.winmd'
 )
 foreach ($file in $terminalFiles) {
-    Copy-FileIfDifferent -Source (Join-Path $TerminalPackage $file) -Destination (Join-Path $Output $file)
+    $sourceFile = Join-Path $TerminalPackage $file
+    # Microsoft's portable runtime ZIP omits the development WinMD files.
+    # Keep the matching metadata in its own shared dependency directory.
+    if ($file.EndsWith('.winmd') -and !(Test-Path -LiteralPath $sourceFile)) {
+        $sourceFile = Join-Path $dependencies.terminalMetadata $file
+    }
+    Copy-FileIfDifferent -Source $sourceFile -Destination (Join-Path $Output $file)
 }
 
 # The application supplies its own ITerminalConnection implementation. Never
@@ -317,7 +336,7 @@ Remove-Item -LiteralPath (Join-Path $outputFull 'Microsoft.Terminal.Settings.Mod
 New-Item -ItemType Directory -Force -Path $controlResourceFull | Out-Null
 
 $workingFull = [IO.Path]::GetFullPath($WorkingRoot).TrimEnd('\')
-$allowedWorkingRoot = [IO.Path]::GetFullPath('F:\codex_tool-target\desktop').TrimEnd('\')
+$allowedWorkingRoot = [IO.Path]::GetFullPath($runtimeCacheRoot).TrimEnd('\')
 if (!$workingFull.StartsWith($allowedWorkingRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing to use a runtime staging directory outside $allowedWorkingRoot`: $workingFull"
 }
@@ -360,7 +379,7 @@ Configure-PriIndex -Path $priConfig -ReswInitialPath ''
 & $makePri new /pr $layoutRoot /cf $priConfig /in Microsoft.Terminal.Control /of (Join-Path $outputFull 'Microsoft.Terminal.Control.pri') /o | Out-Null
 if ($LASTEXITCODE) { throw "Failed to create Terminal Control PRI: $LASTEXITCODE" }
 
-$xaml = 'F:\deps\Microsoft.UI.Xaml.2.8'
+$xaml = $dependencies.winui
 $xamlPri = Join-Path $xaml 'resources.pri'
 $xamlPriXml = Join-Path $workingFull 'xaml-resources.xml'
 & $makePri dump /if $xamlPri /of $xamlPriXml /dt Basic /o | Out-Null
@@ -425,7 +444,7 @@ $manifestText = [Text.RegularExpressions.Regex]::Replace(
 [IO.File]::WriteAllText($manifestOutput, $manifestText, [Text.UTF8Encoding]::new($false))
 Copy-Item (Join-Path $PSScriptRoot 'configure-agent-firewall.ps1') $Output -Force
 Copy-Item -Path (Join-Path $mainLayoutAssets '*') -Destination $assets -Force
-$openssl = 'F:\deps\aicli\openssl'
+$openssl = $dependencies.openssl
 Copy-FileIfDifferent -Source (Join-Path $openssl 'libssl-4-x64.dll') -Destination (Join-Path $Output 'libssl-4-x64.dll')
 Copy-FileIfDifferent -Source (Join-Path $openssl 'libcrypto-4-x64.dll') -Destination (Join-Path $Output 'libcrypto-4-x64.dll')
 $sha256 = [Security.Cryptography.SHA256]::Create()

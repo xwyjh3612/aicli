@@ -1,5 +1,5 @@
 param(
-    [string]$Exe = 'F:\codex_tool-target\desktop\Debug\aicli-terminal-probe.exe'
+    [string]$Exe = (Join-Path $PSScriptRoot '..\bin\Debug\aicli-terminal-probe.exe')
 )
 
 Add-Type @'

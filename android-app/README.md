@@ -6,7 +6,9 @@
 - 设置入口
 - 支持扫码入口、Android Keystore、HTTP/WebSocket 和会话列表
 
-当前环境使用缓存的 Gradle 8.2 和 JDK 17 构建。
+使用 `F:\android\Java\jdk-17.0.11`、`F:\android\sdk` 和 `F:\android\gradle\8.2` 中共享的 JDK、Android SDK 与 Gradle 构建。路径统一来自仓库根目录的 `dependencies.json`。
+
+下载的 JAR/AAR 等依赖共用 `F:\android\repository\gradle\files-2.1`。Gradle 编译和转换缓存位于 `%LOCALAPPDATA%\BuildCache\gradle`，模拟器运行数据位于 `%LOCALAPPDATA%\BuildCache\android`；项目构建产物保留在 `app/build`。目录约定见 [共享依赖规划](../tools/dependency-layout.md)。
 
 ## 正式版构建
 
@@ -21,7 +23,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 签名验证、发布复制和 SHA-256 生成。
 
 脚本会生成并验证可安装的 Release APK。发布密钥保存在
-`F:\Android\AI-CLI\signing\ai-cli-release.p12`，随机密码使用当前 Windows
+`%LOCALAPPDATA%\AiCli\signing\ai-cli-release.p12`，随机密码使用当前 Windows
 账户的 DPAPI 加密保存，不会写入 Git。后续正式版本必须继续使用同一把密钥，
 否则 Android 无法覆盖升级已经安装的正式版。
 
@@ -37,6 +39,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - 首次空状态扫码绑定入口
 - Android Keystore EC P-256 设备密钥生成和 challenge 签名骨架
 - 会话实时事件订阅和 Codex/Claude 聊天消息发送
+- 相册一次选择多张图片，按选择顺序上传并追加图片路径；上传过程中可继续添加，完成后统一发送。
+- 输入框左侧固定“＋”功能菜单，右侧独立发送按钮；图片上传后保留拍照和相册入口。
 
 ## 待接入
 
