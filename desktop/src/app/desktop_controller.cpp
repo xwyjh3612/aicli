@@ -415,7 +415,7 @@ std::wstring DesktopController::DefaultCommandForType(const std::wstring& type) 
     if (type == L"Claude") {
         return L"claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }";
     }
-    return L"codex --yolo resume --last";
+    return L"codex --yolo --no-alt-screen resume --last";
 }
 
 bool DesktopController::StartCommandSession(Project& project) {

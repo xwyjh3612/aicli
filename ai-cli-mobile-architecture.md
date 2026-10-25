@@ -14,7 +14,7 @@ AI CLI 主要在 Windows 电脑上使用。电脑端拥有项目目录、启动�
 - Android 使用 Java/XML，不使用 Kotlin；
 - 手机首次绑定只在电脑确认一次，断网、App 重启和电脑重启后不重复确认；
 - 手机输入必须进入电脑当前项目的同一个 ConPTY，不能只写入聊天记录；
-- Codex 默认使用 `codex --yolo resume --last`；滚轮和右侧滚动条操作 TermControl 原生滚动历史，不自动打开 Codex Transcript，也不向终端注入方向键或 PgUp/PgDn；
+- Codex 默认使用 `codex --yolo --no-alt-screen resume --last`；内联 TUI 会把完整会话写入 TermControl 原生滚动历史，桌面滚动条和手机触摸翻页都使用这份历史，不依赖终端鼠标滚轮；
 - Claude 默认使用 `claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions`；
 - 项目数据、设备授权和终端事件使用 SQLite 持久化；
 - 构建依赖、Gradle 缓存、Windows Terminal 源码和大体积运行环境放在 F 盘。
@@ -179,7 +179,7 @@ C:\project\aitest\codex_tool\desktop\bin\Qt\Debug\aicli.exe
 内置默认命令：
 
 ```text
-Codex  : codex --yolo resume --last
+Codex  : codex --yolo --no-alt-screen resume --last
 Claude : claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions
 ```
 

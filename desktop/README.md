@@ -76,7 +76,7 @@ configured startup command through the same native terminal input channel.
 Do not replace this runtime with the system `CreatePseudoConsole`/`conhost.exe`.
 The system host handles ordinary PowerShell output but collapses Codex inline
 history insertion into viewport repainting, leaving TermControl with no native
-scrollback. The matching 1.24 OpenConsole runtime preserves Codex scrollback.
+scrollback. The matching 1.24 OpenConsole runtime preserves Codex scrollback. Codex sessions also start with `--no-alt-screen`, so their inline transcript remains available to the native scrollbar and the Android client instead of disappearing into an alternate screen.
 
 ## Mobile Agent
 

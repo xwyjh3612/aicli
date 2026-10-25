@@ -248,12 +248,15 @@ CREATE TABLE IF NOT EXISTS settings(
 }
 
 bool DataStore::SeedDefaults(std::wstring* error) {
+    // Codex 0.163 defaults to an alternate screen that is not part of the
+    // terminal scrollback. Inline mode keeps the full transcript available to
+    // the desktop scrollbar and the Android terminal view.
     if (!Execute("INSERT OR IGNORE INTO project_types(name,default_command,builtin) VALUES"
-                 "('Codex','codex --yolo resume --last',1),"
+                 "('Codex','codex --yolo --no-alt-screen resume --last',1),"
                  "('Claude','claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }',1);",
                  error) ||
         !Execute("UPDATE project_types "
-                 "SET default_command='codex --yolo resume --last' "
+                 "SET default_command='codex --yolo --no-alt-screen resume --last' "
                  "WHERE builtin=1 AND name='Codex' "
                  "AND default_command IN ('codex --yolo resume --last',"
                  "'codex --yolo --no-alt-screen resume --last',"
@@ -273,7 +276,7 @@ bool DataStore::SeedDefaults(std::wstring* error) {
                  "'claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions');",
                  error) ||
         !Execute("UPDATE projects "
-                 "SET command='codex --yolo resume --last' "
+                 "SET command='codex --yolo --no-alt-screen resume --last' "
                  "WHERE type_name='Codex' AND command IN ('codex --yolo resume --last',"
                  "'codex --yolo --no-alt-screen resume --last',"
                  "'codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last');",

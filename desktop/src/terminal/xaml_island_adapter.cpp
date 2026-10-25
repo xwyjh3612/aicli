@@ -647,6 +647,21 @@ public:
     HWND Window() const { return hwnd_; }
     bool Active() const { return ActiveSession() != nullptr; }
     bool Active(std::wstring_view project_id) const { return HasSession(project_id); }
+    bool IsOverNativeScrollbar(LPARAM screen_coordinates) noexcept {
+        auto* session = ActiveSession();
+        if (!session || !session->control || !hwnd_) return false;
+        EnsureNativeScrollbar(session);
+        if (!session->native_scrollbar) return false;
+        POINT point{GET_X_LPARAM(screen_coordinates), GET_Y_LPARAM(screen_coordinates)};
+        RECT terminal_rect{};
+        if (!GetWindowRect(hwnd_, &terminal_rect) || !PtInRect(&terminal_rect, point)) {
+            return false;
+        }
+        const UINT dpi = GetDpiForWindow(hwnd_);
+        const int activation_strip =
+            MulDiv(24, static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI);
+        return point.x >= terminal_rect.right - activation_strip;
+    }
     bool IsParentResizeBorder(LPARAM screen_coordinates) const noexcept {
         if (!parent_ || !IsWindow(parent_)) return false;
         // In the Qt host, parent_ is the native terminalHost child rather than
@@ -1324,8 +1339,12 @@ LRESULT CALLBACK XamlIslandSubclassProc(
         // return HTRIGHT/HTBOTTOMRIGHT. HTTRANSPARENT lets USER32 continue the
         // same hit test with the parent window while preserving normal input
         // everywhere inside the terminal.
-        if (message == WM_NCHITTEST && adapter->IsParentResizeBorder(lparam)) {
-            return HTTRANSPARENT;
+        if (message == WM_NCHITTEST) {
+            // The native scrollbar shares the rightmost pixels with the window
+            // resize border. Keep that strip inside the XAML island so dragging
+            // the thumb is not converted into a window resize.
+            if (adapter->IsOverNativeScrollbar(lparam)) return HTCLIENT;
+            if (adapter->IsParentResizeBorder(lparam)) return HTTRANSPARENT;
         }
         if (message == WM_MOUSEMOVE) {
             TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, hwnd, 0};

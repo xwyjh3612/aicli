@@ -61,7 +61,7 @@ int wmain(int argc, wchar_t** argv) {
             return value.name == L"Claude";
         });
         ok &= Check(codex && codex->builtin &&
-                        codex->default_command == L"codex --yolo resume --last",
+                        codex->default_command == L"codex --yolo --no-alt-screen resume --last",
                     L"Codex builtin type and command");
         ok &= Check(claude && claude->builtin &&
                         claude->default_command ==
@@ -156,6 +156,40 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (codex) {
             const auto codex_id = codex->id;
+            constexpr wchar_t kLegacyCodexCommand[] = L"codex --yolo resume --last";
+            constexpr wchar_t kCurrentCodexCommand[] =
+                L"codex --yolo --no-alt-screen resume --last";
+            error.clear();
+            ok &= Check(store.UpdateProjectType(
+                            codex_id, L"Codex", kLegacyCodexCommand, &error),
+                        (L"prepare legacy Codex type migration: " + error).c_str());
+            aicli::Project legacy_codex_project;
+            legacy_codex_project.name = L"旧 Codex 默认命令";
+            legacy_codex_project.type = L"Codex";
+            legacy_codex_project.group = L"默认分组";
+            legacy_codex_project.folder = database.parent_path().wstring();
+            legacy_codex_project.command = kLegacyCodexCommand;
+            error.clear();
+            ok &= Check(store.SaveProject(legacy_codex_project, &error),
+                        (L"prepare legacy Codex project migration: " + error).c_str());
+            store.Close();
+            error.clear();
+            ok &= Check(store.Initialize(database.wstring(), &error),
+                        (L"reinitialize for Codex migration: " + error).c_str());
+            types = store.LoadProjectTypes();
+            codex = Find(types, [](const aicli::ProjectType& value) {
+                return value.name == L"Codex";
+            });
+            ok &= Check(codex && codex->default_command == kCurrentCodexCommand,
+                        L"legacy Codex builtin command migrates to inline scrollback mode");
+            const auto migrated_codex_projects = store.LoadProjects();
+            const auto* migrated_codex_project = Find(
+                migrated_codex_projects, [&](const aicli::Project& value) {
+                    return value.id == legacy_codex_project.id;
+                });
+            ok &= Check(migrated_codex_project &&
+                            migrated_codex_project->command == kCurrentCodexCommand,
+                        L"legacy Codex project command migrates exactly");
             error.clear();
             ok &= Check(store.UpdateProjectType(codex_id, L"Codex X", L"codex custom", &error),
                         (L"builtin project type can be customized: " + error).c_str());
@@ -168,7 +202,7 @@ int wmain(int argc, wchar_t** argv) {
                         L"customized builtin type remains a protected preset");
             error.clear();
             ok &= Check(store.UpdateProjectType(codex_id, L"Codex",
-                                                L"codex --yolo resume --last", &error),
+                                                kCurrentCodexCommand, &error),
                         (L"restore Codex preset after edit test: " + error).c_str());
             error.clear();
             ok &= Check(!store.DeleteProjectType(codex_id, &error),
