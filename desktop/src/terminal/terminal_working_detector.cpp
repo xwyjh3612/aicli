@@ -92,6 +92,40 @@ EnhancedKey ParseEnhancedKey(std::wstring_view input) {
 
 } // namespace
 
+std::wstring EnsureCodexInlineScrollback(
+    std::wstring_view type,
+    std::wstring_view command) {
+    const auto contains = [](std::wstring_view value, std::wstring_view needle) {
+        return std::search(
+                   value.begin(), value.end(), needle.begin(), needle.end(),
+                   [](wchar_t left, wchar_t right) {
+                       return std::towlower(left) == std::towlower(right);
+                   }) != value.end();
+    };
+    const auto equals = [](std::wstring_view value, std::wstring_view expected) {
+        return value.size() == expected.size() &&
+               _wcsnicmp(value.data(), expected.data(), value.size()) == 0;
+    };
+    std::wstring result{command};
+    if ((!equals(type, L"Codex") && !contains(result, L"codex")) ||
+        contains(result, L"--no-alt-screen")) {
+        return result;
+    }
+    for (std::size_t index = 0; index + 5 <= result.size(); ++index) {
+        if (_wcsnicmp(result.c_str() + index, L"codex", 5) != 0) continue;
+        const wchar_t before = index == 0 ? L' ' : result[index - 1];
+        const wchar_t after = index + 5 == result.size() ? L' ' : result[index + 5];
+        const bool command_boundary = std::iswspace(before) ||
+            before == L';' || before == L'|' || before == L'&' || before == L'(';
+        const bool option_boundary = std::iswspace(after) ||
+            after == L';' || after == L'|' || after == L'&' || after == L')';
+        if (!command_boundary || !option_boundary) continue;
+        result.insert(index + 5, L" --no-alt-screen");
+        break;
+    }
+    return result;
+}
+
 std::optional<AgentTitleProtocol> WorkingProtocolForSession(
     std::wstring_view type,
     std::wstring_view command) {

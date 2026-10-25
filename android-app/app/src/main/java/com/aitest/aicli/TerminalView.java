@@ -73,7 +73,8 @@ public final class TerminalView extends View {
     }
 
     interface UserScrollListener {
-        void onUserScrollStarted();
+        /** True only while the user gesture is following the bottom. */
+        void onUserScroll(boolean followsBottom);
     }
 
     private static final class VisualLine {
@@ -165,12 +166,15 @@ public final class TerminalView extends View {
         gestures = new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent event) {
                 if (!scroller.isFinished()) scroller.forceFinished(true);
-                if (userScrollListener != null) userScrollListener.onUserScrollStarted();
+                if (userScrollListener != null) userScrollListener.onUserScroll(false);
                 return true;
             }
 
             @Override public boolean onSingleTapUp(MotionEvent event) {
                 if (selecting) return true;
+                // A tap is not a scroll gesture. If it began at the bottom,
+                // resume following new output once the tap finishes.
+                notifyUserScrollPosition();
                 performClick();
                 return true;
             }
@@ -189,6 +193,7 @@ public final class TerminalView extends View {
                     return true;
                 }
                 scrollByClamped(Math.round(distanceX), Math.round(distanceY));
+                notifyUserScrollPosition();
                 if (distanceY < 0f) maybeRequestOlderHistory();
                 return true;
             }
@@ -787,6 +792,11 @@ public final class TerminalView extends View {
         awakenScrollBars();
     }
 
+    private void notifyUserScrollPosition() {
+        UserScrollListener listener = userScrollListener;
+        if (listener != null) listener.onUserScroll(isNearBottom());
+    }
+
     private void maybeRequestOlderHistory() {
         HistoryLoadListener listener = historyLoadListener;
         if (listener == null) return;
@@ -823,6 +833,7 @@ public final class TerminalView extends View {
     @Override public void computeScroll() {
         if (!scroller.computeScrollOffset()) return;
         scrollToClamped(scroller.getCurrX(), scroller.getCurrY());
+        notifyUserScrollPosition();
         postInvalidateOnAnimation();
     }
 

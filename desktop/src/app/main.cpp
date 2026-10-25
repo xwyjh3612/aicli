@@ -1137,7 +1137,7 @@ void StartSession(bool restart=false){
         g_island.Stop(project.id);
     }
     const std::wstring sessionAgent=project.type;
-    const std::wstring cmd=project.command.empty()?DefaultProjectCommand(sessionAgent):project.command;
+    const std::wstring cmd=aicli::terminal::EnsureCodexInlineScrollback(sessionAgent,project.command.empty()?DefaultProjectCommand(sessionAgent):project.command);
     if(StartCommandSession(cmd,project.folder,project.name,sessionAgent,project.id)){
         project.status=L"running";
         g_store.UpdateProjectStatus(project.id,L"running");

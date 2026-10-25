@@ -22,6 +22,13 @@ std::optional<AgentTitleProtocol> WorkingProtocolForSession(
     std::wstring_view type,
     std::wstring_view command);
 
+// Codex 0.163 defaults to an alternate screen with no terminal scrollback.
+// Keep AiCli sessions inline so the desktop scrollbar and Android touch
+// scrolling can both reach the complete transcript.
+std::wstring EnsureCodexInlineScrollback(
+    std::wstring_view type,
+    std::wstring_view command);
+
 // Parses the OSC 0/2 titles published by Codex and Claude, then adds a generic
 // short lease on meaningful terminal output after the user submits input. The
 // generic path works for custom CLI types without knowing their name or UI.

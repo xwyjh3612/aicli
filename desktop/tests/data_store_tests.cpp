@@ -159,6 +159,10 @@ int wmain(int argc, wchar_t** argv) {
             constexpr wchar_t kLegacyCodexCommand[] = L"codex --yolo resume --last";
             constexpr wchar_t kCurrentCodexCommand[] =
                 L"codex --yolo --no-alt-screen resume --last";
+            constexpr wchar_t kLegacyTrustedCodexCommand[] =
+                L"codex --yolo -c ('projects={' + (ConvertTo-Json -InputObject (Get-Location).Path -Compress) + '={trust_level=\"trusted\"}}') resume --last";
+            constexpr wchar_t kCurrentTrustedCodexCommand[] =
+                L"codex --yolo --no-alt-screen -c ('projects={' + (ConvertTo-Json -InputObject (Get-Location).Path -Compress) + '={trust_level=\"trusted\"}}') resume --last";
             error.clear();
             ok &= Check(store.UpdateProjectType(
                             codex_id, L"Codex", kLegacyCodexCommand, &error),
@@ -168,7 +172,7 @@ int wmain(int argc, wchar_t** argv) {
             legacy_codex_project.type = L"Codex";
             legacy_codex_project.group = L"默认分组";
             legacy_codex_project.folder = database.parent_path().wstring();
-            legacy_codex_project.command = kLegacyCodexCommand;
+            legacy_codex_project.command = kLegacyTrustedCodexCommand;
             error.clear();
             ok &= Check(store.SaveProject(legacy_codex_project, &error),
                         (L"prepare legacy Codex project migration: " + error).c_str());
@@ -188,8 +192,8 @@ int wmain(int argc, wchar_t** argv) {
                     return value.id == legacy_codex_project.id;
                 });
             ok &= Check(migrated_codex_project &&
-                            migrated_codex_project->command == kCurrentCodexCommand,
-                        L"legacy Codex project command migrates exactly");
+                            migrated_codex_project->command == kCurrentTrustedCodexCommand,
+                        L"Codex project with directory trust arguments migrates to inline scrollback");
             error.clear();
             ok &= Check(store.UpdateProjectType(codex_id, L"Codex X", L"codex custom", &error),
                         (L"builtin project type can be customized: " + error).c_str());

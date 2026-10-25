@@ -421,8 +421,9 @@ std::wstring DesktopController::DefaultCommandForType(const std::wstring& type) 
 bool DesktopController::StartCommandSession(Project& project) {
     SetProjectWorkingState(project.id, false);
     terminal_streams_.BeginSession(project.id);
-    const std::wstring command = project.command.empty()
-        ? DefaultCommandForType(project.type) : project.command;
+    const std::wstring command = terminal::EnsureCodexInlineScrollback(
+        project.type, project.command.empty()
+            ? DefaultCommandForType(project.type) : project.command);
     std::shared_ptr<terminal::TerminalWorkingDetector> working_detector;
     const auto protocol = terminal::WorkingProtocolForSession(project.type, command);
     if (protocol) {

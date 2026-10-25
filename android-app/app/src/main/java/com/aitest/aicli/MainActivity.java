@@ -245,7 +245,7 @@ public final class MainActivity extends AppCompatActivity {
         terminalView = findViewById(R.id.terminalView);
         terminalRenderer = new TerminalTextRenderer(terminalView);
         terminalView.setHistoryLoadListener(this::loadOlderTerminalHistory);
-        terminalView.setUserScrollListener(terminalRenderer::releaseFollowBottom);
+        terminalView.setUserScrollListener(terminalRenderer::setUserFollowBottom);
         terminalKeyBar = findViewById(R.id.terminalKeyBar);
         inputBar = findViewById(R.id.inputBar);
         startProjectButton = findViewById(R.id.startProjectButton);

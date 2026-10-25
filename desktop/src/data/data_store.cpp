@@ -281,6 +281,16 @@ bool DataStore::SeedDefaults(std::wstring* error) {
                  "'codex --yolo --no-alt-screen resume --last',"
                  "'codex --yolo --no-alt-screen -c tui.terminal_resize_reflow_max_rows=10000 resume --last');",
                  error) ||
+        !Execute("UPDATE project_types "
+                 "SET default_command=REPLACE(default_command,'codex --yolo ','codex --yolo --no-alt-screen ') "
+                 "WHERE builtin=1 AND name='Codex' AND default_command LIKE 'codex --yolo %' "
+                 "AND instr(default_command,'--no-alt-screen')=0;",
+                 error) ||
+        !Execute("UPDATE projects "
+                 "SET command=REPLACE(command,'codex --yolo ','codex --yolo --no-alt-screen ') "
+                 "WHERE type_name='Codex' AND command LIKE 'codex --yolo %' "
+                 "AND instr(command,'--no-alt-screen')=0;",
+                 error) ||
         !Execute("INSERT OR IGNORE INTO groups(name,builtin) VALUES('默认分组',1);", error) ||
         !Execute("INSERT OR IGNORE INTO settings(key,value) VALUES"
                  "('theme','dark'),('listen_port','4280'),('listen_address','0.0.0.0'),"

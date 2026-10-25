@@ -337,11 +337,33 @@ bool TestIdleOverridesActivityInSameBatch() {
     return ok;
 }
 
+bool TestCodexInlineScrollbackCommand() {
+    using aicli::terminal::EnsureCodexInlineScrollback;
+    bool ok = true;
+    ok &= Check(EnsureCodexInlineScrollback(
+                    L"Codex", L"codex --yolo resume --last") ==
+                    L"codex --no-alt-screen --yolo resume --last",
+                "Codex command gains inline scrollback mode");
+    ok &= Check(EnsureCodexInlineScrollback(
+                    L"Codex", L"codex --yolo -c trust resume --last") ==
+                    L"codex --no-alt-screen --yolo -c trust resume --last",
+                "custom Codex arguments retain inline scrollback mode");
+    ok &= Check(EnsureCodexInlineScrollback(
+                    L"Codex", L"codex --yolo --no-alt-screen resume --last") ==
+                    L"codex --yolo --no-alt-screen resume --last",
+                "inline scrollback flag is not duplicated");
+    ok &= Check(EnsureCodexInlineScrollback(
+                    L"Claude", L"claude --continue") == L"claude --continue",
+                "non-Codex command remains unchanged");
+    return ok;
+}
+
 } // namespace
 
 int main() {
     bool ok = true;
     ok &= TestProtocolSelection();
+    ok &= TestCodexInlineScrollbackCommand();
     ok &= TestClaudeOldAndNewTitles();
     ok &= TestCodexTitleAndStartupGuard();
     ok &= TestChangedProtocolStillUsesFallback();

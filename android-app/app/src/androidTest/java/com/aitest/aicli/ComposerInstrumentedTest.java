@@ -16,6 +16,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.SystemClock;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.EditText;
 
@@ -229,6 +230,93 @@ public final class ComposerInstrumentedTest {
             assertEquals(View.GONE, activity.findViewById(R.id.imageUploadStatus).getVisibility());
         });
         assertEquals(3, uploadCount.get());
+    }
+
+    @Test
+    public void terminalSwipeStaysUpWhileLiveOutputContinues() {
+        AtomicReference<TerminalView> viewRef = new AtomicReference<>();
+        AtomicReference<TerminalTextRenderer> rendererRef = new AtomicReference<>();
+        AtomicInteger movedTo = new AtomicInteger();
+        scenario.onActivity(activity -> {
+            TerminalView view = activity.findViewById(R.id.terminalView);
+            view.setVisibility(View.VISIBLE);
+            view.measure(View.MeasureSpec.makeMeasureSpec(720, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY));
+            view.layout(0, 0, 720, 600);
+            TerminalTextRenderer renderer;
+            try {
+                java.lang.reflect.Field field = MainActivity.class.getDeclaredField("terminalRenderer");
+                field.setAccessible(true);
+                renderer = (TerminalTextRenderer) field.get(activity);
+            } catch (ReflectiveOperationException error) {
+                throw new AssertionError(error);
+            }
+            renderer.selectSession("scroll-test");
+            renderer.reset("scroll-session", 0, 20, 80);
+            renderer.data("scroll-session", 1, numberedLines(0, 80));
+            view.scrollToBottom();
+            assertTrue("Synthetic terminal must have scrollback", view.getScrollY() > 0);
+            viewRef.set(view);
+            rendererRef.set(renderer);
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        scenario.onActivity(activity -> {
+            TerminalView view = viewRef.get();
+            view.measure(View.MeasureSpec.makeMeasureSpec(720, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY));
+            view.layout(0, 0, 720, 600);
+            int bottom = view.getScrollY();
+            long now = SystemClock.uptimeMillis();
+            view.onTouchEvent(MotionEvent.obtain(
+                    now, now, MotionEvent.ACTION_DOWN, 360f, 200f, 0));
+            // Output arriving before the finger crosses the touch slop must not
+            // re-enable follow-bottom and cancel this gesture.
+            rendererRef.get().data("scroll-session", 2, numberedLines(80, 160));
+            view.onTouchEvent(MotionEvent.obtain(
+                    now, now + 20L, MotionEvent.ACTION_MOVE, 360f, 350f, 0));
+            view.onTouchEvent(MotionEvent.obtain(
+                    now, now + 40L, MotionEvent.ACTION_MOVE, 360f, 500f, 0));
+            view.onTouchEvent(MotionEvent.obtain(
+                    now, now + 50L, MotionEvent.ACTION_UP, 360f, 500f, 0));
+            assertTrue("User scrolling must move to older terminal lines",
+                    view.getScrollY() < bottom);
+            movedTo.set(view.getScrollY());
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        scenario.onActivity(activity -> {
+            TerminalView view = viewRef.get();
+            assertEquals("A queued live frame must preserve the scrolled viewport",
+                    movedTo.get(), view.getScrollY());
+            rendererRef.get().data("scroll-session", 3, numberedLines(160, 220));
+            assertTrue("Later live output must not snap the user back to the bottom",
+                    view.getScrollY() <= movedTo.get());
+
+            view.scrollToBottom();
+            long now = SystemClock.uptimeMillis();
+            view.onTouchEvent(MotionEvent.obtain(
+                    now, now, MotionEvent.ACTION_DOWN, 360f, 400f, 0));
+            view.onTouchEvent(MotionEvent.obtain(
+                    now, now + 30L, MotionEvent.ACTION_UP, 360f, 400f, 0));
+            rendererRef.get().data("scroll-session", 4, numberedLines(220, 280));
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        scenario.onActivity(activity -> {
+            TerminalView view = viewRef.get();
+            assertTrue("Tapping at the live tail must resume following new output",
+                    view.isNearBottom());
+            view.setVisibility(View.GONE);
+        });
+    }
+
+    private static String numberedLines(int start, int end) {
+        StringBuilder result = new StringBuilder();
+        for (int index = start; index < end; index++) {
+            result.append("terminal line ").append(index).append("\r\n");
+        }
+        return result.toString();
     }
 
     private void choose(Uri... uris) {

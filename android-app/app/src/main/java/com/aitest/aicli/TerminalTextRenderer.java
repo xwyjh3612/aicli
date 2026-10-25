@@ -104,9 +104,9 @@ final class TerminalTextRenderer {
         view.scrollToBottom();
     }
 
-    synchronized void releaseFollowBottom() {
+    synchronized void setUserFollowBottom(boolean followsBottom) {
         SessionState state = sessions.get(selectedProjectId);
-        if (state != null) state.followBottom = false;
+        if (state != null) state.followBottom = followsBottom;
     }
 
     synchronized StreamResult reset(String terminalSessionId, long baseSequence,
@@ -199,16 +199,11 @@ final class TerminalTextRenderer {
         SessionState state = selectedState();
         StreamResult validation = validate(state, terminalSessionId, sequence);
         if (validation != StreamResult.APPLIED) return validation;
-        // DECSET 2026 lets Claude build one atomic screen repaint across
-        // several terminal.data frames. During that interval the emulator's
-        // content height changes before TerminalView is allowed to draw and
-        // scroll. Re-reading isNearBottom() for the later frames therefore
-        // mistakes the temporarily stale viewport for a deliberate user
-        // scroll and leaves the completed answer below the visible area.
-        // Capture the user's follow intent when the synchronized frame begins
-        // and preserve it until DECRST 2026 closes the frame.
-        boolean wasSynchronized = state.terminal.synchronizedOutput();
-        boolean follow = wasSynchronized ? state.followBottom : view.isNearBottom();
+        // Follow intent belongs to the user's latest gesture, not to the
+        // viewport offset observed midway through a repaint. Reading the
+        // viewport for every frame lets fast Codex output pull a phone user
+        // back to the bottom before their swipe crosses the touch slop.
+        boolean follow = state.followBottom;
         state.terminal.feed(data == null ? "" : data);
         state.sequence = sequence;
         state.followBottom = follow;
@@ -226,8 +221,7 @@ final class TerminalTextRenderer {
         SessionState state = selectedState();
         StreamResult validation = validate(state, terminalSessionId, sequence);
         if (validation != StreamResult.APPLIED) return validation;
-        boolean follow = state.terminal.synchronizedOutput()
-                ? state.followBottom : view.isNearBottom();
+        boolean follow = state.followBottom;
         state.terminal.resize(rows, columns);
         state.sequence = sequence;
         state.followBottom = follow;
@@ -238,7 +232,7 @@ final class TerminalTextRenderer {
     synchronized void appendLine(String line) {
         SessionState state = selectedState();
         if (state == null || line == null || line.isEmpty()) return;
-        boolean follow = view.isNearBottom();
+        boolean follow = state.followBottom;
         state.terminal.feed("\r\n" + line + "\r\n");
         state.followBottom = follow;
         view.terminalChanged(follow);
