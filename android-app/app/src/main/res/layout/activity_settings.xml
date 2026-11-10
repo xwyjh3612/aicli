@@ -358,13 +358,29 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
+            <com.google.android.material.materialswitch.MaterialSwitch
+                android:id="@+id/automaticUpdateSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_marginTop="16dp"
+                android:text="自动检查应用更新"
+                android:textColor="@color/aicli_text" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/checkUpdateButton"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:text="检查更新"
+                android:textColor="@color/aicli_text"
+                app:backgroundTint="@color/aicli_primary"
+                app:cornerRadius="16dp" />
+
             <TextView
                 android:id="@+id/versionText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
                 android:gravity="center"
-                android:text="版本 1.1.0 · 私钥由 Android Keystore 管理"
                 android:textColor="@color/aicli_text_tertiary"
                 android:textSize="12sp" />
         </LinearLayout>

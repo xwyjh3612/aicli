@@ -15,8 +15,22 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 - 使用 SQLite 保存项目、类型、分组、设备、设置和会话事件。
 - Android 端支持扫码配对、HTTPS/WSS、终端同步、消息输入和多张图片上传；左侧“＋”随时展开功能菜单。
 - 设置页显示应用版本和实际使用的 PowerShell 环境。
+- Win32 桌面端和 Android 自动检查 GitHub Release 更新，校验安装包后提示安装。
 
-桌面端当前版本为 1.0.0.3，Android 端当前版本为 1.1.0。
+桌面端当前版本为 1.0.0.4，Android 端当前版本为 1.2.0（versionCode 3）。
+
+最新安装包：[GitHub Releases](https://github.com/xwyjh3612/aicli/releases/latest)。
+
+## 自动更新
+
+- Win32 版启动 10 秒后在后台检查，此后运行期间每 6 小时检查一次。也可在“设置 → 关于 → 检查更新”手动检查。
+- Android 在启动或返回前台时检查，成功检查后 6 小时内不重复请求。设置页提供“自动检查应用更新”开关和“检查更新”按钮。
+- 检测到新版后先确认下载；显示下载进度并支持取消。下载完成后验证大小和 SHA-256，再确认安装。网络失败不会影响原有功能。
+- Windows 安装器沿用已有的安装位置与数据，安装会关闭运行中的终端会话；安装前请保存工作。安装器可能显示 UAC 提示。
+- Android 额外验证 APK 包名、版本号和签名与当前应用匹配，通过 FileProvider 交给系统安装器。首次更新需要允许 AiCli 安装应用，并确认系统安装提示。
+- 1.0.0.3 / Android 1.1.0 及更早版本没有更新模块，需要手动安装一次新版。Qt 版本未接入自动更新。
+
+更新源是公开的 `releases/latest/download/update-manifest.json`，不需要在客户端配置 GitHub token。只发布稳定版本，不向客户端推送草稿或预发布版本。发布方式见 [更新发布说明](tools/releasing.md)。
 
 ## 目录结构
 

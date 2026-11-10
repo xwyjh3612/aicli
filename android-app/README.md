@@ -33,6 +33,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 ## 已实现
 
+- 启动/返回前台自动检查 GitHub Release 更新；设置页支持手动检查和关闭自动检查。
+- APK 下载进度、取消、大小/SHA-256/包名/版本/签名校验，以及系统安装授权流程。
+- 更新发布规则见 [发布说明](../tools/releasing.md)。
+
 - Java/XML 主页面
 - Codex/Claude 顶部 Tab
 - 设置入口

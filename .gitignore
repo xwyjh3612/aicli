@@ -13,6 +13,10 @@
 !/release/AI-CLI-Setup-1.0.0.3-x64.exe.sha256
 !/release/AI-CLI-Android-1.1.0-release.apk
 !/release/AI-CLI-Android-1.1.0-release.apk.sha256
+!/release/AI-CLI-Setup-1.0.0.4-x64.exe
+!/release/AI-CLI-Setup-1.0.0.4-x64.exe.sha256
+!/release/AI-CLI-Android-1.2.0-release.apk
+!/release/AI-CLI-Android-1.2.0-release.apk.sha256
 
 # Android/Gradle build state
 /android-app/.gradle/
@@ -30,6 +34,7 @@
 *.pdb
 *.ilk
 *.class
+__pycache__/
 
 # Local diagnostics and crash output
 /desktop/tools/cdb-*.txt
@@ -46,6 +51,11 @@
 *.keystore
 *.p12
 *.pfx
+*.pem
+*.key
+*.dpapi
+/signing/
+/android-app/signing/
 
 # Operating-system noise
 Thumbs.db

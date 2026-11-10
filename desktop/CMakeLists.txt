@@ -43,6 +43,8 @@ set(AICLI_PACKAGE_IDENTITY_NAME "AiCli.Desktop.Dev"
 # constant from it so About and packaged/installer builds cannot drift.
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/package/AppxManifest.xml"
     AICLI_PACKAGE_MANIFEST_TEXT)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/package/AppxManifest.xml")
 string(REGEX MATCH
     "<Identity[^>]*Version=\"([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)\""
     AICLI_VERSION_MATCH "${AICLI_PACKAGE_MANIFEST_TEXT}")
@@ -117,6 +119,8 @@ if (AICLI_USE_QT_UI)
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/aicli-logo.png")
 else()
     list(APPEND AICLI_COMMON_SOURCES
+        src/app/auto_update.cpp
+        src/app/update_manifest.cpp
         src/app/main.cpp
         src/ui/drawing_utils.cpp
         src/ui/footer_status.cpp
@@ -156,6 +160,16 @@ add_executable(aicli_powershell_runtime_tests
     tests/powershell_runtime_tests.cpp
     src/app/powershell_runtime.cpp
 )
+
+add_executable(aicli_update_manifest_tests
+    tests/update_manifest_tests.cpp
+    src/app/update_manifest.cpp
+)
+target_include_directories(aicli_update_manifest_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src" "${AICLI_NLOHMANN_ROOT}")
+if (MSVC)
+    target_compile_options(aicli_update_manifest_tests PRIVATE /W4 /EHsc /utf-8)
+endif()
 
 if (AICLI_USE_QT_UI)
     add_executable(aicli_qt_project_list_tests
@@ -267,6 +281,10 @@ target_link_libraries(aicli PRIVATE
     "$<$<CONFIG:Debug>:${AICLI_OPENSSL_ROOT}/lib/VC/x64/MDd/libcrypto.lib>"
     "$<$<NOT:$<CONFIG:Debug>>:${AICLI_OPENSSL_ROOT}/lib/VC/x64/MD/libcrypto.lib>"
 )
+
+if (NOT AICLI_USE_QT_UI)
+    target_link_libraries(aicli PRIVATE winhttp bcrypt)
+endif()
 
 if (AICLI_USE_QT_UI)
     target_link_libraries(aicli PRIVATE Qt6::Widgets)

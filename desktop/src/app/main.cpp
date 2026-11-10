@@ -35,6 +35,7 @@
 #include "agent/terminal_snapshot_publisher.h"
 #include "agent/terminal_stream_publisher.h"
 #include "app/application_activation.h"
+#include "app/auto_update.h"
 #include "app/powershell_runtime.h"
 #include "app/project_launcher.h"
 #include "app/single_instance.h"
@@ -1861,6 +1862,7 @@ int WINAPI wWinMain(HINSTANCE instance,
     ApplyWindowChromeTheme();
     ShowWindow(g_hwnd, show_command);
     UpdateWindow(g_hwnd);
+    aicli::update::Start(g_hwnd);
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0)) {
@@ -1869,6 +1871,7 @@ int WINAPI wWinMain(HINSTANCE instance,
         DispatchMessageW(&message);
     }
 
+    aicli::update::Stop();
     g_store.Close();
     g_island.Shutdown();
     g_components.Shutdown();

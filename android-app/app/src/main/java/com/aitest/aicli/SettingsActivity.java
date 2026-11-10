@@ -116,6 +116,14 @@ public final class SettingsActivity extends AppCompatActivity {
         vibration.setOnCheckedChangeListener((button, checked) ->
                 appSettings.edit().putBoolean("vibration", checked).apply());
 
+        AppUpdater updater = UpdateApplication.updater(this);
+        MaterialSwitch automaticUpdates = findViewById(R.id.automaticUpdateSwitch);
+        automaticUpdates.setChecked(updater.automatic());
+        automaticUpdates.setOnCheckedChangeListener((button, checked) -> updater.setAutomatic(checked));
+        findViewById(R.id.checkUpdateButton).setOnClickListener(view -> updater.check(true));
+        ((TextView) findViewById(R.id.versionText)).setText(
+                "版本 " + BuildConfig.VERSION_NAME + " · 私钥由 Android Keystore 管理");
+
         if (getIntent().getBooleanExtra(EXTRA_OPEN_SCANNER, false)) {
             addComputerButton.postDelayed(this::startQrBinding, 180L);
         }

@@ -2,6 +2,7 @@
 
 #include "aicli_build_identity.h"
 #include "app/powershell_runtime.h"
+#include "app/auto_update.h"
 #include "ui/styled_input.h"
 #include "ui/drawing_utils.h"
 #include "ui/theme.h"
@@ -97,6 +98,7 @@ enum : int {
     kTaskbarStyleIconDots = 2334,
     kSettingsAbout = 2335,
     kKeepAwake = 2336,
+    kCheckUpdate = 2337,
 };
 
 enum : int {
@@ -205,6 +207,7 @@ struct State {
     HWND settings_groups{};
     HWND settings_devices{};
     HWND settings_about{};
+    HWND check_update{};
     HWND bind_empty{};
     HWND title_close{};
     HWND hovered_control{};
@@ -1991,7 +1994,7 @@ int SettingsContentExtent(SettingsPage page) {
     case SettingsPage::ProjectTypes: return 590;
     case SettingsPage::Groups: return 590;
     case SettingsPage::Devices: return 520;
-    case SettingsPage::About: return 480;
+    case SettingsPage::About: return 558;
     }
     return 390;
 }
@@ -2147,6 +2150,8 @@ void LayoutSettingsContent(State& state) {
         button(state.add, x, 492, S(122));
         button(state.save, x + S(134), 492, S(118));
         button(state.remove, x + S(264), 492, S(104));
+    } else if (state.settings_page == SettingsPage::About) {
+        button(state.check_update, x, 498, S(158));
     } else if (state.settings_page == SettingsPage::Devices) {
         const int list_width=std::min(S(306),available/2);
         if(state.list){
@@ -2359,6 +2364,9 @@ void PaintSettingsContent(State& state, HDC dc) {
         RECT hint{x,S(358),right,S(454)};
         DrawTextW(dc,detection_note.c_str(),-1,&hint,
                   DT_LEFT|DT_TOP|DT_WORDBREAK);
+        RECT update_note{x,S(456),right,S(490)};
+        DrawTextW(dc,L"启动后自动检查更新；安装前会提示确认。",-1,&update_note,
+                  DT_LEFT|DT_VCENTER|DT_SINGLELINE);
     }else{
         SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
         SetTextColor(dc,state.palette.muted);
@@ -2456,6 +2464,7 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     visible(state.taskbar_scope_current, appearance);
     visible(state.taskbar_scope_all, appearance);
     visible(state.keep_awake, appearance);
+    visible(state.check_update, page == SettingsPage::About);
     // The project/group/device list overlaps the connection form. Hide it
     // before revealing connection fields; otherwise each EDIT receives its
     // first WM_PAINT while still clipped by the higher-z-order list, and the
@@ -2857,6 +2866,7 @@ void CreateControls(State& state) {
         state.select = MakeButton(state,L"绑定手机",kSelect,state.content);
         state.unbind = MakeButton(state,L"解绑设备",kUnbind,state.content);
         state.bind_empty=MakeButton(state,L"绑定第一台手机",kBindEmpty,state.content);
+        state.check_update=MakeButton(state,L"检查更新",kCheckUpdate,state.content);
         state.title_close = MakeButton(state, L"\x00D7", kClose);
         for (HWND control : {state.computer_name, state.listen, state.port,
                               state.local, state.remote, state.mobile_workspace_root,
@@ -2867,7 +2877,7 @@ void CreateControls(State& state) {
                               state.taskbar_scope_current, state.taskbar_scope_all,
                               state.keep_awake, state.save, state.firewall,
                              state.list, state.add, state.remove,state.select,state.unbind,
-                             state.bind_empty}) {
+                             state.bind_empty, state.check_update}) {
             if (control) {
                 SetWindowSubclass(control, SettingsWheelProc,
                                   kSettingsWheelSubclassId,
@@ -3067,6 +3077,10 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
             return 0;
         }
         if (state->mode == ManagementMode::Settings) {
+            if (id == kCheckUpdate) {
+                aicli::update::CheckForUpdates(state->window);
+                return 0;
+            }
             if (id == kSettingsAppearance) {
                 UpdateSettingsPage(*state, SettingsPage::Appearance);
                 return 0;
