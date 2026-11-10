@@ -36,6 +36,7 @@
 #include "agent/terminal_stream_publisher.h"
 #include "app/application_activation.h"
 #include "app/auto_update.h"
+#include "app/keep_awake.h"
 #include "app/powershell_runtime.h"
 #include "app/project_launcher.h"
 #include "app/single_instance.h"
@@ -310,7 +311,7 @@ float g_project_idle_pulse_angle{-90.0f};
 std::atomic_uint64_t g_git_status_request_id{};
 std::atomic_bool g_git_status_query_active{};
 std::unordered_set<std::wstring> g_working_projects;
-bool g_keep_awake_active{};
+aicli::app::KeepAwakeRequest g_keep_awake;
 int g_project_drag_source=-1;
 int g_project_drag_insert=-1;
 int g_project_drag_candidate=-1;
@@ -616,14 +617,7 @@ void RefreshTaskbarWorkingIndicator(){
 }
 void SyncKeepAwake(){
     const bool enabled=g_store.GetSetting(L"keep_awake_while_working",L"0")!=L"0";
-    const bool shouldKeepAwake=enabled&&!g_working_projects.empty();
-    if(shouldKeepAwake==g_keep_awake_active)return;
-    if(shouldKeepAwake){
-        if(SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED)!=0)g_keep_awake_active=true;
-    }else{
-        SetThreadExecutionState(ES_CONTINUOUS);
-        g_keep_awake_active=false;
-    }
+    g_keep_awake.Update(enabled&&!g_working_projects.empty());
 }
 bool HasVisibleAnimatedProject(){
     return std::any_of(g_visible_project_indices.begin(),g_visible_project_indices.end(),[](int index){
@@ -1741,7 +1735,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         EndPaint(h,&ps);
         return 0;
     }
-    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();SetThreadExecutionState(ES_CONTINUOUS);g_keep_awake_active=false;EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_header)DeleteObject(g_font_header);if(g_font_header_icon)DeleteObject(g_font_header_icon);if(g_font_search)DeleteObject(g_font_search);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_font_empty_state_icon)DeleteObject(g_font_empty_state_icon);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_search_brush){DeleteObject(g_search_brush);g_search_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();g_keep_awake.Update(false);EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_header)DeleteObject(g_font_header);if(g_font_header_icon)DeleteObject(g_font_header_icon);if(g_font_search)DeleteObject(g_font_search);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_font_empty_state_icon)DeleteObject(g_font_empty_state_icon);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_search_brush){DeleteObject(g_search_brush);g_search_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
     if(m==WM_NCDESTROY&&g_font_git){
         DeleteObject(g_font_git);
         g_font_git=nullptr;

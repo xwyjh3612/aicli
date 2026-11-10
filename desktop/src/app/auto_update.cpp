@@ -15,6 +15,7 @@
 #include <future>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -37,6 +38,9 @@ struct Job {
     std::future<void> worker;
 };
 std::unique_ptr<Job> automatic_check;
+std::unique_ptr<Job> manual_check;
+CheckStatus check_status;
+std::optional<Release> available_release;
 
 std::wstring Wide(const std::string& text) { return {text.begin(), text.end()}; }
 std::string CurrentVersion() {
@@ -204,11 +208,7 @@ void Progress(HWND owner, Job& job, const wchar_t* title) {
     job.worker.get();
 }
 
-void Offer(HWND owner, const Release& release) {
-    if (!IsNewerVersion(release.version, CurrentVersion())) return;
-    const auto prompt = L"发现新版本 " + Wide(release.version) + L"，当前版本 " + Wide(CurrentVersion()) +
-        L"。\n\n是否下载更新？下载完成后会再次确认安装。";
-    if (MessageBoxW(owner, prompt.c_str(), L"AiCli 有可用更新", MB_YESNO | MB_ICONINFORMATION) != IDYES) return;
+void DownloadAndInstall(HWND owner, const Release& release) {
     Job download;
     download.release = release;
     download.worker = std::async(std::launch::async, [&] { Download(download); });
@@ -224,9 +224,30 @@ void Offer(HWND owner, const Release& release) {
     if (result <= 32) MessageBoxW(owner, L"未启动安装程序，可在设置中重新检查更新。", L"AiCli 更新", MB_OK | MB_ICONINFORMATION);
 }
 
+void Offer(HWND owner, const Release& release) {
+    if (!IsNewerVersion(release.version, CurrentVersion())) return;
+    const auto prompt = L"发现新版本 " + Wide(release.version) + L"，当前版本 " + Wide(CurrentVersion()) +
+        L"。\n\n是否下载更新？下载完成后会再次确认安装。";
+    if (MessageBoxW(owner, prompt.c_str(), L"AiCli 有可用更新", MB_YESNO | MB_ICONINFORMATION) == IDYES)
+        DownloadAndInstall(owner, release);
+}
+
 LRESULT CALLBACK TimerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
     if (message != WM_TIMER) return DefWindowProcW(window, message, w, l);
     if (dialog_open || !IsWindow(main_window)) return 0;
+    if (manual_check && Ready(*manual_check)) {
+        auto job = std::move(manual_check);
+        job->worker.get();
+        if (!job->error.empty()) {
+            check_status = {CheckState::Failed, L"暂时无法检查更新，请检查网络后重试。"};
+        } else if (IsNewerVersion(job->release.version, CurrentVersion())) {
+            available_release = std::move(job->release);
+            check_status = {CheckState::Available,
+                L"发现新版本 " + Wide(available_release->version) + L"，可以下载更新。"};
+        } else {
+            check_status = {CheckState::UpToDate, L"当前已是最新版本。"};
+        }
+    }
     if (automatic_check && Ready(*automatic_check) && IsWindowVisible(main_window) &&
         !IsIconic(main_window) && IsWindowEnabled(main_window)) {
         auto job = std::move(automatic_check);
@@ -235,7 +256,7 @@ LRESULT CALLBACK TimerProc(HWND window, UINT message, WPARAM w, LPARAM l) {
         if (job->error.empty() && !job->cancelled) Offer(main_window, job->release);
         dialog_open = false;
     }
-    if (!automatic_check && GetTickCount64() >= next_check) {
+    if (!automatic_check && !manual_check && GetTickCount64() >= next_check) {
         next_check = GetTickCount64() + kCheckInterval;
         automatic_check = std::make_unique<Job>();
         auto* job = automatic_check.get();
@@ -261,23 +282,29 @@ void Stop() {
     if (timer_window) DestroyWindow(timer_window);
     timer_window = main_window = nullptr;
     if (automatic_check) { automatic_check->cancelled = true; automatic_check.reset(); }
+    if (manual_check) { manual_check->cancelled = true; manual_check.reset(); }
+    available_release.reset();
+    check_status = {};
 }
 
-void CheckForUpdates(HWND owner) {
-    if (dialog_open) return;
+void CheckForUpdates() {
+    if (dialog_open || manual_check) return;
     if (automatic_check) automatic_check->cancelled = true;
-    dialog_open = true;
-    Job job;
-    job.worker = std::async(std::launch::async, [&] { Check(job); });
-    Progress(owner, job, L"正在检查 AiCli 更新");
-    if (!job.cancelled) {
-        if (!job.error.empty()) MessageBoxW(owner, job.error.c_str(), L"检查更新失败", MB_OK | MB_ICONWARNING);
-        else if (IsNewerVersion(job.release.version, CurrentVersion())) Offer(owner, job.release);
-        else MessageBoxW(owner, L"当前已是最新版本。", L"AiCli 更新", MB_OK | MB_ICONINFORMATION);
-    }
-    // A completed automatic check should not immediately repeat the manual prompt.
-    if (automatic_check && Ready(*automatic_check)) automatic_check.reset();
+    available_release.reset();
+    check_status = {CheckState::Checking, L"正在检查更新，请稍候…"};
+    manual_check = std::make_unique<Job>();
+    auto* job = manual_check.get();
+    job->worker = std::async(std::launch::async, [job] { Check(*job); });
     next_check = GetTickCount64() + kCheckInterval;
+}
+
+CheckStatus GetCheckStatus() { return check_status; }
+
+void DownloadAvailableUpdate(HWND owner) {
+    if (dialog_open || manual_check || !available_release) return;
+    dialog_open = true;
+    const auto release = *available_release;
+    DownloadAndInstall(owner, release);
     dialog_open = false;
 }
 }

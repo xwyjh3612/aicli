@@ -42,6 +42,7 @@ constexpr wchar_t kProjectTypeEditorClassName[] = L"AicliProjectTypeEditorDialog
 constexpr UINT kPopulateMessage = WM_APP + 60;
 constexpr int kSettingsHeaderHeight = 40;
 constexpr UINT_PTR kDevicePresenceTimerId = 0xA1C32;
+constexpr UINT_PTR kUpdateStatusTimerId = 0xA1C33;
 
 int DpiFor(HWND window) noexcept {
     return window ? std::max(96, static_cast<int>(GetDpiForWindow(window))) : 96;
@@ -99,6 +100,7 @@ enum : int {
     kSettingsAbout = 2335,
     kKeepAwake = 2336,
     kCheckUpdate = 2337,
+    kDownloadUpdate = 2338,
 };
 
 enum : int {
@@ -208,6 +210,8 @@ struct State {
     HWND settings_devices{};
     HWND settings_about{};
     HWND check_update{};
+    HWND download_update{};
+    aicli::update::CheckStatus update_status;
     HWND bind_empty{};
     HWND title_close{};
     HWND hovered_control{};
@@ -1994,7 +1998,7 @@ int SettingsContentExtent(SettingsPage page) {
     case SettingsPage::ProjectTypes: return 590;
     case SettingsPage::Groups: return 590;
     case SettingsPage::Devices: return 520;
-    case SettingsPage::About: return 558;
+    case SettingsPage::About: return 636;
     }
     return 390;
 }
@@ -2151,7 +2155,8 @@ void LayoutSettingsContent(State& state) {
         button(state.save, x + S(134), 492, S(118));
         button(state.remove, x + S(264), 492, S(104));
     } else if (state.settings_page == SettingsPage::About) {
-        button(state.check_update, x, 498, S(158));
+        button(state.check_update, right - S(150), 346, S(126));
+        button(state.download_update, right - S(288), 346, S(126));
     } else if (state.settings_page == SettingsPage::Devices) {
         const int list_width=std::min(S(306),available/2);
         if(state.list){
@@ -2274,6 +2279,11 @@ void PaintSettingsContent(State& state, HDC dc) {
         }
         SelectObject(dc, old_pen);
         DeleteObject(divider);
+        SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
+        SetTextColor(dc, state.muted_color);
+        RECT sleep_hint{x, S(382), right, S(422)};
+        DrawTextW(dc, L"最后一个任务结束后，重新等待系统设置的休眠时间。", -1,
+                  &sleep_hint, DT_LEFT | DT_TOP | DT_WORDBREAK);
     } else if (state.settings_page == SettingsPage::Connection) {
         auto row_label = [&](const wchar_t* text, int y) {
             SelectObject(dc, state.settings_content_font ?
@@ -2349,7 +2359,7 @@ void PaintSettingsContent(State& state, HDC dc) {
 
         SelectObject(dc,state.settings_content_font?state.settings_content_font:state.font);
         SetTextColor(dc,state.text_color);
-        RECT detection_title{x,S(326),right,S(354)};
+        RECT detection_title{x,S(488),right,S(516)};
         DrawTextW(dc,L"PowerShell 检测说明",-1,&detection_title,
                   DT_LEFT|DT_VCENTER|DT_SINGLELINE);
 
@@ -2361,12 +2371,26 @@ void PaintSettingsContent(State& state, HDC dc) {
         detection_note+=
             L" AiCli 支持常规安装和 Microsoft Store 版；如未自动识别到，请把 pwsh.exe 所在文件夹加入 PATH。"
             L"安装、升级或修改 PATH 后，请完全退出并重启 AiCli。";
-        RECT hint{x,S(358),right,S(454)};
+        RECT hint{x,S(520),right,S(616)};
         DrawTextW(dc,detection_note.c_str(),-1,&hint,
                   DT_LEFT|DT_TOP|DT_WORDBREAK);
-        RECT update_note{x,S(456),right,S(490)};
-        DrawTextW(dc,L"启动后自动检查更新；安装前会提示确认。",-1,&update_note,
-                  DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        card({x,S(328),right,S(470)});
+        SelectObject(dc,state.settings_content_font?state.settings_content_font:state.font);
+        SetTextColor(dc,state.text_color);
+        RECT update_title{x+S(24),S(340),right-S(300),S(376)};
+        DrawTextW(dc,L"软件更新",-1,&update_title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+        const auto update_state=state.update_status.state;
+        SetTextColor(dc,update_state==aicli::update::CheckState::UpToDate?state.palette.success:
+                       update_state==aicli::update::CheckState::Available?state.palette.accent:
+                       state.text_color);
+        RECT update_result{x+S(24),S(394),right-S(24),S(434)};
+        DrawTextW(dc,state.update_status.text.c_str(),-1,&update_result,
+                  DT_LEFT|DT_TOP|DT_WORDBREAK);
+        SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
+        SetTextColor(dc,state.muted_color);
+        RECT update_note{x+S(24),S(436),right-S(24),S(462)};
+        DrawTextW(dc,L"启动后自动检查，安装前会提示确认。",-1,&update_note,
+                  DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
     }else{
         SelectObject(dc,state.settings_small_font?state.settings_small_font:state.small_font);
         SetTextColor(dc,state.palette.muted);
@@ -2436,6 +2460,20 @@ void PaintSettingsContent(State& state, HDC dc) {
     SetViewportOrgEx(dc, previous_origin.x, previous_origin.y, nullptr);
 }
 
+void RefreshUpdateStatus(State& state, bool force = false) {
+    const auto status = aicli::update::GetCheckStatus();
+    if (!force && status == state.update_status) return;
+    state.update_status = status;
+    const bool checking = status.state == aicli::update::CheckState::Checking;
+    SetWindowTextW(state.check_update, checking ? L"正在检查…" :
+        status.state == aicli::update::CheckState::Failed ? L"重试检查" : L"检查更新");
+    EnableWindow(state.check_update, !checking);
+    ShowWindow(state.download_update,
+        state.settings_page == SettingsPage::About &&
+        status.state == aicli::update::CheckState::Available ? SW_SHOW : SW_HIDE);
+    InvalidateRect(state.content, nullptr, FALSE);
+}
+
 void UpdateSettingsPage(State& state, SettingsPage page) {
     if (state.mode != ManagementMode::Settings) return;
     const SettingsPage previous_page = state.settings_page;
@@ -2465,6 +2503,13 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
     visible(state.taskbar_scope_all, appearance);
     visible(state.keep_awake, appearance);
     visible(state.check_update, page == SettingsPage::About);
+    visible(state.download_update, false);
+    if (page == SettingsPage::About) {
+        RefreshUpdateStatus(state, true);
+        SetTimer(state.window, kUpdateStatusTimerId, 250, nullptr);
+    } else {
+        KillTimer(state.window, kUpdateStatusTimerId);
+    }
     // The project/group/device list overlaps the connection form. Hide it
     // before revealing connection fields; otherwise each EDIT receives its
     // first WM_PAINT while still clipped by the higher-z-order list, and the
@@ -2867,6 +2912,7 @@ void CreateControls(State& state) {
         state.unbind = MakeButton(state,L"解绑设备",kUnbind,state.content);
         state.bind_empty=MakeButton(state,L"绑定第一台手机",kBindEmpty,state.content);
         state.check_update=MakeButton(state,L"检查更新",kCheckUpdate,state.content);
+        state.download_update=MakeButton(state,L"下载更新",kDownloadUpdate,state.content);
         state.title_close = MakeButton(state, L"\x00D7", kClose);
         for (HWND control : {state.computer_name, state.listen, state.port,
                               state.local, state.remote, state.mobile_workspace_root,
@@ -2877,7 +2923,7 @@ void CreateControls(State& state) {
                               state.taskbar_scope_current, state.taskbar_scope_all,
                               state.keep_awake, state.save, state.firewall,
                              state.list, state.add, state.remove,state.select,state.unbind,
-                             state.bind_empty, state.check_update}) {
+                             state.bind_empty, state.check_update, state.download_update}) {
             if (control) {
                 SetWindowSubclass(control, SettingsWheelProc,
                                   kSettingsWheelSubclassId,
@@ -2971,6 +3017,10 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         PopulateControls(*state);
         return 0;
     case WM_TIMER:
+        if(wparam==kUpdateStatusTimerId){
+            RefreshUpdateStatus(*state);
+            return 0;
+        }
         if(wparam==kDevicePresenceTimerId){
             if(state->mode==ManagementMode::Settings&&
                state->settings_page==SettingsPage::Devices){
@@ -3078,7 +3128,12 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         }
         if (state->mode == ManagementMode::Settings) {
             if (id == kCheckUpdate) {
-                aicli::update::CheckForUpdates(state->window);
+                aicli::update::CheckForUpdates();
+                RefreshUpdateStatus(*state, true);
+                return 0;
+            }
+            if (id == kDownloadUpdate) {
+                aicli::update::DownloadAvailableUpdate(state->window);
                 return 0;
             }
             if (id == kSettingsAppearance) {
@@ -3494,6 +3549,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         return 0;
     case WM_DESTROY:
         KillTimer(h,kDevicePresenceTimerId);
+        KillTimer(h,kUpdateStatusTimerId);
         state->list_scrollbar.Detach();
         state->content_scrollbar.Detach();
         return 0;

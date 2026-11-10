@@ -167,8 +167,22 @@ add_executable(aicli_update_manifest_tests
 )
 target_include_directories(aicli_update_manifest_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src" "${AICLI_NLOHMANN_ROOT}")
+add_executable(aicli_keep_awake_tests tests/keep_awake_tests.cpp)
+target_include_directories(aicli_keep_awake_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if (NOT AICLI_USE_QT_UI)
+    add_executable(aicli_update_check_tests tests/update_check_tests.cpp
+        src/app/auto_update.cpp src/app/update_manifest.cpp)
+    target_include_directories(aicli_update_check_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}/generated" "${AICLI_NLOHMANN_ROOT}")
+    target_compile_definitions(aicli_update_check_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(aicli_update_check_tests PRIVATE winhttp bcrypt comctl32 shell32 ole32)
+    if (MSVC)
+        target_compile_options(aicli_update_check_tests PRIVATE /W4 /EHsc /utf-8)
+    endif()
+endif()
 if (MSVC)
     target_compile_options(aicli_update_manifest_tests PRIVATE /W4 /EHsc /utf-8)
+    target_compile_options(aicli_keep_awake_tests PRIVATE /W4 /EHsc /utf-8)
 endif()
 
 if (AICLI_USE_QT_UI)
