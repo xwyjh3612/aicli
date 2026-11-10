@@ -29,14 +29,19 @@ if (!$identityName -or !$applicationId) {
     throw 'The installed AppxManifest.xml is missing its package identity.'
 }
 
-# Re-registering from a different install directory can otherwise leave the
-# package identity pointing at stale files. AI CLI stores its conversations in
-# %LOCALAPPDATA%\AI CLI, so replacing this sparse registration does not remove
-# user projects or chat history.
-Get-AppxPackage -Name $identityName -ErrorAction SilentlyContinue |
-    ForEach-Object {
-        Remove-AppxPackage -Package $_.PackageFullName -ErrorAction Stop
-    }
+if ($identityName -eq 'AiCli.Desktop.Release') {
+    # Keep the old registration and its private AppData. The unpackaged helper
+    # snapshots SQLite (including WAL), certs and uploads before registration.
+    # The new app migrates the private overlay on first startup. Failure stops
+    # registration, leaving the original data and package available.
+    $dataUpgrade = Join-Path $installRoot 'aicli-data-upgrade.exe'
+    & $dataUpgrade 'AiCli.Desktop.Release_jw3zr00rmb0ym'
+    if ($LASTEXITCODE -ne 0) { throw 'User data backup/migration failed. Existing package registration was preserved.' }
+} elseif ($identityName -like 'AiCli.Desktop.Qt*') {
+    # Retain the existing Qt installer behavior; this release is Win32 only.
+    Get-AppxPackage -Name $identityName -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-AppxPackage -Package $_.PackageFullName -ErrorAction Stop }
+}
 
 Add-AppxPackage -Register $manifestPath -ForceUpdateFromAnyVersion -ErrorAction Stop
 $registered = Get-AppxPackage -Name $identityName -ErrorAction Stop |

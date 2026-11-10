@@ -1,4 +1,5 @@
 #include "data/data_store.h"
+#include "data/default_commands.h"
 
 #include <windows.h>
 #include <objbase.h>
@@ -61,8 +62,16 @@ int wmain(int argc, wchar_t** argv) {
             return value.name == L"Claude";
         });
         ok &= Check(codex && codex->builtin &&
-                        codex->default_command == L"codex --yolo --no-alt-screen resume --last",
+                        codex->default_command == aicli::kDefaultCodexCommand,
                     L"Codex builtin type and command");
+        store.Close();
+        ok &= Check(store.Initialize(database.wstring(), &error), L"reopen new installation");
+        const auto reopened_types = store.LoadProjectTypes();
+        const auto* reopened_codex = Find(reopened_types, [](const aicli::ProjectType& value) {
+            return value.name == L"Codex";
+        });
+        ok &= Check(reopened_codex && reopened_codex->default_command == aicli::kDefaultCodexCommand,
+                    L"new Codex trust command survives later startup migrations");
         ok &= Check(claude && claude->builtin &&
                         claude->default_command ==
                             L"claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }",

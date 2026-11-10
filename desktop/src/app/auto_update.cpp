@@ -1,5 +1,6 @@
 #include "app/auto_update.h"
 #include "app/update_manifest.h"
+#include "app/update_path.h"
 #include "aicli_build_identity.h"
 
 #include <commctrl.h>
@@ -162,6 +163,9 @@ void Download(Job& job) {
         if (hex != job.release.sha256) throw std::runtime_error("Checksum mismatch");
         job.file = directory / L"AiCli-Setup.exe";
         std::filesystem::rename(partial, job.file);
+        // An elevated installer cannot see a packaged app's logical AppData
+        // overlay. Launch the physical file, including on existing packages.
+        job.file = PhysicalInstallerPath(job.file);
     } catch (...) {
         job.file.clear();
         job.error = L"更新下载或完整性校验失败，未运行安装程序。请稍后重试。";
@@ -219,9 +223,22 @@ void DownloadAndInstall(HWND owner, const Release& release) {
                     L"安装 AiCli 更新", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
     // Inno Setup retains the installed directory and performs the existing
     // shutdown/registration flow. Cancelling UAC or Setup leaves AiCli running.
-    const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(owner, L"open", download.file.c_str(),
-                                                               L"/NORESTART", nullptr, SW_SHOWNORMAL));
-    if (result <= 32) MessageBoxW(owner, L"未启动安装程序，可在设置中重新检查更新。", L"AiCli 更新", MB_OK | MB_ICONINFORMATION);
+    SHELLEXECUTEINFOW launch{sizeof(launch)};
+    launch.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+    launch.hwnd = owner;
+    launch.lpVerb = L"open";
+    launch.lpFile = download.file.c_str();
+    launch.lpParameters = L"/NORESTART";
+    const auto directory = download.file.parent_path().wstring();
+    launch.lpDirectory = directory.c_str();
+    launch.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&launch)) {
+        const auto code = GetLastError();
+        if (code == ERROR_CANCELLED) return;
+        const auto message = L"安装程序未能启动（Windows 错误 " + std::to_wstring(code) +
+            L"）。安装包已保留，可手动打开：\n\n" + download.file.wstring();
+        MessageBoxW(owner, message.c_str(), L"AiCli 更新", MB_OK | MB_ICONINFORMATION);
+    }
 }
 
 void Offer(HWND owner, const Release& release) {

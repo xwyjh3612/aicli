@@ -45,6 +45,8 @@
 #include "core/process_metrics.h"
 #include "core/text_utils.h"
 #include "data/data_store.h"
+#include "data/default_commands.h"
+#include "data/data_migration.h"
 #include "features/mobile_project_creation.h"
 #include "terminal/conpty_connection_bridge.h"
 #include "terminal/terminal_working_detector.h"
@@ -759,6 +761,10 @@ void RefreshProjectDetails(bool force_git_refresh=false){
 bool InitializePersistentState() {
     std::wstring error;
     const std::filesystem::path database=std::filesystem::path(aicli::DefaultDataDirectory())/L"aicli.db";
+    if(!aicli::MigrateCurrentPackageData(database.parent_path(), &error)){
+        MessageBoxW(nullptr,(L"旧版数据保护失败，已停止启动以避免创建空数据库。\n"+error).c_str(),L"AI CLI",MB_OK|MB_ICONERROR);
+        return false;
+    }
     if(!g_store.Initialize(database.wstring(),&error)){
         MessageBoxW(nullptr,(L"SQLite 初始化失败："+error).c_str(),L"AI CLI",MB_OK|MB_ICONERROR);
         return false;

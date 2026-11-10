@@ -77,12 +77,15 @@ if (!$SkipBuild) {
 # Stage explicitly so every installer contains the current Terminal/WinUI PRI
 # files and the Release package identity even on an incremental build.
 $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$nativeStageFlags = @()
+if (!$useQtUi) { $nativeStageFlags += '-UnvirtualizedData' }
 & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $stageRuntime `
     -Output $releaseDirectory `
     -Configuration Release `
     -Platform x64 `
     -PackageIdentityName $packageIdentity `
-    -ApplicationLogo (Join-Path $desktopRoot 'assets\aicli-logo.png')
+    -ApplicationLogo (Join-Path $desktopRoot 'assets\aicli-logo.png') `
+    @nativeStageFlags
 if ($LASTEXITCODE) { throw "Release runtime staging failed: $LASTEXITCODE" }
 
 $executable = Join-Path $releaseDirectory 'aicli.exe'

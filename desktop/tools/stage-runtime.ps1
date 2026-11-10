@@ -6,7 +6,8 @@ param(
     [string]$Configuration = 'Debug',
     [string]$Platform = 'x64',
     [string]$PackageIdentityName = 'AiCli.Desktop.Dev',
-    [string]$ApplicationLogo = ''
+    [string]$ApplicationLogo = '',
+    [switch]$UnvirtualizedData
 )
 $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
@@ -442,6 +443,20 @@ $manifestText = [Text.RegularExpressions.Regex]::Replace(
     { param($match) $match.Groups[1].Value + $PackageIdentityName + $match.Groups[2].Value },
     [Text.RegularExpressions.RegexOptions]::IgnoreCase)
 [IO.File]::WriteAllText($manifestOutput, $manifestText, [Text.UTF8Encoding]::new($false))
+if ($UnvirtualizedData) {
+    [xml]$nativeManifest = $manifestText
+    $desktop6 = 'http://schemas.microsoft.com/appx/manifest/desktop/windows10/6'
+    $nativeManifest.Package.SetAttribute('xmlns:desktop6', $desktop6)
+    $nativeManifest.Package.SetAttribute('IgnorableNamespaces', $nativeManifest.Package.IgnorableNamespaces + ' desktop6')
+    $virtualization = $nativeManifest.CreateElement('desktop6', 'FileSystemWriteVirtualization', $desktop6)
+    $virtualization.InnerText = 'disabled'
+    [void]$nativeManifest.Package.Properties.AppendChild($virtualization)
+    $capability = $nativeManifest.CreateElement('rescap', 'Capability',
+        'http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities')
+    $capability.SetAttribute('Name', 'unvirtualizedResources')
+    [void]$nativeManifest.Package.Capabilities.AppendChild($capability)
+    $nativeManifest.Save($manifestOutput)
+}
 Copy-Item (Join-Path $PSScriptRoot 'configure-agent-firewall.ps1') $Output -Force
 Copy-Item -Path (Join-Path $mainLayoutAssets '*') -Destination $assets -Force
 $openssl = $dependencies.openssl

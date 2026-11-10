@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0.5"
+  #define MyAppVersion "1.0.0.6"
 #endif
 
 #define MyAppName "AiCli"
@@ -52,7 +52,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加快捷方式："; Flags: unchecked
 
 [Files]
-Source: "{#MySourceDir}\*"; DestDir: "{app}"; Excludes: "aicli.pdb,aicli_data_store_tests.exe,aicli_data_store_tests.pdb,aicli-test-window.png,component-load-error.txt,microsoft.system.package.metadata\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MySourceDir}\*"; DestDir: "{app}"; Excludes: "*.pdb,aicli_*_tests.exe,aicli-test-window.png,component-load-error.txt,microsoft.system.package.metadata\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "install-package.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "uninstall-package.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "close-running-terminals.ps1"; Flags: dontcopy
@@ -109,10 +109,16 @@ begin
     Parameters := '-NoProfile -ExecutionPolicy Bypass -File "' + ScriptPath +
       '" -InstallDirectory "' + ExpandConstant('{app}') + '"';
 
+#if MyPackageIdentity == "AiCli.Desktop.Release"
+    // Appx registration and AppData belong to the original user, including
+    // when UAC elevation uses a different administrator account.
+    if (not ExecAsOriginalUser(PowerShellPath, Parameters, ExpandConstant('{app}'),
+#else
     if (not Exec(PowerShellPath, Parameters, ExpandConstant('{app}'),
+#endif
       SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     begin
-      RaiseException('AI CLI 运行环境注册失败，错误代码：' + IntToStr(ResultCode));
+      RaiseException('AI CLI 数据保护或运行环境注册失败，未卸载原应用包。请关闭 AI CLI 后重试。错误代码：' + IntToStr(ResultCode));
     end;
   end;
 end;

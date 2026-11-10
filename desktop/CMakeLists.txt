@@ -120,6 +120,7 @@ if (AICLI_USE_QT_UI)
 else()
     list(APPEND AICLI_COMMON_SOURCES
         src/app/auto_update.cpp
+        src/data/data_migration.cpp
         src/app/update_manifest.cpp
         src/app/main.cpp
         src/ui/drawing_utils.cpp
@@ -170,6 +171,17 @@ target_include_directories(aicli_update_manifest_tests PRIVATE
 add_executable(aicli_keep_awake_tests tests/keep_awake_tests.cpp)
 target_include_directories(aicli_keep_awake_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if (NOT AICLI_USE_QT_UI)
+    add_executable(aicli-data-upgrade src/data/data_upgrade_main.cpp src/data/data_migration.cpp)
+    add_executable(aicli_data_upgrade_tests tests/data_upgrade_tests.cpp src/data/data_migration.cpp)
+    foreach(upgrade_target aicli-data-upgrade aicli_data_upgrade_tests)
+        target_include_directories(${upgrade_target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_compile_definitions(${upgrade_target} PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_link_libraries(${upgrade_target} PRIVATE winsqlite3 shell32 ole32)
+        if (MSVC)
+            target_compile_options(${upgrade_target} PRIVATE /W4 /EHsc /utf-8)
+        endif()
+    endforeach()
+    add_dependencies(aicli aicli-data-upgrade)
     add_executable(aicli_update_check_tests tests/update_check_tests.cpp
         src/app/auto_update.cpp src/app/update_manifest.cpp)
     target_include_directories(aicli_update_check_tests PRIVATE
@@ -321,6 +333,10 @@ if (AICLI_USE_QT_UI)
     )
 endif()
 
+set(AICLI_STAGE_DATA_FLAGS "")
+if (NOT AICLI_USE_QT_UI)
+    list(APPEND AICLI_STAGE_DATA_FLAGS -UnvirtualizedData)
+endif()
 add_custom_command(TARGET aicli POST_BUILD
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
         -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/stage-runtime.ps1"
@@ -329,6 +345,7 @@ add_custom_command(TARGET aicli POST_BUILD
         -Platform x64
         -PackageIdentityName "${AICLI_PACKAGE_IDENTITY_NAME}"
         -ApplicationLogo "${AICLI_APPLICATION_LOGO}"
+        ${AICLI_STAGE_DATA_FLAGS}
 )
 
 target_link_libraries(aicli_data_store_tests PRIVATE

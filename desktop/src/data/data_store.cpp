@@ -1,4 +1,5 @@
 #include "data/data_store.h"
+#include "data/default_commands.h"
 
 #include <windows.h>
 #include <objbase.h>
@@ -248,11 +249,18 @@ CREATE TABLE IF NOT EXISTS settings(
 }
 
 bool DataStore::SeedDefaults(std::wstring* error) {
+    // Only seed missing presets; upgrades keep the user's saved command.
+    auto codex = Prepare(db_, "INSERT OR IGNORE INTO project_types(name,default_command,builtin) VALUES('Codex',?,1);");
+    if (!codex) { if (error) *error = LastError(); return false; }
+    BindText(codex.get(), 1, kDefaultCodexCommand);
+    if (sqlite3_step(codex.get()) != SQLITE_DONE) {
+        if (error) *error = LastError();
+        return false;
+    }
     // Codex 0.163 defaults to an alternate screen that is not part of the
     // terminal scrollback. Inline mode keeps the full transcript available to
     // the desktop scrollbar and the Android terminal view.
     if (!Execute("INSERT OR IGNORE INTO project_types(name,default_command,builtin) VALUES"
-                 "('Codex','codex --yolo --no-alt-screen resume --last',1),"
                  "('Claude','claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }',1);",
                  error) ||
         !Execute("UPDATE project_types "
@@ -975,7 +983,13 @@ std::wstring DefaultDataDirectory() {
         return configured;
     }
     PWSTR local_app_data{};
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr,
+    DWORD folder_flags = KF_FLAG_CREATE;
+#ifndef AICLI_QT_UI_BUILD
+    // The native package also disables filesystem write virtualization in its
+    // manifest. Keep known-folder API redirection out of the stable data path.
+    folder_flags |= KF_FLAG_NO_PACKAGE_REDIRECTION;
+#endif
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, folder_flags, nullptr,
                                        &local_app_data)) && local_app_data) {
         std::filesystem::path result{local_app_data};
         CoTaskMemFree(local_app_data);

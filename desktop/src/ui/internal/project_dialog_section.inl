@@ -10,7 +10,7 @@ bool PickFolder(HWND owner,std::wstring& path);
 std::wstring DefaultProjectCommand(const std::wstring& type){
     const auto found=std::find_if(g_project_types.begin(),g_project_types.end(),[&](const ProjectType& value){return _wcsicmp(value.name.c_str(),type.c_str())==0;});
     if(found!=g_project_types.end())return found->default_command;
-    return type==L"Claude"?L"claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }":L"codex --yolo --no-alt-screen resume --last";
+    return type==L"Claude"?L"claude --dangerously-skip-permissions --continue; if ($LASTEXITCODE -ne 0) { claude --dangerously-skip-permissions }":aicli::kDefaultCodexCommand;
 }
 std::wstring DefaultProjectTypeName(){
     const std::int64_t defaultId=g_store.DefaultProjectTypeId();
