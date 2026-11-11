@@ -36,6 +36,7 @@
 #include "agent/terminal_stream_publisher.h"
 #include "app/application_activation.h"
 #include "app/auto_update.h"
+#include "app/native_remote_bridge.h"
 #include "app/keep_awake.h"
 #include "app/powershell_runtime.h"
 #include "app/project_launcher.h"
@@ -45,9 +46,9 @@
 #include "core/process_metrics.h"
 #include "core/text_utils.h"
 #include "data/data_store.h"
-#include "data/default_commands.h"
 #include "data/data_migration.h"
 #include "features/mobile_project_creation.h"
+#include "features/project_configuration.h"
 #include "terminal/conpty_connection_bridge.h"
 #include "terminal/terminal_working_detector.h"
 #include "terminal/xaml_island_adapter.h"
@@ -57,6 +58,7 @@
 #include "ui/footer_status.h"
 #include "ui/main_window_renderer.h"
 #include "ui/management_dialog.h"
+#include "ui/project_editor_dialog.h"
 #include "ui/project_list_view.h"
 #include "ui/rounded_context_menu.h"
 #include "ui/rounded_select_popup.h"
@@ -71,21 +73,16 @@
 #pragma comment(lib, "gdiplus.lib")
 
 namespace {
+using namespace aicli::app::native_remote;
 constexpr wchar_t kApplicationUserModelId[] = AICLI_APPLICATION_USER_MODEL_ID;
-constexpr UINT WM_REMOTE_INPUT = WM_APP + 20;
-constexpr UINT WM_REMOTE_CONTROL = WM_APP + 21;
-constexpr UINT WM_PAIRING_PENDING = WM_APP + 22;
-constexpr UINT WM_AGENT_STATUS = WM_APP + 23;
 constexpr UINT WM_RESTORE_LAST_SESSION = WM_APP + 24;
 constexpr UINT WM_TERMINAL_DIRTY = WM_APP + 25;
 // Do not enter a nested modal loop from a native BUTTON's synchronous
 // BN_CLICKED dispatch.  Posting this message lets WM_LBUTTONUP finish and
 // the owner-draw button paint its released state before the modal is shown.
 constexpr UINT WM_OPEN_SETTINGS = WM_APP + 26;
-constexpr UINT WM_REMOTE_KEY = WM_APP + 27;
 constexpr UINT WM_AGENT_WORKING_STATE = WM_APP + 28;
 constexpr UINT WM_GIT_STATUS_READY = WM_APP + 29;
-constexpr UINT WM_REMOTE_CREATE_PROJECT = WM_APP + 30;
 constexpr int ID_PROJECT_LIST = 1001;
 constexpr int ID_NEW_PROJECT = 1004;
 constexpr int ID_SETTINGS = 1005;
@@ -190,7 +187,6 @@ constexpr UINT kProjectSpinnerIntervalMs = 75;
 constexpr UINT kGitSpinnerIntervalMs = 80;
 constexpr UINT kProjectListItemHeight = 40;
 
-
 using aicli::DeviceRecord;
 using aicli::Project;
 using aicli::ProjectGroup;
@@ -207,37 +203,7 @@ using aicli::ui::DrawRoundedOutline;
 using aicli::ui::DrawSmoothRoundedRect;
 using aicli::ui::GdiplusRuntime;
 using aicli::ui::SmoothColor;
-struct RemoteInputMessage {
-    std::wstring project_id,phone_id,input;
-    HANDLE completed{CreateEventW(nullptr,TRUE,FALSE,nullptr)};
-    std::atomic_bool cancelled{};
-    bool accepted{};
-    std::wstring error;
-    RemoteInputMessage(std::wstring project,std::wstring phone,std::wstring value):
-        project_id(std::move(project)),phone_id(std::move(phone)),input(std::move(value)){}
-    ~RemoteInputMessage(){if(completed)CloseHandle(completed);}
-};
-struct RemoteControlMessage { std::wstring project_id, phone_id, action; };
-struct RemoteKeyMessage {
-    std::wstring project_id, phone_id, key;
-    HANDLE completed{CreateEventW(nullptr,TRUE,FALSE,nullptr)};
-    std::atomic_bool cancelled{};
-    bool accepted{};
-    std::wstring error;
-    RemoteKeyMessage(std::wstring project,std::wstring phone,std::wstring value):
-        project_id(std::move(project)),phone_id(std::move(phone)),key(std::move(value)){}
-    ~RemoteKeyMessage(){if(completed)CloseHandle(completed);}
-};
-struct RemoteCreateProjectMessage {
-    aicli::mobile_projects::CreateRequest request;
-    aicli::mobile_projects::CreateResult result;
-    HANDLE completed{CreateEventW(nullptr,TRUE,FALSE,nullptr)};
-    std::atomic_bool cancelled{};
-    explicit RemoteCreateProjectMessage(
-        const aicli::mobile_projects::CreateRequest& value):request(value){}
-    ~RemoteCreateProjectMessage(){if(completed)CloseHandle(completed);}
-};
-struct AgentStatusMessage { bool online{}; std::wstring text; };
+
 struct AgentWorkingStateMessage { std::wstring project_id; bool working{}; };
 struct GitStatusMessage {
     std::uint64_t request_id{};
@@ -264,6 +230,7 @@ HFONT g_font_project_heading{},g_font_monospace{};
 aicli::DataStore g_store;
 aicli::agent::RemoteAgent g_remote_agent;
 aicli::agent::ConversationBridge g_conversation_bridge(g_store,g_remote_agent);
+aicli::app::native_remote::UiCallbacks g_remote_ui;
 std::optional<aicli::agent::PendingPairing> g_pending_pairing;
 std::vector<Project> g_projects;
 std::vector<ProjectType> g_project_types;
@@ -292,13 +259,11 @@ COLORREF& accent2 = g_theme.accent_strong;
 HBRUSH g_edit_brush{},g_focus_brush{},g_search_brush{},g_list_brush{},g_panel_brush{},g_bg_brush{},g_detail_surface_brush{};bool g_light_theme{};bool g_theme_workspace_dirty{};
 bool g_settings_open_posted{};
 bool g_close_confirmation_open{};
-HWND g_project_dialog{}, g_d_name{}, g_d_note{}, g_d_type{}, g_d_group{}, g_d_folder{}, g_d_folder_browse{}, g_d_command{}, g_d_close{}; bool g_project_dialog_ok{}; bool g_project_dialog_edit{}; Project g_project_draft{};
+std::unique_ptr<aicli::ui::ProjectEditorDialog> g_project_editor;
 HWND g_binding_dialog{},g_binding_refresh{},g_binding_close{},g_binding_approve{},g_binding_reject{};
 aicli::agent::PairingInfo g_binding_info{};
 std::optional<qrcodegen::QrCode> g_binding_qr;
 RECT g_binding_panel{};
-RECT g_project_panel{};
-RECT g_d_name_rect{}, g_d_note_rect{}, g_d_type_rect{}, g_d_group_rect{}, g_d_folder_rect{}, g_d_command_rect{};
 RECT g_prestart_panel{},g_prestart_folder_surface{},g_prestart_command_surface{},g_prestart_note_surface{};
 RECT g_empty_state_icon{};
 aicli::ui::WindowChrome g_window_chrome({ID_MINIMIZE,ID_MAXIMIZE,ID_CLOSE});
@@ -349,9 +314,7 @@ float ScaleUiF(float value) noexcept {
     return value * static_cast<float>(std::max(1, g_layout_metrics.dpi)) / 96.0f;
 }
 
-enum { ID_D_NAME=2001, ID_D_TYPE=2002, ID_D_GROUP=2003, ID_D_FOLDER=2004, ID_D_COMMAND=2005, ID_D_OK=2006, ID_D_CANCEL=2007, ID_D_BROWSE=2008, ID_D_NOTE=2009, ID_D_CLOSE=2010 };
 enum { ID_BIND_REFRESH=2101,ID_BIND_CLOSE=2102,ID_BIND_APPROVE=2103,ID_BIND_REJECT=2104 };
-HWND g_project_dropdown_open_control{};
 void DrawModernButton(const DRAWITEMSTRUCT* item);
 LRESULT CALLBACK ButtonProc(HWND h,UINT m,WPARAM w,LPARAM l);
 void Layout();
@@ -418,7 +381,7 @@ void ApplyLiveTheme(bool flush_workspace=true){
         g_theme_workspace_dirty=true;
         ApplyWindowChromeTheme(false);
         g_window_chrome.InvalidateTitleBar(g_hwnd);
-        if(g_project_dialog)RedrawWindow(g_project_dialog,nullptr,nullptr,RDW_INVALIDATE|RDW_NOERASE|RDW_ALLCHILDREN);
+        if(g_project_editor)g_project_editor->RefreshTheme();
         if(g_binding_dialog)RedrawWindow(g_binding_dialog,nullptr,nullptr,RDW_INVALIDATE|RDW_NOERASE|RDW_ALLCHILDREN);
     }
     if(!g_hwnd||!flush_workspace)return;
@@ -438,15 +401,7 @@ void ExecuteTitleButton(HWND window,int id){
     else if(id==ID_MAXIMIZE){ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);Layout();}
 }
 void EnableButtonHover(HWND button){WNDPROC old=(WNDPROC)SetWindowLongPtrW(button,GWLP_WNDPROC,(LONG_PTR)ButtonProc);if(!g_button_proc)g_button_proc=old;}
-constexpr UINT_PTR kProjectEditSubclassId=0xA1C12;
 constexpr UINT_PTR kProjectListSubclassId=0xA1C13;
-LRESULT CALLBACK ProjectEditSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){if((m==WM_KEYDOWN||m==WM_CHAR)&&(w==VK_RETURN||w==L'\n'))return 0;if(m==WM_NCDESTROY)RemoveWindowSubclass(h,ProjectEditSubclassProc,kProjectEditSubclassId);return DefSubclassProc(h,m,w,l);}
-void CenterProjectEditText(HWND control){
-    if(!control)return;RECT client{};GetClientRect(control,&client);HDC dc=GetDC(control);if(!dc)return;
-    HFONT font=(HFONT)SendMessageW(control,WM_GETFONT,0,0);auto oldFont=font?SelectObject(dc,font):nullptr;TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);if(oldFont)SelectObject(dc,oldFont);ReleaseDC(control,dc);
-    const int height=client.bottom-client.top;const int textHeight=std::min(height,std::max(1,(int)metrics.tmHeight));const int top=std::max(0,(height-textHeight)/2);
-    RECT format{10,top,std::max(11,(int)client.right-10),std::min(height,top+textHeight+1)};SendMessageW(control,EM_SETRECTNP,0,(LPARAM)&format);InvalidateRect(control,nullptr,FALSE);
-}
 
 HFONT CreateMainFont(int logical_height, int weight, const wchar_t* face,
                      DWORD pitch = DEFAULT_PITCH) {
@@ -496,9 +451,8 @@ void ApplyMainFontsToControls() {
         SendMessageW(g_status, WM_SETFONT,
                      reinterpret_cast<WPARAM>(g_font_git), TRUE);
 
-    for (HWND control : {g_d_name, g_d_note, g_d_type, g_d_group,
-                         g_d_folder, g_d_folder_browse, g_d_command, g_d_close,
-                         g_binding_refresh, g_binding_close,
+    if (g_project_editor) g_project_editor->RefreshFonts();
+    for (HWND control : {g_binding_refresh, g_binding_close,
                          g_binding_approve, g_binding_reject}) {
         if (control) SendMessageW(control, WM_SETFONT,
                                   reinterpret_cast<WPARAM>(g_font), TRUE);
@@ -582,7 +536,39 @@ bool SetMainChildVisible(HWND control,bool visible){
     return true;
 }
 void RecordAndBroadcastEvent(const std::wstring& project_id,const std::wstring& event_type,const nlohmann::json& payload){g_conversation_bridge.RecordAndBroadcast(project_id,event_type,payload);}
-#include "ui/internal/project_dialog_section.inl"
+HWND MakeDialogControl(LPCWSTR cls, LPCWSTR text, DWORD style, int id, HWND parent, int x, int y,
+                       int w, int h)
+{
+    bool button = wcscmp(cls, L"BUTTON") == 0;
+    if (button)
+        style |= BS_OWNERDRAW;
+    HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, x, y, w, h, parent,
+                             (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
+    if (button)
+        EnableButtonHover(c);
+    return c;
+}
+
+bool ShowProjectDialog(HWND owner, Project &result, const Project *initial = nullptr)
+{
+    if (!g_project_editor)
+    {
+        g_project_editor =
+            std::make_unique<aicli::ui::ProjectEditorDialog>(aicli::ui::ProjectEditorOptions{
+                g_store, g_projects, g_project_types, g_groups, g_theme,
+                [] {
+                    return aicli::ui::ProjectEditorFonts{g_font,
+                                                         g_font_medium,
+                                                         g_font_small,
+                                                         g_font_modal_title,
+                                                         g_font_modal_subtitle,
+                                                         g_font_header_icon};
+                },
+                [] { return g_group_name; }, [] { return DefaultGroupName(); }, [] { Layout(); }});
+    }
+    return g_project_editor->Show(owner, result, initial);
+}
 
 #include "ui/internal/binding_dialog_section.inl"
 
@@ -692,7 +678,6 @@ bool InvalidateWorkingProjectRows(){
 }
 
 #include "ui/internal/project_list_renderer_section.inl"
-bool PickFolder(HWND owner,std::wstring& path){IFileDialog* dialog=nullptr;if(FAILED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))||!dialog)return false;DWORD options=0;dialog->GetOptions(&options);dialog->SetOptions(options|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST);if(FAILED(dialog->Show(owner))){dialog->Release();return false;}IShellItem* item=nullptr;bool ok=SUCCEEDED(dialog->GetResult(&item));if(ok){PWSTR value=nullptr;ok=SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&value));if(ok){path=value;CoTaskMemFree(value);}item->Release();}dialog->Release();return ok;}
 int SelectedProjectIndex(){
     const LRESULT row=SendMessageW(g_list,LB_GETCURSEL,0,0);
     if(row==LB_ERR||row<0||row>=static_cast<LRESULT>(g_visible_project_indices.size()))return -1;
@@ -1038,18 +1023,20 @@ void Layout(){
     }
 }
 void CreateProject(){
-    if(!ShowProjectDialog(g_hwnd))return;
+    Project draft;
+    if(!ShowProjectDialog(g_hwnd,draft))return;
     std::wstring error;
-    if(!g_store.SaveProject(g_project_draft,&error)){MessageBoxW(g_hwnd,error.c_str(),L"保存项目",MB_OK|MB_ICONWARNING);return;}
-    g_projects.push_back(g_project_draft);g_group_name=g_project_draft.group;g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();
-    for(size_t i=0;i<g_projects.size();++i)if(g_projects[i].id==g_project_draft.id){const int row=static_cast<int>(std::find(g_visible_project_indices.begin(),g_visible_project_indices.end(),static_cast<int>(i))-g_visible_project_indices.begin());if(row<(int)g_visible_project_indices.size())SendMessageW(g_list,LB_SETCURSEL,row,0);break;}
+    if(!g_store.SaveProject(draft,&error)){MessageBoxW(g_hwnd,error.c_str(),L"保存项目",MB_OK|MB_ICONWARNING);return;}
+    g_projects.push_back(draft);g_group_name=draft.group;g_store.SetSetting(L"last_group",g_group_name);RefreshProjectList();
+    for(size_t i=0;i<g_projects.size();++i)if(g_projects[i].id==draft.id){const int row=static_cast<int>(std::find(g_visible_project_indices.begin(),g_visible_project_indices.end(),static_cast<int>(i))-g_visible_project_indices.begin());if(row<(int)g_visible_project_indices.size())SendMessageW(g_list,LB_SETCURSEL,row,0);break;}
     RefreshProjectDetails();Layout();SetStatusText(L"项目已创建    |    选择右侧立即开始");
 }
 void EditProject(){
+    Project draft;
     const int index=SelectedProjectIndex();if(index<0||index>=(int)g_projects.size())return;const Project before=g_projects[index];
-    if(!ShowProjectDialog(g_hwnd,&before))return;std::wstring error;
-    if(!g_store.SaveProject(g_project_draft,&error)){MessageBoxW(g_hwnd,error.c_str(),L"保存项目",MB_OK|MB_ICONWARNING);return;}
-    g_projects[index]=g_project_draft;RefreshProjectList();SetStatusText(L"项目配置已更新");Layout();
+    if(!ShowProjectDialog(g_hwnd,draft,&before))return;std::wstring error;
+    if(!g_store.SaveProject(draft,&error)){MessageBoxW(g_hwnd,error.c_str(),L"保存项目",MB_OK|MB_ICONWARNING);return;}
+    g_projects[index]=draft;RefreshProjectList();SetStatusText(L"项目配置已更新");Layout();
 }
 void DeleteProject(){
     const int index=SelectedProjectIndex();
@@ -1138,7 +1125,7 @@ void StartSession(bool restart=false){
         g_island.Stop(project.id);
     }
     const std::wstring sessionAgent=project.type;
-    const std::wstring cmd=aicli::terminal::EnsureCodexInlineScrollback(sessionAgent,project.command.empty()?DefaultProjectCommand(sessionAgent):project.command);
+    const std::wstring cmd=aicli::terminal::EnsureCodexInlineScrollback(sessionAgent,project.command.empty()?aicli::project_configuration::DefaultCommand(g_project_types,sessionAgent):project.command);
     if(StartCommandSession(cmd,project.folder,project.name,sessionAgent,project.id)){
         project.status=L"running";
         g_store.UpdateProjectStatus(project.id,L"running");
@@ -1149,8 +1136,6 @@ void StartSession(bool restart=false){
 int ProjectIndexById(const std::wstring& project_id){for(size_t i=0;i<g_projects.size();++i)if(g_projects[i].id==project_id)return static_cast<int>(i);return -1;}
 bool SelectProjectById(const std::wstring& project_id){const int index=ProjectIndexById(project_id);if(index<0)return false;const bool visible_in_filter=g_group_name==kAllGroupsName||(g_group_name==kStartedProjectsName?g_island.HasSession(project_id):(g_projects[index].group.empty()?DefaultGroupName():g_projects[index].group)==g_group_name);if(!visible_in_filter){g_group_name=g_projects[index].group.empty()?DefaultGroupName():g_projects[index].group;SetText(g_group,g_group_name);g_store.SetSetting(L"last_group",g_group_name);}RefreshProjectList();for(size_t row=0;row<g_visible_project_indices.size();++row)if(g_visible_project_indices[row]==index){SendMessageW(g_list,LB_SETCURSEL,row,0);RefreshProjectDetails(true);Layout();return true;}return false;}
 void RefreshConversationsCache(){g_conversation_bridge.RefreshConversations(g_projects);}
-std::string ConversationsJson(){return g_conversation_bridge.ConversationsJson();}
-std::string EventsJson(const std::wstring& project_id,std::int64_t after){return g_conversation_bridge.EventsJson(project_id,after);}
 void UpdateDeviceHeader(){UpdateHeaderTelemetry();}
 void UpdateHeaderTelemetry(){
     const auto authorized_devices=g_store.LoadDevices().size();
@@ -1161,95 +1146,107 @@ void UpdateHeaderTelemetry(){
         g_remote_agent.OnlineDeviceCount(),
         authorized_devices);
 }
+void OnRemoteControl(const RemoteControlMessage &command)
+{
+    if (!SelectProjectById(command.project_id))
+        return;
+    const int selected = SelectedProjectIndex();
+    if (command.action == L"restart")
+        StartSession(true);
+    else if (command.action == L"continue" || command.action == L"start")
+        StartSession();
+    else if (command.action == L"pause" || command.action == L"cancel")
+    {
+        const bool pause = command.action == L"pause";
+        SetProjectWorkingState(command.project_id, false);
+        g_island.Stop(command.project_id);
+        if (selected >= 0 && selected < (int)g_projects.size())
+        {
+            g_projects[selected].status = pause ? L"paused" : L"cancelled";
+            g_store.UpdateProjectStatus(g_projects[selected].id, g_projects[selected].status);
+            RecordAndBroadcastEvent(g_projects[selected].id,
+                                    pause ? L"conversation.paused" : L"conversation.cancelled",
+                                    nlohmann::json{{"status", pause ? "paused" : "cancelled"}});
+        }
+        RefreshProjectList();
+        RefreshProjectDetails();
+        Layout();
+    }
+    else if (command.action == L"ctrl_c")
+        g_island.WriteInput(command.project_id, std::wstring(1, L'\x03'));
+    return;
+}
+
+void OnRemoteProjectCreated(const aicli::mobile_projects::CreateResult &result)
+{
+    const std::wstring project_id = result.project.id;
+    g_project_types = g_store.LoadProjectTypes();
+    g_groups = g_store.LoadGroups();
+    g_projects = g_store.LoadProjects();
+    g_group_name = result.project.group.empty() ? DefaultGroupName() : result.project.group;
+    g_last_project_id = project_id;
+    g_store.SetSetting(L"last_group", g_group_name);
+    g_store.SetSetting(L"last_project_id", project_id);
+    SetText(g_group, g_group_name);
+    SendMessageW(g_list, LB_SETCURSEL, static_cast<WPARAM>(-1), 0);
+    RefreshProjectList();
+    Layout();
+    SetStatusText(L"手机已创建项目“" + result.project.name + L"”    |    选择右侧立即开始");
+}
+
+void OnRemotePairing(const aicli::agent::PendingPairing &value)
+{
+    g_pending_pairing = value;
+    if (g_binding_dialog)
+    {
+        LayoutBindingDialog(g_binding_dialog);
+        InvalidateRect(g_binding_dialog, nullptr, FALSE);
+    }
+    else if (value.submitted && !value.authorized && !value.rejected)
+    {
+        const std::wstring text = L"手机名称：" + value.device.name + L"\n型号：" +
+                                  value.device.model + L"\n设备 ID：" + value.device.phone_id +
+                                  L"\n\n确认后该手机可远程操作管理员终端。";
+        const bool approve = MessageBoxW(g_hwnd, text.c_str(), L"确认绑定手机",
+                                         MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+        std::wstring error;
+        if (!g_remote_agent.ConfirmPairing(value.info.pairing_id, approve, &error) &&
+            !error.empty())
+            MessageBoxW(g_hwnd, error.c_str(), L"手机绑定", MB_OK | MB_ICONERROR);
+    }
+    UpdateDeviceHeader();
+    return;
+}
+
+void OnRemoteStatus(bool online, const std::wstring &text)
+{
+    if (!online)
+        SetStatusText(aicli::agent::IsMobileAccessEnabled(g_store) ? text : L"手机访问服务已关闭");
+    UpdateHeaderTelemetry();
+}
+
+aicli::app::native_remote::UiCallbacks MakeRemoteUiCallbacks()
+{
+    return {[](const std::wstring &id) { return SelectProjectById(id); },
+            [](bool restart) { StartSession(restart); },
+            [](const std::wstring &id) { return g_island.HasSession(id); },
+            [](const std::wstring &id, const std::wstring &text) {
+                return g_island.WriteInput(id, text);
+            },
+            [](const std::wstring &id, const std::wstring &text) {
+                return g_island.SubmitInput(id, text);
+            },
+            [](const std::wstring &id, UINT key) { return g_island.SendKey(id, key); },
+            OnRemoteControl,
+            OnRemoteProjectCreated,
+            OnRemotePairing,
+            OnRemoteStatus};
+}
+
 void ConfigureRemoteAgent(){
-    g_terminal_streams.SetBroadcastCallback([](const std::wstring& project,
-                                                const std::string& event){
-        g_remote_agent.BroadcastEvent(project,event);
-    });
-    g_remote_agent.SetTerminalReplayCallback(
-        [](const std::wstring& project,const std::wstring& session,
-           std::uint64_t after){
-            return g_terminal_streams.Replay(project,session,after);
-        });
-    g_remote_agent.SetTerminalCompactCallback(
-        [](const std::wstring& project){
-            return g_terminal_streams.CompactReplay(project,80);
-        });
-    g_remote_agent.SetTerminalHistoryCallback(
-        [](const std::wstring& project,const std::wstring& token,
-           std::size_t before,std::size_t limit){
-            return g_terminal_streams.History(project,token,before,limit);
-        });
-    g_remote_agent.SetConversationsCallback([]{return ConversationsJson();});
-    g_remote_agent.SetEventsCallback([](const std::wstring& project,std::int64_t after){return EventsJson(project,after);});
-    g_remote_agent.SetCreateProjectCallback(
-        [](const aicli::mobile_projects::CreateRequest& value){
-            auto request=std::make_shared<RemoteCreateProjectMessage>(value);
-            if(!request->completed){
-                request->result.http_status=500;
-                request->result.error=L"无法创建项目同步事件";
-                return request->result;
-            }
-            auto* envelope=new(std::nothrow)
-                std::shared_ptr<RemoteCreateProjectMessage>(request);
-            if(!envelope||!g_hwnd||
-               !PostMessageW(g_hwnd,WM_REMOTE_CREATE_PROJECT,0,
-                             reinterpret_cast<LPARAM>(envelope))){
-                delete envelope;
-                request->result.http_status=503;
-                request->result.error=L"桌面窗口未就绪";
-                return request->result;
-            }
-            if(WaitForSingleObject(request->completed,30000)!=WAIT_OBJECT_0){
-                request->cancelled=true;
-                aicli::mobile_projects::CreateResult timeout;
-                timeout.http_status=504;
-                timeout.error=L"电脑端创建项目超时";
-                return timeout;
-            }
-            return request->result;
-        });
-    g_remote_agent.SetInputCallback([](const std::wstring& project,const std::wstring& phone,
-                                       const std::wstring& input,std::wstring* error){
-        auto request=std::make_shared<RemoteInputMessage>(project,phone,input);
-        if(!request->completed){if(error)*error=L"无法创建输入同步事件";return false;}
-        auto* envelope=new(std::nothrow) std::shared_ptr<RemoteInputMessage>(request);
-        if(!envelope||!g_hwnd||
-           !PostMessageW(g_hwnd,WM_REMOTE_INPUT,0,reinterpret_cast<LPARAM>(envelope))){
-            delete envelope;
-            if(error)*error=L"桌面窗口未就绪";
-            return false;
-        }
-        if(WaitForSingleObject(request->completed,30000)!=WAIT_OBJECT_0){
-            request->cancelled=true;
-            if(error)*error=L"电脑端处理输入超时";
-            return false;
-        }
-        if(!request->accepted&&error)*error=request->error.empty()?L"终端未接受输入":request->error;
-        return request->accepted;
-    });
-    g_remote_agent.SetKeyCallback([](const std::wstring& project,const std::wstring& phone,
-                                     const std::wstring& key,std::wstring* error){
-        auto request=std::make_shared<RemoteKeyMessage>(project,phone,key);
-        if(!request->completed){if(error)*error=L"无法创建按键同步事件";return false;}
-        auto* envelope=new(std::nothrow) std::shared_ptr<RemoteKeyMessage>(request);
-        if(!envelope||!g_hwnd||
-           !PostMessageW(g_hwnd,WM_REMOTE_KEY,0,reinterpret_cast<LPARAM>(envelope))){
-            delete envelope;
-            if(error)*error=L"桌面窗口未就绪";
-            return false;
-        }
-        if(WaitForSingleObject(request->completed,30000)!=WAIT_OBJECT_0){
-            request->cancelled=true;
-            if(error)*error=L"电脑端处理按键超时";
-            return false;
-        }
-        if(!request->accepted&&error)*error=request->error.empty()?L"终端未接受按键":request->error;
-        return request->accepted;
-    });
-    g_remote_agent.SetControlCallback([](const std::wstring& project,const std::wstring& phone,const std::wstring& action,std::wstring* error){auto* message=new(std::nothrow) RemoteControlMessage{project,phone,action};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_REMOTE_CONTROL,0,reinterpret_cast<LPARAM>(message))){delete message;if(error)*error=L"桌面窗口未就绪";return false;}return true;});
-    g_remote_agent.SetPairingCallback([](const aicli::agent::PendingPairing& pairing){auto* message=new(std::nothrow) aicli::agent::PendingPairing(pairing);if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_PAIRING_PENDING,0,reinterpret_cast<LPARAM>(message)))delete message;});
-    g_remote_agent.SetStatusCallback([](bool online,const std::wstring& text){auto* message=new(std::nothrow) AgentStatusMessage{online,text};if(!message||!g_hwnd||!PostMessageW(g_hwnd,WM_AGENT_STATUS,0,reinterpret_cast<LPARAM>(message)))delete message;});
+    g_remote_ui = MakeRemoteUiCallbacks();
+    aicli::app::native_remote::ConfigureCallbacks(
+        g_hwnd, g_remote_agent, g_terminal_streams, g_conversation_bridge);
     g_remote_agent.AttachStore(&g_store);
     if(!aicli::agent::IsMobileAccessEnabled(g_store)){
         SetStatusText(L"手机访问服务已关闭");
@@ -1365,6 +1362,8 @@ void ResizeModalHosts(HWND owner){
 LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
     if(g_project_drag_message&&m==g_project_drag_message)return HandleProjectDragListMessage(h,l);
     if(g_taskbar_button_created_message&&m==g_taskbar_button_created_message){g_taskbar_working_indicator.OnTaskbarButtonCreated();return 0;}
+    if (aicli::app::native_remote::HandleMessage(
+            m, l, g_remote_ui, g_store, g_conversation_bridge)) return 0;
     switch(m){
     case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY);g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);RecreateMainFontsForDpi();
         g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,170,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,344,8,30,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,381,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"\xE710",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)(b==g_new_project?g_font:g_font_header),TRUE);EnableButtonHover(b);}
@@ -1578,129 +1577,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         }
         return 0;
     case WM_RESTORE_LAST_SESSION:if(!g_startup_project_id.empty()&&SelectProjectById(g_startup_project_id)){g_startup_project_id.clear();StartSession();}return 0;
-    case WM_REMOTE_INPUT:{
-        std::unique_ptr<std::shared_ptr<RemoteInputMessage>> envelope(
-            reinterpret_cast<std::shared_ptr<RemoteInputMessage>*>(l));
-        if(!envelope||!*envelope)return 0;
-        const auto request=*envelope;
-        auto complete=[&](bool accepted,const std::wstring& error={}){
-            request->accepted=accepted;
-            request->error=error;
-            SetEvent(request->completed);
-        };
-        if(request->cancelled){complete(false,L"输入请求已超时");return 0;}
-        if(!SelectProjectById(request->project_id)){
-            complete(false,L"项目或会话不存在");
-            return 0;
-        }
-        if(!g_island.HasSession(request->project_id))StartSession();
-        if(request->cancelled){complete(false,L"输入请求已超时");return 0;}
-        if(!g_island.HasSession(request->project_id)){
-            complete(false,L"终端会话未就绪");
-            return 0;
-        }
-        std::wstring text=request->input;
-        bool submit=false;
-        while(!text.empty()&&(text.back()==L'\r'||text.back()==L'\n')){
-            submit=true;
-            text.pop_back();
-        }
-        const bool accepted=submit
-            ? g_island.SubmitInput(request->project_id,text)
-            : g_island.WriteInput(request->project_id,text);
-        if(accepted){
-            RecordAndBroadcastEvent(request->project_id,L"terminal.input",
-                nlohmann::json{{"input",Utf8Text(text)},{"phoneId",Utf8Text(request->phone_id)}});
-            complete(true);
-        }else complete(false,L"终端输入失败");
-        return 0;
-    }
-    case WM_REMOTE_KEY:{
-        std::unique_ptr<std::shared_ptr<RemoteKeyMessage>> envelope(
-            reinterpret_cast<std::shared_ptr<RemoteKeyMessage>*>(l));
-        if(!envelope||!*envelope)return 0;
-        const auto request=*envelope;
-        auto complete=[&](bool accepted,const std::wstring& error={}){
-            request->accepted=accepted;
-            request->error=error;
-            SetEvent(request->completed);
-        };
-        if(request->cancelled){complete(false,L"按键请求已超时");return 0;}
-        if(!SelectProjectById(request->project_id)){
-            complete(false,L"项目或会话不存在");
-            return 0;
-        }
-        if(!g_island.HasSession(request->project_id))StartSession();
-        if(request->cancelled){complete(false,L"按键请求已超时");return 0;}
-        if(!g_island.HasSession(request->project_id)){
-            complete(false,L"终端会话未就绪");
-            return 0;
-        }
-        UINT virtualKey=0;
-        if(request->key==L"left")virtualKey=VK_LEFT;
-        else if(request->key==L"right")virtualKey=VK_RIGHT;
-        else if(request->key==L"up")virtualKey=VK_UP;
-        else if(request->key==L"down")virtualKey=VK_DOWN;
-        else if(request->key==L"enter")virtualKey=VK_RETURN;
-        if(!virtualKey){complete(false,L"不支持的终端按键");return 0;}
-        if(g_island.SendKey(request->project_id,virtualKey))complete(true);
-        else complete(false,L"终端按键发送失败");
-        return 0;
-    }
-    case WM_REMOTE_CONTROL:{
-        std::unique_ptr<RemoteControlMessage> message(reinterpret_cast<RemoteControlMessage*>(l));
-        if(!message||!SelectProjectById(message->project_id))return 0;
-        const int selected=SelectedProjectIndex();
-        if(message->action==L"restart")StartSession(true);
-        else if(message->action==L"continue"||message->action==L"start")StartSession();
-        else if(message->action==L"pause"||message->action==L"cancel"){
-            const bool pause=message->action==L"pause";
-            SetProjectWorkingState(message->project_id,false);
-            g_island.Stop(message->project_id);
-            if(selected>=0&&selected<(int)g_projects.size()){
-                g_projects[selected].status=pause?L"paused":L"cancelled";
-                g_store.UpdateProjectStatus(g_projects[selected].id,g_projects[selected].status);
-                RecordAndBroadcastEvent(g_projects[selected].id,pause?L"conversation.paused":L"conversation.cancelled",nlohmann::json{{"status",pause?"paused":"cancelled"}});
-            }
-            RefreshProjectList();RefreshProjectDetails();Layout();
-        }else if(message->action==L"ctrl_c")g_island.WriteInput(message->project_id,std::wstring(1,L'\x03'));
-        return 0;
-    }
-    case WM_REMOTE_CREATE_PROJECT:{
-        std::unique_ptr<std::shared_ptr<RemoteCreateProjectMessage>> envelope(
-            reinterpret_cast<std::shared_ptr<RemoteCreateProjectMessage>*>(l));
-        if(!envelope||!*envelope)return 0;
-        const auto request=*envelope;
-        if(request->cancelled){
-            request->result.http_status=504;
-            request->result.error=L"创建项目请求已超时";
-            SetEvent(request->completed);
-            return 0;
-        }
-        request->result=aicli::mobile_projects::CreateProject(
-            g_store,request->request);
-        if(request->result.success){
-            const std::wstring project_id=request->result.project.id;
-            g_project_types=g_store.LoadProjectTypes();
-            g_groups=g_store.LoadGroups();
-            g_projects=g_store.LoadProjects();
-            g_group_name=request->result.project.group.empty()
-                ?DefaultGroupName():request->result.project.group;
-            g_last_project_id=project_id;
-            g_store.SetSetting(L"last_group",g_group_name);
-            g_store.SetSetting(L"last_project_id",project_id);
-            SetText(g_group,g_group_name);
-            SendMessageW(g_list,LB_SETCURSEL,static_cast<WPARAM>(-1),0);
-            RefreshProjectList();
-            Layout();
-            SetStatusText(L"手机已创建项目“"+request->result.project.name+
-                          L"”    |    选择右侧立即开始");
-        }
-        SetEvent(request->completed);
-        return 0;
-    }
-    case WM_PAIRING_PENDING:{std::unique_ptr<aicli::agent::PendingPairing> pairing(reinterpret_cast<aicli::agent::PendingPairing*>(l));if(!pairing)return 0;g_pending_pairing=*pairing;if(g_binding_dialog){LayoutBindingDialog(g_binding_dialog);InvalidateRect(g_binding_dialog,nullptr,FALSE);}else if(pairing->submitted&&!pairing->authorized&&!pairing->rejected){const std::wstring text=L"手机名称："+pairing->device.name+L"\n型号："+pairing->device.model+L"\n设备 ID："+pairing->device.phone_id+L"\n\n确认后该手机可远程操作管理员终端。";const bool approve=MessageBoxW(h,text.c_str(),L"确认绑定手机",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES;std::wstring error;if(!g_remote_agent.ConfirmPairing(pairing->info.pairing_id,approve,&error)&&!error.empty())MessageBoxW(h,error.c_str(),L"手机绑定",MB_OK|MB_ICONERROR);}UpdateDeviceHeader();return 0;}
-    case WM_AGENT_STATUS:{std::unique_ptr<AgentStatusMessage> message(reinterpret_cast<AgentStatusMessage*>(l));if(message&&!message->online)SetStatusText(aicli::agent::IsMobileAccessEnabled(g_store)?message->text:L"手机访问服务已关闭");UpdateHeaderTelemetry();return 0;}
+
     case WM_AGENT_WORKING_STATE:{std::unique_ptr<AgentWorkingStateMessage> message(reinterpret_cast<AgentWorkingStateMessage*>(l));if(message){LogWorkingDetector(message->project_id,L"ui-working-message",message->working?L"working=true":L"working=false");SetProjectWorkingState(message->project_id,message->working);}return 0;}
     case WM_GIT_STATUS_READY:{
         std::unique_ptr<GitStatusMessage> message(

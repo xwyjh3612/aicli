@@ -186,9 +186,7 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
     return DefSubclassProc(h,m,w,l);
 }
 void DrawModernButton(const DRAWITEMSTRUCT* item){
-    RECT r=item->rcItem;const bool down=(item->itemState&ODS_SELECTED)!=0;const bool disabled=(item->itemState&ODS_DISABLED)!=0;const bool hover=item->hwndItem==g_hover_button;const bool focused=GetFocus()==item->hwndItem;HWND parentWindow=GetParent(item->hwndItem);
-    const bool projectDropDown=parentWindow==g_project_dialog&&(item->CtlID==ID_D_TYPE||item->CtlID==ID_D_GROUP);
-    const bool projectButton=parentWindow==g_project_dialog;
+    RECT r=item->rcItem;const bool down=(item->itemState&ODS_SELECTED)!=0;const bool disabled=(item->itemState&ODS_DISABLED)!=0;const bool hover=item->hwndItem==g_hover_button;HWND parentWindow=GetParent(item->hwndItem);
     COLORREF under=panel;
     bool onMainTitleBar=false;
     if(parentWindow==g_hwnd){POINT pos{};ClientToScreen(item->hwndItem,&pos);ScreenToClient(parentWindow,&pos);onMainTitleBar=pos.y<g_layout_metrics.title_bar_height;under=onMainTitleBar?TitleBarBackground():(pos.x<g_layout_metrics.sidebar_width?SidebarBackground():bg);}
@@ -221,69 +219,33 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         }else{MoveToEx(item->hDC,cx-6,cy-6,nullptr);LineTo(item->hDC,cx+6,cy+6);MoveToEx(item->hDC,cx+6,cy-6,nullptr);LineTo(item->hDC,cx-6,cy+6);}
         SelectObject(item->hDC,old_pen);DeleteObject(glyph_pen);return;
     }
-    if(projectDropDown){
-        const bool open=g_project_dropdown_open_control==item->hwndItem;
-        const COLORREF fill=down?g_theme.pressed:
-            ((focused||open)?g_theme.field_focus:(hover?g_theme.hover:g_theme.field));
-        const COLORREF stroke=(focused||open)?accent:border;
-        // The common button pass has already cleared the control to the
-        // dialog surface colour. Painting a rectangular field fill here
-        // leaves visible square corners behind the anti-aliased rounded path.
-        DrawSmoothRoundedRect(item->hDC,r,ScaleUiF(6.0f),fill,stroke,1.0f);
 
-        const wchar_t* fieldIcon=item->CtlID==ID_D_TYPE?L"\xE756":L"\xE8B7";
-        RECT iconRect{r.left+ScaleUi(9),r.top,r.left+ScaleUi(28),r.bottom};
-        SetTextColor(item->hDC,(focused||open)?accent:muted);
-        SelectObject(item->hDC,g_font_header_icon);
-        DrawTextW(item->hDC,fieldIcon,-1,&iconRect,
-                  DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-
-        SetTextColor(item->hDC,fg);
-        SelectObject(item->hDC,g_font);
-        RECT textRect{iconRect.right+ScaleUi(6),r.top,
-                      r.right-ScaleUi(34),r.bottom};
-        DrawTextW(item->hDC,text,-1,&textRect,
-                  DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
-
-        SetTextColor(item->hDC,(focused||open)?accent:muted);
-        SelectObject(item->hDC,g_font_header_icon);
-        RECT arrow{r.right-ScaleUi(28),r.top,r.right-ScaleUi(8),r.bottom};
-        DrawTextW(item->hDC,open?L"\xE70E":L"\xE70D",-1,&arrow,
-                  DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-        return;
-    }
     COLORREF fill=under,stroke=RGB(52,59,70);
-    if(projectButton){
-        const bool primary=item->CtlID==ID_D_OK;
-        if(primary){fill=disabled?g_theme.surface:(down?g_theme.accent_strong:(hover?g_theme.accent:g_theme.accent_strong));stroke=fill;}
-        else{fill=disabled?g_theme.surface:(down?g_theme.pressed:(hover?g_theme.hover:g_theme.field));stroke=fill;}
-    }else{
-        if(item->CtlID==ID_D_CANCEL||item->CtlID==ID_EDIT_PROJECT||item->CtlID==ID_OPEN_PROJECT_FOLDER)fill=elevated;
-        if(item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)fill=accent2;
-        if(disabled)fill=g_light_theme?RGB(235,238,243):RGB(33,37,45);
-        else if(down){
-            // Header actions already provide a hover cue.  A bright blue
-            // pressed frame is perceived as a flash when a modal opens on
-            // the next compositor frame, especially on the fast second open.
-            // Keep the pressed surface identical to hover for these actions.
-            fill=onMainTitleBar
-                ?(g_light_theme?RGB(229,235,243):RGB(34,40,51))
-                :(g_light_theme?RGB(205,220,241):RGB(37,91,174));
-        }else if(hover)fill=g_light_theme?RGB(229,235,243):RGB(34,40,51);
-        if(item->CtlID==ID_CLOSE)fill=down?RGB(157,44,55):(hover?RGB(120,38,47):panel);if(item->CtlID==ID_MINIMIZE)fill=hover?RGB(37,42,51):panel;
-        stroke=disabled?(g_light_theme?RGB(218,223,231):RGB(43,48,57)):(hover?(g_light_theme?RGB(164,181,205):RGB(78,104,142)):border);if(item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT)stroke=hover?RGB(117,177,255):RGB(64,128,225);
-        if(item->CtlID==ID_NEW_PROJECT){
-            fill=disabled?SidebarBackground():(down?g_theme.pressed:(hover?g_theme.hover:SidebarBackground()));
-            stroke=disabled?g_theme.border:(hover?(g_light_theme?RGB(139,151,168):RGB(91,106,128)):g_theme.border);
-        }
-        if(header_action_button&&!g_light_theme){
-            fill=disabled?RGB(12,15,30):(down?RGB(29,35,61):(hover?RGB(22,28,51):RGB(14,18,39)));
-            stroke=disabled?RGB(35,41,62):(hover?RGB(67,79,108):RGB(42,49,75));
-        }
-        if(item->CtlID==ID_GROUP_DEFAULT&&g_group_dropdown_open&&!disabled){
-            fill=g_light_theme?RGB(232,241,253):RGB(27,44,75);
-            stroke=g_light_theme?RGB(83,156,255):RGB(83,156,255);
-        }
+    if(item->CtlID==ID_EDIT_PROJECT||item->CtlID==ID_OPEN_PROJECT_FOLDER)fill=elevated;
+    if(item->CtlID==ID_START_PROJECT)fill=accent2;
+    if(disabled)fill=g_light_theme?RGB(235,238,243):RGB(33,37,45);
+    else if(down){
+        // Header actions already provide a hover cue.  A bright blue
+        // pressed frame is perceived as a flash when a modal opens on
+        // the next compositor frame, especially on the fast second open.
+        // Keep the pressed surface identical to hover for these actions.
+        fill=onMainTitleBar
+            ?(g_light_theme?RGB(229,235,243):RGB(34,40,51))
+            :(g_light_theme?RGB(205,220,241):RGB(37,91,174));
+    }else if(hover)fill=g_light_theme?RGB(229,235,243):RGB(34,40,51);
+    if(item->CtlID==ID_CLOSE)fill=down?RGB(157,44,55):(hover?RGB(120,38,47):panel);if(item->CtlID==ID_MINIMIZE)fill=hover?RGB(37,42,51):panel;
+    stroke=disabled?(g_light_theme?RGB(218,223,231):RGB(43,48,57)):(hover?(g_light_theme?RGB(164,181,205):RGB(78,104,142)):border);if(item->CtlID==ID_START_PROJECT)stroke=hover?RGB(117,177,255):RGB(64,128,225);
+    if(item->CtlID==ID_NEW_PROJECT){
+        fill=disabled?SidebarBackground():(down?g_theme.pressed:(hover?g_theme.hover:SidebarBackground()));
+        stroke=disabled?g_theme.border:(hover?(g_light_theme?RGB(139,151,168):RGB(91,106,128)):g_theme.border);
+    }
+    if(header_action_button&&!g_light_theme){
+        fill=disabled?RGB(12,15,30):(down?RGB(29,35,61):(hover?RGB(22,28,51):RGB(14,18,39)));
+        stroke=disabled?RGB(35,41,62):(hover?RGB(67,79,108):RGB(42,49,75));
+    }
+    if(item->CtlID==ID_GROUP_DEFAULT&&g_group_dropdown_open&&!disabled){
+        fill=g_light_theme?RGB(232,241,253):RGB(27,44,75);
+        stroke=g_light_theme?RGB(83,156,255):RGB(83,156,255);
     }
     if(item->CtlID==ID_NEW_PROJECT){
         RECT shell{r.left,r.top,r.right-1,r.bottom-1};
@@ -303,7 +265,7 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         return;
     }
     HBRUSH brush=CreateSolidBrush(fill);HPEN pen=CreatePen(PS_SOLID,1,stroke);auto oldBrush=SelectObject(item->hDC,brush);auto oldPen=SelectObject(item->hDC,pen);RoundRect(item->hDC,r.left+1,r.top+1,r.right-1,r.bottom-1,9,9);SelectObject(item->hDC,oldBrush);SelectObject(item->hDC,oldPen);DeleteObject(brush);DeleteObject(pen);
-    const bool primary_button=item->CtlID==ID_D_OK||item->CtlID==ID_START_PROJECT;COLORREF text_color=disabled?muted:((primary_button||(!g_light_theme&&hover))?RGB(255,255,255):fg);HFONT text_font=(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_EDIT_PROJECT||item->CtlID==ID_OPEN_PROJECT_FOLDER)?g_icon_font:(onMainTitleBar?g_font_header:g_font);UINT text_format=DT_CENTER|DT_VCENTER|DT_SINGLELINE;if(onMainTitleBar&&!g_window_chrome.active()&&!hover&&!down){text_color=TitleBarText();}SetTextColor(item->hDC,text_color);
+    const bool primary_button=item->CtlID==ID_START_PROJECT;COLORREF text_color=disabled?muted:((primary_button||(!g_light_theme&&hover))?RGB(255,255,255):fg);HFONT text_font=(item->CtlID==ID_NEW_PROJECT||item->CtlID==ID_EDIT_PROJECT||item->CtlID==ID_OPEN_PROJECT_FOLDER)?g_icon_font:(onMainTitleBar?g_font_header:g_font);UINT text_format=DT_CENTER|DT_VCENTER|DT_SINGLELINE;if(onMainTitleBar&&!g_window_chrome.active()&&!hover&&!down){text_color=TitleBarText();}SetTextColor(item->hDC,text_color);
     if(header_action_button){
         const wchar_t* icon=L"\xE710";
         if(item->CtlID==ID_GROUP_DEFAULT){

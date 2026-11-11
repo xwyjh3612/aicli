@@ -1,6 +1,7 @@
 #pragma once
 
 #include "agent/remote_agent.h"
+#include "ui/group_name_dialog.h"
 #include "data/data_store.h"
 
 #include <functional>
@@ -34,12 +35,4 @@ ManagementDialogResult ShowManagementDialog(
     AgentRestartCallback restart_agent = {},
     ThemeChangedCallback theme_changed = {},
     AppearanceChangedCallback appearance_changed = {});
-
-bool ShowGroupNameDialog(HWND owner,
-                         const std::wstring& title,
-                         const std::wstring& subtitle,
-                         const std::wstring& initial_name,
-                         bool light_theme,
-                         std::wstring& name);
-
 } // namespace aicli::ui

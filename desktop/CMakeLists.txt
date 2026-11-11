@@ -118,8 +118,20 @@ if (AICLI_USE_QT_UI)
     set(AICLI_APPLICATION_LOGO
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/aicli-logo.png")
 else()
+    set(AICLI_NATIVE_DIALOG_SOURCES
+        src/ui/management_dialog.cpp
+        src/ui/group_name_dialog.cpp
+        src/ui/project_type_editor_dialog.cpp
+        src/ui/project_editor_dialog.cpp
+        src/ui/settings_content.cpp
+        src/ui/management_renderer.cpp
+        src/ui/management_actions.cpp
+        src/ui/management_controls.cpp
+    )
     list(APPEND AICLI_COMMON_SOURCES
         src/app/auto_update.cpp
+        src/app/native_remote_bridge.cpp
+        src/features/project_configuration.cpp
         src/data/data_migration.cpp
         src/app/update_manifest.cpp
         src/app/main.cpp
@@ -131,7 +143,7 @@ else()
         src/ui/rounded_context_menu.cpp
         src/ui/rounded_select_popup.cpp
         src/ui/styled_input.cpp
-        src/ui/management_dialog.cpp
+        ${AICLI_NATIVE_DIALOG_SOURCES}
         src/ui/window_chrome.cpp
     )
     set(AICLI_APPLICATION_LOGO
@@ -344,6 +356,37 @@ target_link_libraries(aicli PRIVATE
 
 if (NOT AICLI_USE_QT_UI)
     target_link_libraries(aicli PRIVATE winhttp bcrypt)
+    add_executable(aicli_native_module_tests
+        tests/native_module_tests.cpp
+        ${AICLI_NATIVE_DIALOG_SOURCES}
+        src/ui/drawing_utils.cpp
+        src/ui/styled_input.cpp
+        src/ui/theme.cpp
+        src/ui/overlay_scrollbar.cpp
+        src/ui/rounded_select_popup.cpp
+        src/app/native_remote_bridge.cpp
+        src/app/auto_update.cpp
+        src/app/update_manifest.cpp
+        src/app/powershell_runtime.cpp
+        src/agent/remote_agent.cpp
+        src/agent/conversation_bridge.cpp
+        src/agent/terminal_stream_publisher.cpp
+        src/agent/terminal_wire_codec.cpp
+        src/core/text_utils.cpp
+        src/data/data_store.cpp
+        src/features/mobile_project_creation.cpp
+        src/features/project_configuration.cpp
+        "${AICLI_CIVETWEB_ROOT}/src/civetweb.c"
+    )
+    get_target_property(AICLI_APP_INCLUDES aicli INCLUDE_DIRECTORIES)
+    get_target_property(AICLI_APP_LIBRARIES aicli LINK_LIBRARIES)
+    target_include_directories(aicli_native_module_tests PRIVATE ${AICLI_APP_INCLUDES})
+    target_link_libraries(aicli_native_module_tests PRIVATE ${AICLI_APP_LIBRARIES})
+    target_compile_definitions(aicli_native_module_tests PRIVATE
+        UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN USE_WEBSOCKET NO_SSL_DL OPENSSL_API_3_0)
+    if (MSVC)
+        target_compile_options(aicli_native_module_tests PRIVATE /W4 /EHsc /utf-8 /FS)
+    endif()
 endif()
 
 if (AICLI_USE_QT_UI)

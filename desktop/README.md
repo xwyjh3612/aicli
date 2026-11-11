@@ -3,6 +3,10 @@
 The desktop application is the primary AI CLI workspace described in
 [`../ai-cli-mobile-architecture.md`](../ai-cli-mobile-architecture.md).
 
+For the native C++ / Win32 implementation, see the
+[module map and extension guide](src/NATIVE_MODULES.md), including native build
+and module integration-test commands.
+
 It is a native C++/Qt Widgets Windows application with:
 
 - a Qt 6.8 desktop shell for the title bar, project list, settings, dialogs, and themes;
