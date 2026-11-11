@@ -232,4 +232,5 @@ PowerShell 7 检测支持常规安装和 Microsoft Store 版。如未自动识�
 
 ## License
 
-仓库当前未提供独立 LICENSE 文件。如需分发或二次开发，请先确认项目所有者授权及第三方依赖许可证。
+本项目采用 [MIT 许可证](LICENSE)，Copyright © 2026 xwyjh3612。
+第三方依赖遵循各自的许可证。
