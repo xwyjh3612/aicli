@@ -23,7 +23,7 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 
 ## 界面预览
 
-以下为原生 Win32 版本的界面示例，项目数据为演示内容。
+以下为原生 Win32 桌面端与 Android 手机端的界面示例，使用演示项目与模拟会话内容。电脑端 Codex 图为界面渲染示例，手机端截图来自独立演示包；对话中的修改和测试结果仅用于展示界面。
 
 **项目工作区**：管理项目、分组、工作目录、启动命令和备注。
 
@@ -32,6 +32,23 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 **外观设置**：切换主题、配置任务栏动画和任务运行时保持唤醒。
 
 ![AiCli 原生 Win32 外观设置](docs/screenshots/win32-settings.png)
+
+**电脑端 Codex 会话**：在项目工作区查看终端输出与会话进度。
+
+![AiCli 原生 Win32 Codex 会话示例](docs/screenshots/win32-codex.png)
+
+**手机端**：查看 Codex 实时终端并发送消息，也可通过项目抽屉切换电脑、分组和项目。
+
+<table>
+  <tr>
+    <th>Codex 会话</th>
+    <th>项目与会话列表</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/android-codex.png" alt="AiCli Android Codex 会话示例" width="360"></td>
+    <td><img src="docs/screenshots/android-projects.png" alt="AiCli Android 项目与会话列表示例" width="360"></td>
+  </tr>
+</table>
 
 ## 自动更新
 
