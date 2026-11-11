@@ -8,6 +8,7 @@
 #include "ui/theme.h"
 #include "ui/layout_metrics.h"
 #include "ui/modal_host.h"
+#include "ui/redraw_scope.h"
 #include "ui/overlay_scrollbar.h"
 #include "core/text_utils.h"
 #include "features/mobile_project_creation.h"
@@ -523,6 +524,8 @@ LRESULT CALLBACK GroupNameButtonProc(HWND control, UINT message, WPARAM wparam,
                                      LPARAM lparam, UINT_PTR, DWORD_PTR reference) {
     auto* state = reinterpret_cast<GroupNameState*>(reference);
     switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
     case WM_MOUSEMOVE:
         if (state && state->hovered != control) {
             HWND previous = state->hovered;
@@ -561,7 +564,7 @@ LRESULT CALLBACK GroupNameInputProc(HWND control, UINT message, WPARAM wparam,
             return 0;
         }
         if (wparam == VK_ESCAPE) {
-            DestroyWindow(state->window);
+            CloseModalSurface(state->window);
             return 0;
         }
     }
@@ -728,7 +731,10 @@ LRESULT CALLBACK GroupNameWindowProc(HWND h, UINT message, WPARAM wparam, LPARAM
     case WM_PAINT: {
         PAINTSTRUCT paint{};
         HDC dc = BeginPaint(h, &paint);
-        PaintGroupNameDialog(*state, dc);
+        {
+            BufferedWindowPaint buffered(dc, state->panel, paint.rcPaint);
+            PaintGroupNameDialog(*state, buffered.dc());
+        }
         EndPaint(h, &paint);
         return 0;
     }
@@ -747,7 +753,7 @@ LRESULT CALLBACK GroupNameWindowProc(HWND h, UINT message, WPARAM wparam, LPARAM
     case WM_COMMAND:
         if (HIWORD(wparam) == BN_CLICKED &&
             (LOWORD(wparam) == kGroupNameCancel || LOWORD(wparam) == kGroupNameClose)) {
-            DestroyWindow(h);
+            CloseModalSurface(h);
             return 0;
         }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kGroupNameSave) {
@@ -758,18 +764,18 @@ LRESULT CALLBACK GroupNameWindowProc(HWND h, UINT message, WPARAM wparam, LPARAM
                 return 0;
             }
             state->accepted = true;
-            DestroyWindow(h);
+            CloseModalSurface(h);
             return 0;
         }
         break;
     case WM_KEYDOWN:
         if (wparam == VK_ESCAPE) {
-            DestroyWindow(h);
+            CloseModalSurface(h);
             return 0;
         }
         break;
     case WM_CLOSE:
-        DestroyWindow(h);
+        CloseModalSurface(h);
         return 0;
     }
     return DefWindowProcW(h, message, wparam, lparam);
@@ -816,6 +822,8 @@ LRESULT CALLBACK ProjectTypeEditorButtonProc(HWND control, UINT message, WPARAM 
                                               DWORD_PTR reference) {
     auto* state = reinterpret_cast<ProjectTypeEditorState*>(reference);
     switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
     case WM_MOUSEMOVE:
         if (state && state->hovered != control) {
             HWND previous = state->hovered;
@@ -862,7 +870,7 @@ LRESULT CALLBACK ProjectTypeEditorInputProc(HWND control, UINT message, WPARAM w
                 return 0;
             }
             if (wparam == VK_ESCAPE) {
-                DestroyWindow(state->window);
+                CloseModalSurface(state->window);
                 return 0;
             }
         }
@@ -1143,7 +1151,10 @@ LRESULT CALLBACK ProjectTypeEditorWindowProc(HWND h, UINT message,
     case WM_PAINT: {
         PAINTSTRUCT paint{};
         HDC dc = BeginPaint(h, &paint);
-        PaintProjectTypeEditorDialog(*state, dc);
+        {
+            BufferedWindowPaint buffered(dc, state->panel, paint.rcPaint);
+            PaintProjectTypeEditorDialog(*state, buffered.dc());
+        }
         EndPaint(h, &paint);
         return 0;
     }
@@ -1179,7 +1190,7 @@ LRESULT CALLBACK ProjectTypeEditorWindowProc(HWND h, UINT message,
         }
         if (HIWORD(wparam) == BN_CLICKED &&
             (LOWORD(wparam) == kProjectTypeCancel || LOWORD(wparam) == kProjectTypeClose)) {
-            DestroyWindow(h);
+            CloseModalSurface(h);
             return 0;
         }
         if (HIWORD(wparam) == BN_CLICKED && LOWORD(wparam) == kProjectTypeSave) {
@@ -1196,18 +1207,18 @@ LRESULT CALLBACK ProjectTypeEditorWindowProc(HWND h, UINT message,
                 return 0;
             }
             state->accepted = true;
-            DestroyWindow(h);
+            CloseModalSurface(h);
             return 0;
         }
         break;
     case WM_KEYDOWN:
         if (wparam == VK_ESCAPE) {
-            DestroyWindow(h);
+            CloseModalSurface(h);
             return 0;
         }
         break;
     case WM_CLOSE:
-        DestroyWindow(h);
+        CloseModalSurface(h);
         return 0;
     case WM_DESTROY:
         KillTimer(h, kProjectTypeEditorToggleTimerId);
@@ -1849,6 +1860,8 @@ void Paint(State& state, HDC dc) {
     (void)client;
     const auto S=[&](int value){return DpiScale(state.window,value);};
     HBRUSH panel_brush = CreateSolidBrush(state.panel_color);
+    // Initialize the entire rounded surface before composing its text/edges.
+    FillRect(dc, &state.panel, panel_brush);
     const unsigned edge_alpha = state.light_theme ? 118u : 150u;
     const auto blend_channel = [edge_alpha](BYTE base, BYTE edge) -> BYTE {
         return static_cast<BYTE>(
@@ -2018,6 +2031,7 @@ void SetSettingsScroll(State& state, int position) {
 void LayoutSettingsContent(State& state) {
     if (!state.content || state.mode != ManagementMode::Settings) return;
     if (state.content_layout_active) return;
+    ChildRedrawScope redraw(state.content);
     state.content_layout_active = true;
     RECT client{};
     GetClientRect(state.content, &client);
@@ -2058,7 +2072,7 @@ void LayoutSettingsContent(State& state) {
                          SWP_NOREDRAW | SWP_NOSENDCHANGING);
         ApplyRoundedRegion(control, available, S(h), S(9));
         RedrawWindow(control, nullptr, nullptr,
-                     RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+                     RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
     };
 
     if (state.settings_page == SettingsPage::Appearance) {
@@ -2476,6 +2490,7 @@ void RefreshUpdateStatus(State& state, bool force = false) {
 
 void UpdateSettingsPage(State& state, SettingsPage page) {
     if (state.mode != ManagementMode::Settings) return;
+    ChildRedrawScope redraw(state.content);
     const SettingsPage previous_page = state.settings_page;
     state.settings_page = page;
     state.content_scroll = 0;
@@ -2554,16 +2569,6 @@ void UpdateSettingsPage(State& state, SettingsPage page) {
         ReadSelection(state);
     }
     LayoutSettingsContent(state);
-    if (connection) {
-        for (HWND field : {state.computer_name, state.listen, state.port,
-                           state.local, state.remote,
-                           state.mobile_workspace_root}) {
-            if (field && IsWindowVisible(field)) {
-                RedrawWindow(field, nullptr, nullptr,
-                             RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
-            }
-        }
-    }
     if (HWND previous = SettingsNavigationControl(state, previous_page))
         InvalidateRect(previous, nullptr, FALSE);
     if (HWND current = SettingsNavigationControl(state, page);
@@ -2642,6 +2647,7 @@ LRESULT CALLBACK SettingsContentProc(HWND h, UINT message, WPARAM wparam, LPARAM
 
 void RefreshList(State& state) {
     if (!state.list) return;
+    ChildRedrawScope redraw(state.list);
     SendMessageW(state.list, LB_RESETCONTENT, 0, 0);
     if (IsSettingsGroups(state)) {
         state.groups = state.store->LoadGroups();
@@ -3054,7 +3060,10 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
     case WM_PAINT: {
         PAINTSTRUCT ps{};
         HDC dc = BeginPaint(h, &ps);
-        Paint(*state, dc);
+        {
+            BufferedWindowPaint buffered(dc, state->panel, ps.rcPaint);
+            Paint(*state, buffered.dc());
+        }
         EndPaint(h, &ps);
         return 0;
     }
@@ -3110,7 +3119,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                 if (SelectedIndex(state->list, index) && index < state->groups.size()) {
                     state->result.accepted = true;
                     state->result.selected_group = state->groups[index].name;
-                    DestroyWindow(h);
+                    CloseModalSurface(h);
                 }
             }
             if (notification == LBN_DBLCLK && IsSettingsProjectTypes(*state) &&
@@ -3123,7 +3132,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         if (notification != BN_CLICKED) return 0;
         std::wstring error;
         if (id == kClose) {
-            DestroyWindow(h);
+            CloseModalSurface(h);
             return 0;
         }
         if (state->mode == ManagementMode::Settings) {
@@ -3163,7 +3172,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
             if(state->settings_page==SettingsPage::Devices&&
                (id==kSelect||id==kBindEmpty)){
                 state->result.open_binding=true;
-                DestroyWindow(h);
+                CloseModalSurface(h);
                 return 0;
             }
             if(state->settings_page==SettingsPage::Devices&&id==kUnbind){
@@ -3348,7 +3357,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
                     return 0;
                 }
                 state->result.accepted = true;
-                DestroyWindow(h);
+                CloseModalSurface(h);
                 return 0;
             }
             if (state->settings_page == SettingsPage::ProjectTypes) {
@@ -3474,7 +3483,7 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
             } else if (id == kSelect) {
                 size_t index{};
                 if (!SelectedIndex(state->list, index) || index >= state->groups.size()) ShowError(h, L"请选择分组");
-                else { state->result.accepted = true; state->result.selected_group = state->groups[index].name; DestroyWindow(h); }
+                else { state->result.accepted = true; state->result.selected_group = state->groups[index].name; CloseModalSurface(h); }
             }
             return 0;
         }
@@ -3542,10 +3551,10 @@ LRESULT CALLBACK WindowProc(HWND h, UINT message, WPARAM wparam, LPARAM lparam) 
         return 0;
     }
     case WM_KEYDOWN:
-        if (wparam == VK_ESCAPE) { DestroyWindow(h); return 0; }
+        if (wparam == VK_ESCAPE) { CloseModalSurface(h); return 0; }
         break;
     case WM_CLOSE:
-        DestroyWindow(h);
+        CloseModalSurface(h);
         return 0;
     case WM_DESTROY:
         KillTimer(h,kDevicePresenceTimerId);

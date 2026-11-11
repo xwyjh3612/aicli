@@ -14,6 +14,10 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Microsoft.Terminal.TerminalConnection.h>
 
+#ifndef AICLI_QT_UI_BUILD
+#include "terminal/session_process_job.h"
+#endif
+
 namespace aicli::terminal {
 
 struct ConPtyConnectionBridge :
@@ -77,6 +81,9 @@ private:
     // its input and output handle.
     HANDLE pipe_{};
     HANDLE process_{};
+#ifndef AICLI_QT_UI_BUILD
+    SessionProcessJob process_job_;
+#endif
     std::thread reader_;
     std::mutex lifecycle_mutex_;
     std::mutex input_mutex_;

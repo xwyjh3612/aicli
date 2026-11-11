@@ -205,7 +205,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
     case WM_SIZE: LayoutProjectDialog(h);return 0;
     case WM_DPICHANGED:ApplyMainFontsToControls();LayoutProjectDialog(h);InvalidateRect(h,nullptr,FALSE);return 0;
     case WM_ERASEBKGND:return 1;
-    case WM_PAINT:{PAINTSTRUCT ps;HDC dc=BeginPaint(h,&ps);RECT client{};GetClientRect(h,&client);PaintProjectDialogSurface(dc,client);EndPaint(h,&ps);return 0;}
+    case WM_PAINT:{PAINTSTRUCT ps;HDC dc=BeginPaint(h,&ps);RECT client{};GetClientRect(h,&client);{aicli::ui::BufferedWindowPaint buffered(dc,g_project_panel,ps.rcPaint);PaintProjectDialogSurface(buffered.dc(),client);}EndPaint(h,&ps);return 0;}
     case WM_NCHITTEST:return HTCLIENT;
     case WM_CTLCOLORSTATIC:{
         HDC dc=(HDC)w;HWND control=(HWND)l;
@@ -227,7 +227,7 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(LOWORD(w)==ID_D_TYPE&&HIWORD(w)==BN_CLICKED){ShowProjectDropdown(h,g_d_type,true);return 0;}
         if(LOWORD(w)==ID_D_GROUP&&HIWORD(w)==BN_CLICKED){ShowProjectDropdown(h,g_d_group,false);return 0;}
         if(LOWORD(w)==ID_D_BROWSE){std::wstring selected;if(PickFolder(h,selected)){aicli::ui::SetStyledInputText(g_d_folder,selected);if(aicli::ui::GetStyledInputText(g_d_name).empty()){std::filesystem::path folder(selected);while(folder.filename().empty()&&folder.has_parent_path())folder=folder.parent_path();const std::wstring folderName=folder.filename().wstring();if(!folderName.empty())aicli::ui::SetStyledInputText(g_d_name,folderName);}InvalidateProjectControlFrame(h,g_d_folder);InvalidateProjectControlFrame(h,g_d_name);}return 0;}
-        if(LOWORD(w)==ID_D_CANCEL||LOWORD(w)==ID_D_CLOSE){DestroyWindow(h);return 0;}
+        if(LOWORD(w)==ID_D_CANCEL||LOWORD(w)==ID_D_CLOSE){aicli::ui::CloseModalSurface(h);return 0;}
         if(LOWORD(w)==ID_D_OK){
             g_project_draft.name=aicli::ui::GetStyledInputText(g_d_name);
             g_project_draft.note=aicli::ui::GetStyledInputText(g_d_note);
@@ -244,11 +244,11 @@ LRESULT CALLBACK ProjectDialogProc(HWND h,UINT m,WPARAM w,LPARAM l){
             const bool knownType=std::any_of(g_project_types.begin(),g_project_types.end(),[&](const ProjectType& value){return _wcsicmp(value.name.c_str(),g_project_draft.type.c_str())==0;});
             const bool knownGroup=std::any_of(g_groups.begin(),g_groups.end(),[&](const ProjectGroup& value){return _wcsicmp(value.name.c_str(),g_project_draft.group.c_str())==0;});
             if(g_project_draft.type.empty()||!knownType||g_project_draft.group.empty()||!knownGroup){MessageBoxW(h,L"请选择有效的项目类型和分组。",L"项目详情",MB_OK|MB_ICONWARNING);return 0;}
-            g_project_dialog_ok=true;DestroyWindow(h);return 0;
+            g_project_dialog_ok=true;aicli::ui::CloseModalSurface(h);return 0;
         } break;
-    case WM_KEYDOWN:if(w==VK_ESCAPE){DestroyWindow(h);return 0;}break;
+    case WM_KEYDOWN:if(w==VK_ESCAPE){aicli::ui::CloseModalSurface(h);return 0;}break;
     case WM_DESTROY:g_project_dropdown_open_control=nullptr;g_project_dialog=nullptr;g_d_name=g_d_note=g_d_type=g_d_group=g_d_folder=g_d_folder_browse=g_d_command=g_d_close=nullptr;return 0;
-    case WM_CLOSE:DestroyWindow(h);return 0; }
+    case WM_CLOSE:aicli::ui::CloseModalSurface(h);return 0; }
     return DefWindowProcW(h,m,w,l);
 }
 bool ShowProjectDialog(HWND owner,const Project* initial=nullptr){

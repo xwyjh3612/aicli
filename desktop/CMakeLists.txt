@@ -171,6 +171,40 @@ target_include_directories(aicli_update_manifest_tests PRIVATE
 add_executable(aicli_keep_awake_tests tests/keep_awake_tests.cpp)
 target_include_directories(aicli_keep_awake_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if (NOT AICLI_USE_QT_UI)
+    add_executable(aicli_session_process_tests tests/session_process_tests.cpp
+        src/terminal/conpty_connection_bridge.cpp src/app/powershell_runtime.cpp)
+    target_include_directories(aicli_session_process_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src" "${AICLI_CONPTY_ROOT}/inc"
+        "${AICLI_CPPWINRT_ROOT}/sdkplus" "${AICLI_CPPWINRT_ROOT}/sdk"
+        "${AICLI_CPPWINRT_ROOT}" "${AICLI_TERMINAL_WINRT_ROOT}")
+    target_compile_definitions(aicli_session_process_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(aicli_session_process_tests PRIVATE ole32 runtimeobject userenv advapi32
+        "${AICLI_CONPTY_ROOT}/runtimes/win-x64/lib/uap10.0/conpty.lib")
+    add_custom_command(TARGET aicli_session_process_tests POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${AICLI_CONPTY_ROOT}/runtimes/win-x64/native/conpty.dll" "$<TARGET_FILE_DIR:aicli_session_process_tests>"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:aicli_session_process_tests>/x64"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${AICLI_CONPTY_ROOT}/build/native/runtimes/x64/OpenConsole.exe" "$<TARGET_FILE_DIR:aicli_session_process_tests>/x64")
+    if (MSVC)
+        target_compile_options(aicli_session_process_tests PRIVATE /W4 /EHsc /utf-8)
+    endif()
+    add_executable(aicli_styled_input_paint_tests tests/styled_input_paint_tests.cpp
+        src/ui/styled_input.cpp src/ui/drawing_utils.cpp src/ui/theme.cpp)
+    target_include_directories(aicli_styled_input_paint_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_definitions(aicli_styled_input_paint_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(aicli_styled_input_paint_tests PRIVATE comctl32 gdiplus)
+    if (MSVC)
+        target_compile_options(aicli_styled_input_paint_tests PRIVATE /W4 /EHsc /utf-8)
+    endif()
+    add_executable(aicli_ui_redraw_tests tests/ui_redraw_tests.cpp
+        src/ui/styled_input.cpp src/ui/drawing_utils.cpp src/ui/theme.cpp)
+    target_include_directories(aicli_ui_redraw_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_definitions(aicli_ui_redraw_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(aicli_ui_redraw_tests PRIVATE comctl32 dwmapi gdiplus)
+    if (MSVC)
+        target_compile_options(aicli_ui_redraw_tests PRIVATE /W4 /EHsc /utf-8)
+    endif()
     add_executable(aicli-data-upgrade src/data/data_upgrade_main.cpp src/data/data_migration.cpp)
     add_executable(aicli_data_upgrade_tests tests/data_upgrade_tests.cpp src/data/data_migration.cpp)
     foreach(upgrade_target aicli-data-upgrade aicli_data_upgrade_tests)

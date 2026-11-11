@@ -28,6 +28,10 @@ BufferedWindowPaint::BufferedWindowPaint(HDC target, RECT client, RECT dirty)
         return;
     }
     previous_bitmap_ = SelectObject(memory_, bitmap_);
+    // Modal surfaces are workspace-sized HWNDs clipped to a small panel.
+    // Allow callers to buffer just that panel while retaining client-space
+    // drawing coordinates (avoids allocating a full-monitor bitmap per focus).
+    SetWindowOrgEx(memory_, client_.left, client_.top, nullptr);
 }
 
 BufferedWindowPaint::~BufferedWindowPaint() {

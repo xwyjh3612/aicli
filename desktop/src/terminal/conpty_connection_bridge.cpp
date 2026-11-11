@@ -407,15 +407,29 @@ bool ConPtyConnectionBridge::CreateProcessAttachedToConPty() {
     if (FAILED(create_result)) return false;
 
     SIZE_T attribute_size = 0;
-    InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_size);
+    DWORD attribute_count = 1;
+#ifndef AICLI_QT_UI_BUILD
+    attribute_count = 2;
+    // Desktop Bridge shells (including Store PowerShell) otherwise silently
+    // break their native children out of the owning job. Keep descendants in
+    // this session's runtime so kill-on-close covers Codex as well as the shell.
+    DWORD desktop_policy = PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_DISABLE_PROCESS_TREE;
+#endif
+    InitializeProcThreadAttributeList(nullptr, attribute_count, 0, &attribute_size);
     auto* attribute_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
         HeapAlloc(GetProcessHeap(), 0, attribute_size));
     if (!attribute_list ||
-        !InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_size) ||
+        !InitializeProcThreadAttributeList(attribute_list, attribute_count, 0, &attribute_size) ||
         !UpdateProcThreadAttribute(attribute_list, 0,
                                    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
                                    created_pseudo_console, sizeof(created_pseudo_console),
-                                   nullptr, nullptr)) {
+                                   nullptr, nullptr)
+#ifndef AICLI_QT_UI_BUILD
+        || !UpdateProcThreadAttribute(attribute_list, 0,
+                                       PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY,
+                                       &desktop_policy, sizeof(desktop_policy), nullptr, nullptr)
+#endif
+        ) {
         if (attribute_list) HeapFree(GetProcessHeap(), 0, attribute_list);
         ConptyClosePseudoConsole(created_pseudo_console);
         return false;
@@ -427,12 +441,24 @@ bool ConPtyConnectionBridge::CreateProcessAttachedToConPty() {
     startup.lpAttributeList = attribute_list;
     PROCESS_INFORMATION process{};
     auto environment = BuildTerminalEnvironment();
+#ifndef AICLI_QT_UI_BUILD
+    if (!process_job_.Initialize()) {
+        DeleteProcThreadAttributeList(attribute_list);
+        HeapFree(GetProcessHeap(), 0, attribute_list);
+        ConptyClosePseudoConsole(created_pseudo_console);
+        return false;
+    }
+#endif
     const auto create_shell = [&](const std::wstring& value) {
         std::vector<wchar_t> command_line(value.begin(), value.end());
         command_line.push_back(L'\0');
+        DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
+#ifndef AICLI_QT_UI_BUILD
+        creation_flags |= CREATE_SUSPENDED;
+#endif
         return CreateProcessW(
             nullptr, command_line.data(), nullptr, nullptr, FALSE,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            creation_flags,
             environment.data(),
             working_directory_.empty() ? nullptr : working_directory_.c_str(),
             &startup.StartupInfo, &process);
@@ -450,15 +476,41 @@ bool ConPtyConnectionBridge::CreateProcessAttachedToConPty() {
     DeleteProcThreadAttributeList(attribute_list);
     HeapFree(GetProcessHeap(), 0, attribute_list);
     if (!created) {
+#ifndef AICLI_QT_UI_BUILD
+        process_job_.Reset();
+#endif
         ConptyClosePseudoConsole(created_pseudo_console);
         return false;
     }
 
+#ifndef AICLI_QT_UI_BUILD
+    if (!process_job_.Assign(process.hProcess)) {
+        // Never run a shell that could leave unowned descendants behind.
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, 5000);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        process_job_.Reset();
+        ConptyClosePseudoConsole(created_pseudo_console);
+        return false;
+    }
+#endif
     pseudo_console_ = created_pseudo_console;
     pipe_ = transport.server.release();
     process_ = process.hProcess;
+#ifdef AICLI_QT_UI_BUILD
     CloseHandle(process.hThread);
-    if (FAILED(ConptyReleasePseudoConsole(pseudo_console_))) {
+#endif
+    bool started = SUCCEEDED(ConptyReleasePseudoConsole(pseudo_console_));
+#ifndef AICLI_QT_UI_BUILD
+    if (started) started = ResumeThread(process.hThread) != static_cast<DWORD>(-1);
+    CloseHandle(process.hThread);
+    if (!started) {
+        process_job_.TerminateAndWait();
+        process_job_.Reset();
+    }
+#endif
+    if (!started) {
         ConptyClosePseudoConsole(pseudo_console_);
         pseudo_console_ = nullptr;
         CloseHandle(pipe_);
@@ -667,6 +719,12 @@ void ConPtyConnectionBridge::Close() noexcept {
     if (closing_.exchange(true)) return;
     SetState(winrt::Microsoft::Terminal::TerminalConnection::ConnectionState::Closing);
 
+#ifndef AICLI_QT_UI_BUILD
+    // Stop descendants before closing ConPTY: a surviving CLI can retain both
+    // its session lock and console endpoints even after its shell exits.
+    process_job_.TerminateAndWait();
+    process_job_.Reset();
+#endif
     if (pseudo_console_) {
         ConptyClosePseudoConsole(pseudo_console_);
         pseudo_console_ = nullptr;

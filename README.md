@@ -17,7 +17,7 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 - 设置页显示应用版本和实际使用的 PowerShell 环境。
 - Win32 桌面端和 Android 自动检查 GitHub Release 更新，校验安装包后提示安装。
 
-桌面端当前版本为 1.0.0.5，Android 端当前版本为 1.2.0（versionCode 3）。
+桌面端当前版本为 1.0.0.7，Android 端当前版本为 1.2.0（versionCode 3）。
 
 最新安装包：[GitHub Releases](https://github.com/xwyjh3612/aicli/releases/latest)。
 
@@ -28,6 +28,7 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 - Android 在启动或返回前台时检查，成功检查后 6 小时内不重复请求。设置页提供“自动检查应用更新”开关和“检查更新”按钮。
 - 检测到新版后先确认下载；显示下载进度并支持取消。下载完成后验证大小和 SHA-256，再确认安装。网络失败不会影响原有功能。
 - Windows 安装器沿用已有的安装位置与数据，安装会关闭运行中的终端会话；安装前请保存工作。安装器可能显示 UAC 提示。
+- Win32 终端以独立的 Windows Job 管理 PowerShell 和其启动的 CLI。关闭终端、退出应用或更新强制关闭应用时，一并结束该终端的子进程并释放会话占用。安装器升级旧版本时先获取目标安装目录的进程树，保留安装程序及其他安装目录的进程。
 - Android 额外验证 APK 包名、版本号和签名与当前应用匹配，通过 FileProvider 交给系统安装器。首次更新需要允许 AiCli 安装应用，并确认系统安装提示。
 - 1.0.0.3 / Android 1.1.0 及更早版本没有更新模块，需要手动安装一次新版。Qt 版本未接入自动更新。
 
@@ -144,6 +145,9 @@ AICLI_RELEASE_KEY_PASSWORD
 - aicli_terminal_stream_tests：终端 VT 流编码、快照和事件发布。
 - aicli_terminal_working_detector_tests：Codex/Claude 状态检测、通用输出兜底和输入过滤。
 - aicli_powershell_runtime_tests：PowerShell 7、Store 版入口和 5.1 回退。
+- aicli_session_process_tests：真实 ConPTY/PowerShell 终端的关闭与强制退出、子进程文件锁释放、旧版安装清理及无关进程保留。
+- aicli_ui_redraw_tests：模态窗口开关、设置页面切换、隐藏控件及局部缓冲绘制。
+- aicli_styled_input_paint_tests：原生编辑框输入、选择、删除和主题切换的实际字形及前景色。
 - aicli_qt_project_list_tests：Qt UI 开启时的项目列表测试。
 
 构建非 Qt 测试：
@@ -158,6 +162,7 @@ AICLI_RELEASE_KEY_PASSWORD
 & .\desktop\bin\Debug\aicli_terminal_working_detector_tests.exe
 & .\desktop\bin\Debug\aicli_terminal_stream_tests.exe
 & .\desktop\bin\Debug\aicli_powershell_runtime_tests.exe
+& .\desktop\bin\Debug\aicli_session_process_tests.exe .\desktop\installer\close-running-terminals.ps1
 & .\desktop\bin\Debug\aicli_data_store_tests.exe "$env:TEMP\aicli-data-store-test.db"
 ~~~
 

@@ -62,6 +62,10 @@ public:
             owner_, nullptr, GetModuleHandleW(nullptr), nullptr);
         if (!scrim_) return;
 
+        const BOOL disable_transitions = TRUE;
+        DwmSetWindowAttribute(scrim_, DWMWA_TRANSITIONS_FORCEDISABLED,
+                              &disable_transitions, sizeof(disable_transitions));
+
         SetWindowLongPtrW(scrim_, GWLP_USERDATA,
                           reinterpret_cast<LONG_PTR>(this));
         ApplyTheme();
@@ -75,24 +79,7 @@ public:
     ModalWorkspaceScope& operator=(const ModalWorkspaceScope&) = delete;
 
     ~ModalWorkspaceScope() {
-        // Popup destruction exposes the owner in the middle of the close
-        // sequence.  Suppress owner redraw for that short transaction and
-        // invalidate the covered workspace once after both layers are gone;
-        // otherwise Windows can present an erase frame followed by several
-        // child paints, which looks like the whole application is flashing.
-        HWND repaint_owner = owner_;
-        RECT repaint_rect{};
-        bool redraw_owner = repaint_owner && IsWindow(repaint_owner) &&
-                            GetClientRect(repaint_owner, &repaint_rect);
-        if (redraw_owner) {
-            const int bottom = std::max(0, static_cast<int>(repaint_rect.bottom));
-            const int top = std::clamp(preserve_top_ < 0 ? 0 : preserve_top_,
-                                       0, bottom);
-            repaint_rect.top = top;
-            SendMessageW(repaint_owner, WM_SETREDRAW, FALSE, 0);
-        }
-        if (surface_ && IsWindow(surface_)) DestroyWindow(surface_);
-        surface_ = nullptr;
+        CloseSurface();
         if (scrim_ && IsWindow(scrim_)) DestroyWindow(scrim_);
         scrim_ = nullptr;
 
@@ -106,16 +93,39 @@ public:
             --detail::ModalActivationDepth();
             active_ = false;
         }
-        if (redraw_owner && IsWindow(repaint_owner)) {
-            SendMessageW(repaint_owner, WM_SETREDRAW, TRUE, 0);
-            RedrawWindow(repaint_owner, &repaint_rect, nullptr,
-                         RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
+    }
+
+    void CloseSurface() noexcept {
+        // Hide both layers together before destroying the form. Do not expose
+        // an intermediate scrim-only frame, or toggle the owner's WS_VISIBLE.
+        HDWP batch = BeginDeferWindowPos(2);
+        constexpr UINT flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_HIDEWINDOW;
+        if (batch && surface_ && IsWindow(surface_))
+            batch = DeferWindowPos(batch, surface_, nullptr, 0, 0, 0, 0, flags);
+        if (batch && scrim_ && IsWindow(scrim_))
+            batch = DeferWindowPos(batch, scrim_, nullptr, 0, 0, 0, 0, flags);
+        const bool hidden = batch && EndDeferWindowPos(batch);
+        if (!hidden) {
+            if (surface_ && IsWindow(surface_)) ShowWindow(surface_, SW_HIDE);
+            if (scrim_ && IsWindow(scrim_)) ShowWindow(scrim_, SW_HIDE);
         }
+        if (surface_ && IsWindow(surface_)) DestroyWindow(surface_);
+        surface_ = nullptr;
+        presented_ = false;
     }
 
     void AttachSurface(HWND surface) {
         surface_ = surface;
         if (!surface_ || !IsWindow(surface_)) return;
+        // Only the modal's GDI controls use descendant double buffering. The
+        // workspace contains a XAML/DirectX terminal and must keep its own
+        // composition path.
+        SetWindowLongPtrW(surface_, GWL_EXSTYLE,
+            GetWindowLongPtrW(surface_, GWL_EXSTYLE) | WS_EX_COMPOSITED);
+        const BOOL disable_transitions = TRUE;
+        DwmSetWindowAttribute(surface_, DWMWA_TRANSITIONS_FORCEDISABLED,
+                              &disable_transitions, sizeof(disable_transitions));
         // Keep the surface hidden while its controls, region and first themed
         // frame are prepared. Present() will expose the scrim and surface in
         // one deferred-window-position transaction.
@@ -125,7 +135,7 @@ public:
                          SWP_NOACTIVATE);
     }
 
-    void Present() noexcept {
+    void Present(HWND focus = nullptr) noexcept {
         if (presented_ || !scrim_ || !surface_ ||
             !IsWindow(scrim_) || !IsWindow(surface_)) return;
 
@@ -133,39 +143,34 @@ public:
         const int width = std::max(1L, bounds.right - bounds.left);
         const int height = std::max(1L, bounds.bottom - bounds.top);
 
-        // Consume the initial invalid regions while both popups are hidden.
-        // This prevents a stock/default frame from becoming the first visible
-        // frame when the modal is opened.
-        RedrawWindow(scrim_, nullptr, nullptr,
-                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE);
-        RedrawWindow(surface_, nullptr, nullptr,
-                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN |
-                         RDW_NOERASE);
-
+        // Hidden HWNDs do not paint just because RDW_UPDATENOW is requested.
+        // Show with automatic redraw deferred, set focus, then compose one
+        // complete form (including all descendants) before yielding.
         HDWP batch = BeginDeferWindowPos(2);
         if (batch) {
             batch = DeferWindowPos(
                 batch, scrim_, HWND_TOP, bounds.left, bounds.top, width, height,
-                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW | SWP_NOREDRAW);
             if (batch) {
                 batch = DeferWindowPos(
                     batch, surface_, HWND_TOP, bounds.left, bounds.top, width, height,
-                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW | SWP_NOREDRAW);
             }
             if (batch) EndDeferWindowPos(batch);
         }
         if (!IsWindowVisible(scrim_) || !IsWindowVisible(surface_)) {
             SetWindowPos(scrim_, HWND_TOP, bounds.left, bounds.top, width, height,
-                         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW | SWP_NOREDRAW);
             SetWindowPos(surface_, HWND_TOP, bounds.left, bounds.top, width, height,
-                         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+                         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW | SWP_NOREDRAW);
         }
         // Owned popup z-order is not deterministic when a modal is opened
         // from another modal. Explicitly raise the content surface after both
         // windows are shown, otherwise the new scrim can sit above the form
         // and make every child look disabled while still reporting enabled.
         SetWindowPos(surface_, HWND_TOP, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
+        ActivateSurface(focus);
         // Hidden child windows are not guaranteed to update their DWM
         // redirection surfaces.  Repaint again after both popups are visible,
         // but before returning to the message loop, so the compositor only
@@ -175,7 +180,6 @@ public:
         RedrawWindow(surface_, nullptr, nullptr,
                      RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN |
                          RDW_NOERASE);
-        DwmFlush();
         presented_ = IsWindowVisible(scrim_) && IsWindowVisible(surface_);
     }
 
@@ -375,13 +379,23 @@ inline void ActivateModalSurface(HWND surface, HWND focus = nullptr) {
     if (!surface || !IsWindow(surface)) return;
     for (auto* host : detail::ModalHosts()) {
         if (host && host->surface() == surface) {
-            host->Present();
+            host->Present(focus);
             break;
         }
     }
     SetActiveWindow(surface);
     if (focus && IsWindow(focus)) SetFocus(focus);
     else SetFocus(surface);
+}
+
+inline void CloseModalSurface(HWND surface) {
+    for (auto* host : detail::ModalHosts()) {
+        if (host && host->surface() == surface) {
+            host->CloseSurface();
+            return;
+        }
+    }
+    if (surface && IsWindow(surface)) DestroyWindow(surface);
 }
 
 inline void RestoreModalOwner(HWND owner, HWND focus = nullptr) {

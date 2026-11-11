@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0.6"
+  #define MyAppVersion "1.0.0.7"
 #endif
 
 #define MyAppName "AiCli"
@@ -38,7 +38,13 @@ PrivilegesRequiredOverridesAllowed=dialog commandline
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+#if MyPackageIdentity == "AiCli.Desktop.Release"
+; Snapshot the complete legacy terminal tree before any parent exits. Restart
+; Manager can force-close AiCli first and lose the shell -> Codex ancestry.
+CloseApplications=no
+#else
 CloseApplications=force
+#endif
 RestartApplications=no
 MinVersion=10.0.19041
 DisableWelcomePage=no
@@ -87,6 +93,9 @@ begin
   ScriptPath := ExpandConstant('{tmp}\close-running-terminals.ps1');
   Parameters := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
     ScriptPath + '" -InstallDirectory "' + ExpandConstant('{app}') + '"';
+#if MyPackageIdentity == "AiCli.Desktop.Release"
+  Parameters := Parameters + ' -IncludeProcessTrees';
+#endif
 
   if (not Exec(PowerShellPath, Parameters, ExpandConstant('{tmp}'),
     SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
