@@ -21,6 +21,18 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 
 最新安装包：[GitHub Releases](https://github.com/xwyjh3612/aicli/releases/latest)。
 
+## 界面预览
+
+以下为原生 Win32 版本的界面示例，项目数据为演示内容。
+
+**项目工作区**：管理项目、分组、工作目录、启动命令和备注。
+
+![AiCli 原生 Win32 项目工作区](docs/screenshots/win32-workspace.png)
+
+**外观设置**：切换主题、配置任务栏动画和任务运行时保持唤醒。
+
+![AiCli 原生 Win32 外观设置](docs/screenshots/win32-settings.png)
+
 ## 自动更新
 
 - Win32 版启动 10 秒后在后台检查，此后运行期间每 6 小时检查一次。也可在“设置 → 关于 → 检查更新”手动检查。
