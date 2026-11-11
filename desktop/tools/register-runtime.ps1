@@ -1,5 +1,5 @@
 param(
-    [string]$Output = 'C:\project\aitest\codex_tool\desktop\bin\Qt\Debug',
+    [string]$Output = (Join-Path $PSScriptRoot '..\bin\Debug'),
     [switch]$Launch
 )
 $ErrorActionPreference = 'Stop'

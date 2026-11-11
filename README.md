@@ -61,7 +61,9 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 - Windows App SDK/WinRT、ConPTY、OpenSSL、CivetWeb 和 QR Code 依赖。
 - PowerShell 7 推荐但不是必需；软件支持常规安装和 Microsoft Store 版，并可回退到 Windows PowerShell 5.1。
 
-共享依赖路径统一声明在根目录 `dependencies.json`：Android/Java 使用现有 `F:/android`，C/C++ 通用依赖使用 `F:/deps`，Qt 和公共工具分别使用 `F:/Qt`、`F:/tools`。同一版本跨项目共用一份。编译缓存和产物位于 C 盘，具体目录见 [共享依赖规划](tools/dependency-layout.md)。
+依赖路径使用本地配置 `dependencies.json`，该文件不提交到 Git。首次构建时复制
+[`dependencies.example.json`](dependencies.example.json)，按本机环境填写依赖根目录；
+配置方式见 [依赖配置说明](tools/dependencies.md)。仓库不要求固定的盘符或磁盘布局。
 
 ### Android 客户端
 
@@ -74,13 +76,13 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 在仓库根目录执行：
 
 ~~~powershell
-$cmake = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+$cmake = 'cmake'
 & $cmake -S desktop -B desktop\build -G 'Visual Studio 17 2022' -A x64 `
     '-DAICLI_USE_QT_UI=OFF' `
     '-DAICLI_SKIP_PACKAGED_ACTIVATION=OFF' `
     '-DAICLI_PACKAGE_IDENTITY_NAME=AiCli.Desktop.Debug' `
     '-DAICLI_APPLICATION_USER_MODEL_ID=AiCli.Desktop.Debug_jw3zr00rmb0ym!App' `
-    '-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=C:/project/ai_code/codex_tool/desktop/bin'
+    "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$((Join-Path (Get-Location) 'desktop/bin').Replace('\', '/'))"
 & $cmake --build desktop\build --config Debug --target aicli -- /m:2
 & .\desktop\tools\register-runtime.ps1 -Output .\desktop\bin\Debug
 ~~~
@@ -212,7 +214,7 @@ PowerShell 7 检测支持常规安装和 Microsoft Store 版。如未自动识�
 
 - desktop/README.md：桌面构建和 Windows Terminal 运行时细节。
 - android-app/README.md：Android 客户端和 Release 构建说明。
-- tools/dependency-layout.md：F 盘共享依赖和 C 盘缓存规划。
+- tools/dependencies.md：本地依赖配置和环境变量说明。
 - ai-cli-mobile-architecture.md：桌面 Agent 与移动端架构。
 - 开发上下文备份-2026-08-18.md：历史开发上下文备份。
 

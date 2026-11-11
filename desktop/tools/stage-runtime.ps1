@@ -22,9 +22,7 @@ if (!$ConptyPackage) { $ConptyPackage = $dependencies.conpty }
 if (!$WorkingRoot) {
     $WorkingRoot = Join-Path $runtimeCacheRoot "$PackageIdentityName\$Configuration"
 }
-if ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Output)) -eq 'F:\') {
-    throw 'F: is reserved for shared dependencies. Choose an output directory on C:.'
-}
+Assert-AicliBuildPath -Path $Output
 
 if ($PackageIdentityName -notmatch '^[A-Za-z0-9.-]+$') {
     throw "Invalid package identity name: $PackageIdentityName"

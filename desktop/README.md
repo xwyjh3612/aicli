@@ -26,14 +26,15 @@ ConPTY `1.24.260710001`.
 
 ## Build
 
-Qt 6.8.3 MSVC x64 is installed under `F:\Qt\6.8.3\msvc2022_64`.
+Configure the Qt 6.8.3 MSVC x64 location in the ignored local
+`dependencies.json`; see [dependency configuration](../tools/dependencies.md).
 The Qt development package has its own identity, so it can be tested without
 overwriting the legacy development package:
 
 ```powershell
-$cmake = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+$cmake = 'cmake'
 & $cmake -S desktop -B desktop\build-qt -G 'Visual Studio 17 2022' -A x64 `
-    -DCMAKE_RUNTIME_OUTPUT_DIRECTORY='C:/project/aitest/codex_tool/desktop/bin/Qt' `
+    "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$((Join-Path (Get-Location) 'desktop/bin/Qt').Replace('\', '/'))" `
     -DAICLI_APPLICATION_USER_MODEL_ID='AiCli.Desktop.QtDev_jw3zr00rmb0ym!App' `
     -DAICLI_PACKAGE_IDENTITY_NAME='AiCli.Desktop.QtDev'
 & $cmake --build desktop\build-qt --config Debug --target aicli -- /m:2
@@ -49,9 +50,8 @@ desktop\bin\Qt\Debug\aicli.exe
 The build automatically runs `windeployqt` and `stage-runtime.ps1`. The latter
 stages Windows Terminal, WinUI, ConPTY, OpenSSL, resources, and the package
 manifest. Directly launching `aicli.exe` forwards to the registered packaged
-instance required by WinUI/XAML Island. Shared dependencies and reusable
-Windows Terminal headers remain on `F:`. Compilation, runtime staging and
-generated resources stay on `C:`; see [the shared dependency layout](../tools/dependency-layout.md).
+instance required by WinUI/XAML Island. Dependency locations are configured
+locally. Build output and staged resources are separate from dependency sources.
 
 ## Data-store tests
 

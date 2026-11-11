@@ -13,7 +13,7 @@ $buildRoot = Join-Path (Get-AicliBuildCacheRoot) 'third-party\windows-terminal\1
 $workingSource = Join-Path $buildRoot 'source'
 New-Item -ItemType Directory -Path $workingSource -Force | Out-Null
 # Terminal writes generated files into its source tree. Use one shared,
-# rebuildable C: working copy rather than writing build state into F:.
+# rebuildable working copy rather than writing into the dependency source tree.
 & robocopy $TerminalRoot $workingSource /E /XD .git .vs bin obj /NFL /NDL /NJH /NJS /NP
 if ($LASTEXITCODE -ge 8) { throw "Terminal source staging failed: $LASTEXITCODE" }
 $TerminalRoot = $workingSource

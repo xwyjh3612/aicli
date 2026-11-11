@@ -39,7 +39,7 @@
 在仓库根目录使用原生构建目录，明确关闭 Qt：
 
 ```powershell
-$cmake = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+$cmake = 'cmake'
 & $cmake -S desktop -B desktop/build -G 'Visual Studio 17 2022' -A x64 -DAICLI_USE_QT_UI=OFF
 & $cmake --build desktop/build --config Debug --target aicli aicli_native_module_tests -- /m:2
 & ./desktop/bin/Debug/aicli_native_module_tests.exe

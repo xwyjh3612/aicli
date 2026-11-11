@@ -7,6 +7,10 @@
 /desktop/installer/output/
 /target/
 
+# Machine-specific dependency paths and disk layout (kept locally)
+/dependencies.json
+/tools/dependency-layout.md
+
 # Keep the distributable installers and their checksums in Git
 /release/*
 !/release/AI-CLI-Setup-1.0.0.3-x64.exe

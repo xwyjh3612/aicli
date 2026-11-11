@@ -6,9 +6,9 @@
 - 设置入口
 - 支持扫码入口、Android Keystore、HTTP/WebSocket 和会话列表
 
-使用 `F:\android\Java\jdk-17.0.11`、`F:\android\sdk` 和 `F:\android\gradle\8.2` 中共享的 JDK、Android SDK 与 Gradle 构建。路径统一来自仓库根目录的 `dependencies.json`。
-
-下载的 JAR/AAR 等依赖共用 `F:\android\repository\gradle\files-2.1`。Gradle 编译和转换缓存位于 `%LOCALAPPDATA%\BuildCache\gradle`，模拟器运行数据位于 `%LOCALAPPDATA%\BuildCache\android`；项目构建产物保留在 `app/build`。目录约定见 [共享依赖规划](../tools/dependency-layout.md)。
+使用 JDK 17、Android SDK 和 Gradle 8.2 构建。路径来自不提交到 Git 的本地
+`dependencies.json`，首次配置请参考 [依赖配置说明](../tools/dependencies.md)。
+项目构建产物位于 `app/build`；共享依赖和构建缓存目录按本机配置选择。
 
 ## 正式版构建
 

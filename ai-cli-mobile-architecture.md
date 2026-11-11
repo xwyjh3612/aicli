@@ -17,7 +17,7 @@ AI CLI 主要在 Windows 电脑上使用。电脑端拥有项目目录、启动�
 - Codex 默认使用 `codex --yolo --no-alt-screen resume --last`；内联 TUI 会把完整会话写入 TermControl 原生滚动历史，桌面滚动条和手机触摸翻页都使用这份历史，不依赖终端鼠标滚轮；
 - Claude 默认使用 `claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions`；
 - 项目数据、设备授权和终端事件使用 SQLite 持久化；
-- 构建依赖、Gradle 缓存、Windows Terminal 源码和大体积运行环境放在 F 盘。
+- 依赖路径和构建缓存位置通过本地配置指定，不要求固定盘符。
 
 ## 2. 当前技术结构
 
@@ -113,7 +113,7 @@ DesktopController
 电脑端入口：
 
 ```text
-C:\project\aitest\codex_tool\desktop\bin\Qt\Debug\aicli.exe
+desktop\bin\Qt\Debug\aicli.exe
 ```
 
 主窗口默认夜间模式，支持白天/夜间主题切换。窗口使用系统原生最小化、最大化/还原和关闭按钮，中央终端使用原生滚动、选择、复制粘贴和键盘焦点。
@@ -513,9 +513,9 @@ Codex/Claude 默认命令已经关闭 AI CLI 自身的逐条高风险确认。�
 ### 11.1 桌面端
 
 ```powershell
-$cmake='C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+$cmake='cmake'
 & $cmake -S desktop -B desktop\build-qt -G 'Visual Studio 17 2022' -A x64 `
-  -DCMAKE_RUNTIME_OUTPUT_DIRECTORY='C:/project/aitest/codex_tool/desktop/bin/Qt' `
+  "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$((Join-Path (Get-Location) 'desktop/bin/Qt').Replace('\', '/'))" `
   -DAICLI_APPLICATION_USER_MODEL_ID='AiCli.Desktop.QtDev_jw3zr00rmb0ym!App' `
   -DAICLI_PACKAGE_IDENTITY_NAME='AiCli.Desktop.QtDev'
 & $cmake --build desktop\build-qt --config Debug --target aicli -- /m:2
@@ -523,7 +523,7 @@ $cmake='C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\Comm
 .\desktop\bin\Qt\Debug\aicli.exe
 ```
 
-Qt 6.8.3 MSVC x64 位于 `F:\Qt\6.8.3\msvc2022_64`。CMake 构建后会自动执行 `windeployqt` 和 `stage-runtime.ps1`，部署 Qt、Windows Terminal、WinUI、ConPTY、OpenSSL、PRI、XBF、清单与资源。`register-runtime.ps1` 使用独立 QtDev 包身份注册目录；直接双击 `aicli.exe` 会转发到有包身份的实例，以满足 WinUI/XAML Island 初始化要求。构建前只需停止正在使用同一输出目录的 `aicli.exe`，旧版 `desktop\bin\Debug` 与 QtDev 输出可以并存。
+Qt 6.8.3 MSVC x64 的路径在本地 `dependencies.json` 中配置。CMake 构建后会自动执行 `windeployqt` 和 `stage-runtime.ps1`，部署 Qt、Windows Terminal、WinUI、ConPTY、OpenSSL、PRI、XBF、清单与资源。`register-runtime.ps1` 使用独立 QtDev 包身份注册目录；直接双击 `aicli.exe` 会转发到有包身份的实例，以满足 WinUI/XAML Island 初始化要求。构建前只需停止正在使用同一输出目录的 `aicli.exe`，旧版 `desktop\bin\Debug` 与 QtDev 输出可以并存。
 
 ### 11.2 数据层测试
 
@@ -540,7 +540,8 @@ $dependencies = Set-AicliAndroidBuildEnvironment
 & (Join-Path $dependencies.gradle 'bin\gradle.bat') -p android-app --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
 ```
 
-SDK、JDK、Gradle 和下载的 Java/Android 依赖共用 `F:\android` 下的目录，Gradle 编译/转换缓存和模拟器数据保存在 C 盘。其他通用依赖使用 `F:\deps`；路径统一读取根目录 `dependencies.json`，见 [共享依赖规划](tools/dependency-layout.md)。
+SDK、JDK、Gradle 和其他依赖路径读取不提交到 Git 的本地 `dependencies.json`。
+构建缓存位置按本机环境配置，见 [依赖配置说明](tools/dependencies.md)。
 
 APK：
 

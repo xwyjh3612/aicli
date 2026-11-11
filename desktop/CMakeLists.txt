@@ -1,13 +1,38 @@
 cmake_minimum_required(VERSION 3.26)
 project(aicli LANGUAGES C CXX RC)
 
-if (CMAKE_BINARY_DIR MATCHES "^[Ff]:")
-    message(FATAL_ERROR "F: is reserved for shared dependencies. Configure the build directory on C:.")
-endif()
-
 set(AICLI_DEPENDENCY_MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../dependencies.json")
+if (NOT EXISTS "${AICLI_DEPENDENCY_MANIFEST_PATH}")
+    message(FATAL_ERROR "Local dependencies.json is missing. Copy dependencies.example.json and configure the dependency roots.")
+endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${AICLI_DEPENDENCY_MANIFEST_PATH}")
 file(READ "${AICLI_DEPENDENCY_MANIFEST_PATH}" AICLI_DEPENDENCY_MANIFEST)
+# Any machine-specific drive restrictions and additional SDK paths stay in the
+# ignored local configuration; the repository does not mandate drive letters.
+string(JSON AICLI_READ_ONLY_DRIVE_COUNT ERROR_VARIABLE AICLI_POLICY_ERROR
+    LENGTH "${AICLI_DEPENDENCY_MANIFEST}" build readOnlyDrives)
+if (NOT AICLI_POLICY_ERROR AND AICLI_READ_ONLY_DRIVE_COUNT GREATER 0)
+    math(EXPR AICLI_LAST_READ_ONLY_DRIVE "${AICLI_READ_ONLY_DRIVE_COUNT} - 1")
+    string(TOLOWER "${CMAKE_BINARY_DIR}" AICLI_NORMALIZED_BUILD_DIRECTORY)
+    foreach(index RANGE ${AICLI_LAST_READ_ONLY_DRIVE})
+        string(JSON read_only_drive GET "${AICLI_DEPENDENCY_MANIFEST}" build readOnlyDrives ${index})
+        string(TOLOWER "${read_only_drive}" read_only_drive)
+        if (AICLI_NORMALIZED_BUILD_DIRECTORY MATCHES "^[a-z]:" AND
+            AICLI_NORMALIZED_BUILD_DIRECTORY MATCHES "^${read_only_drive}[/\\\\]")
+            message(FATAL_ERROR "The local dependency configuration reserves this drive for read-only dependencies. Choose another build location.")
+        endif()
+    endforeach()
+endif()
+set(AICLI_LOCAL_INCLUDE_DIRECTORIES)
+string(JSON AICLI_LOCAL_INCLUDE_COUNT ERROR_VARIABLE AICLI_INCLUDE_ERROR
+    LENGTH "${AICLI_DEPENDENCY_MANIFEST}" build includeDirectories)
+if (NOT AICLI_INCLUDE_ERROR AND AICLI_LOCAL_INCLUDE_COUNT GREATER 0)
+    math(EXPR AICLI_LAST_LOCAL_INCLUDE "${AICLI_LOCAL_INCLUDE_COUNT} - 1")
+    foreach(index RANGE ${AICLI_LAST_LOCAL_INCLUDE})
+        string(JSON include_directory GET "${AICLI_DEPENDENCY_MANIFEST}" build includeDirectories ${index})
+        list(APPEND AICLI_LOCAL_INCLUDE_DIRECTORIES "${include_directory}")
+    endforeach()
+endif()
 function(aicli_shared_dependency name output)
     string(JSON root_name GET "${AICLI_DEPENDENCY_MANIFEST}" packages "${name}" root)
     string(JSON relative_path GET "${AICLI_DEPENDENCY_MANIFEST}" packages "${name}" path)
@@ -16,6 +41,9 @@ function(aicli_shared_dependency name output)
         set(root_path "$ENV{AICLI_${root_variable}_ROOT}")
     else()
         string(JSON root_path GET "${AICLI_DEPENDENCY_MANIFEST}" roots "${root_name}")
+    endif()
+    if (NOT IS_ABSOLUTE "${root_path}")
+        message(FATAL_ERROR "Configure roots.${root_name} in local dependencies.json or set AICLI_${root_variable}_ROOT to an absolute path.")
     endif()
     file(TO_CMAKE_PATH "${root_path}/${relative_path}" dependency_path)
     set(${output} "${dependency_path}" PARENT_SCOPE)
@@ -297,9 +325,7 @@ target_include_directories(aicli PRIVATE
     "${AICLI_CPPWINRT_ROOT}/sdkplus"
     "${AICLI_CPPWINRT_ROOT}/sdk"
     "${AICLI_CPPWINRT_ROOT}"
-    "D:/Windows Kits/10/Include/10.0.22621.0/cppwinrt"
-    "D:/Windows Kits/10/Include/10.0.22621.0/um"
-    "D:/Windows Kits/10/Include/10.0.22621.0/shared"
+    ${AICLI_LOCAL_INCLUDE_DIRECTORIES}
     "${AICLI_TERMINAL_WINRT_ROOT}"
     "${AICLI_CIVETWEB_ROOT}/include"
     "${AICLI_NLOHMANN_ROOT}"

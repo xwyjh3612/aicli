@@ -33,9 +33,7 @@ if (!$BuildDirectory) {
     })
 }
 $BuildDirectory = [IO.Path]::GetFullPath($BuildDirectory)
-if ([IO.Path]::GetPathRoot($BuildDirectory) -eq 'F:\') {
-    throw 'F: is reserved for shared dependencies. Choose a build directory on C:.'
-}
+Assert-AicliBuildPath -Path $BuildDirectory
 $isolatedRuntimeRoot = Join-Path $BuildDirectory 'runtime'
 
 $cmakeCandidates = @(

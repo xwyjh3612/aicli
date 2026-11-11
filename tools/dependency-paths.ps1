@@ -1,4 +1,4 @@
-# Shared dependencies are declared once; build state always lives outside F:.
+# Dependency locations and optional disk policies come from local configuration.
 function Get-AicliFileSha256 {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
     $algorithm = [Security.Cryptography.SHA256]::Create()
@@ -12,28 +12,50 @@ function Get-AicliFileSha256 {
     }
 }
 
-function Get-AicliDependencyPaths {
+function Get-AicliDependencyManifest {
     $manifestPath = Join-Path $PSScriptRoot '..\dependencies.json'
-    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if (!(Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw 'Local dependencies.json is missing. Copy dependencies.example.json and configure the dependency roots.'
+    }
+    return Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+}
+
+function Get-AicliDependencyPaths {
+    $manifest = Get-AicliDependencyManifest
     $resolved = [ordered]@{}
     foreach ($package in $manifest.packages.PSObject.Properties) {
         $rootName = $package.Value.root
         $overrideName = 'AICLI_' + $rootName.ToUpperInvariant() + '_ROOT'
         $rootPath = [Environment]::GetEnvironmentVariable($overrideName, 'Process')
         if (!$rootPath) { $rootPath = $manifest.roots.$rootName }
+        $rootPath = [Environment]::ExpandEnvironmentVariables([string]$rootPath)
+        if (!$rootPath -or ![IO.Path]::IsPathRooted($rootPath)) {
+            throw "Configure roots.$rootName in local dependencies.json or set $overrideName to an absolute path."
+        }
         $resolved[$package.Name] = [IO.Path]::GetFullPath(
             (Join-Path $rootPath $package.Value.path))
     }
     return [pscustomobject]$resolved
 }
 
+function Assert-AicliBuildPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $manifest = Get-AicliDependencyManifest
+    $drive = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Path)).TrimEnd([char[]]'\/')
+    foreach ($readOnlyDrive in $manifest.build.readOnlyDrives) {
+        if ($drive -ieq ([string]$readOnlyDrive).TrimEnd([char[]]'\/')) {
+            throw "The local dependency configuration reserves $drive for read-only dependencies. Choose another build location."
+        }
+    }
+}
+
 function Get-AicliBuildCacheRoot {
     $cachePath = $env:AICLI_BUILD_CACHE_ROOT
+    if (!$cachePath) { $cachePath = (Get-AicliDependencyManifest).build.cacheRoot }
     if (!$cachePath) { $cachePath = Join-Path $env:LOCALAPPDATA 'BuildCache' }
+    $cachePath = [Environment]::ExpandEnvironmentVariables($cachePath)
     $cachePath = [IO.Path]::GetFullPath($cachePath)
-    if ([IO.Path]::GetPathRoot($cachePath) -eq 'F:\') {
-        throw 'F: is reserved for shared dependencies. Choose a build cache directory on C:.'
-    }
+    Assert-AicliBuildPath -Path $cachePath
     return $cachePath
 }
 
@@ -50,7 +72,7 @@ function Set-AicliAndroidBuildEnvironment {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
     # Downloaded JAR/AAR/POM files are reusable dependencies. Only Gradle's
-    # metadata, compilation and transforms belong in the C: cache directory.
+    # metadata, compilation and transforms belong in the configured build cache.
     New-Item -ItemType Directory -Path $dependencies.gradleArtifacts -Force | Out-Null
     $artifactCache = Join-Path $env:GRADLE_USER_HOME 'caches\modules-2\files-2.1'
     if (!(Test-Path -LiteralPath $artifactCache)) {
