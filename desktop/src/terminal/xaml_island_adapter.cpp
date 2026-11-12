@@ -38,6 +38,9 @@
 #include "app/runtime_components.h"
 #include "core/text_utils.h"
 #include "terminal/conpty_connection_bridge.h"
+#ifndef AICLI_QT_UI_BUILD
+#include "terminal/hyperlink_launcher.h"
+#endif
 
 namespace aicli::terminal {
 using aicli::app::LocalActivationFactory;
@@ -389,6 +392,9 @@ public:
             session->control = control_factory.CreateInstance2(
                 session->control_settings, session->unfocused_settings, session->connection);
             ConfigureClipboardBridge(*session);
+#ifndef AICLI_QT_UI_BUILD
+            ConfigureHyperlinkBridge(*session);
+#endif
             set_stage(L"attach TermControl");
             // TermControl derives the TSF/IME candidate-window position from
             // OwningHwnd's screen rectangle plus the cursor's XAML-local
@@ -1034,6 +1040,22 @@ private:
                 } catch (...) {}
             });
     }
+
+#ifndef AICLI_QT_UI_BUILD
+    void ConfigureHyperlinkBridge(TerminalSession& session) {
+        session.control.OpenHyperlink(
+            [owner = parent_](const winrt::Windows::Foundation::IInspectable&,
+                   const winrt::Microsoft::Terminal::Control::OpenHyperlinkEventArgs& args) noexcept {
+                try {
+                    const auto uri = args.Uri();
+                    if (OpenTerminalWebLink(owner, {uri.c_str(), uri.size()})) return;
+                } catch (...) {}
+                MessageBoxW(owner,
+                    L"无法打开此网页链接。请检查默认浏览器设置，或复制链接后在浏览器中打开。",
+                    L"打开网页链接", MB_OK | MB_ICONWARNING);
+            });
+    }
+#endif
 
     TerminalSession* FindSession(std::wstring_view project_id) {
         const auto found = sessions_.find(std::wstring(project_id));

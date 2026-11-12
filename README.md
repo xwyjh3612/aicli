@@ -16,8 +16,9 @@ AiCli 是一个面向 Windows 的本地 AI 编程工作区，同时提供 Androi
 - Android 端支持扫码配对、HTTPS/WSS、终端同步、消息输入和多张图片上传；左侧“＋”随时展开功能菜单。
 - 设置页显示应用版本和实际使用的 PowerShell 环境。
 - Win32 桌面端和 Android 自动检查 GitHub Release 更新，校验安装包后提示安装。
+- Win32 终端支持按住 Ctrl 单击网页链接，通过默认浏览器打开。
 
-桌面端当前版本为 1.0.0.7，Android 端当前版本为 1.2.0（versionCode 3）。
+桌面端当前版本为 1.0.0.8，Android 端当前版本为 1.2.0（versionCode 3）。
 
 最新安装包：[GitHub Releases](https://github.com/xwyjh3612/aicli/releases/latest)。
 
