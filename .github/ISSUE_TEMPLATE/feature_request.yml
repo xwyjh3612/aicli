@@ -1,0 +1,21 @@
+name: 功能建议 / Feature request
+description: 说说你希望怎样使用 AiCli / Describe a workflow you want to improve
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: 使用场景与困难 / Workflow and problem
+      description: 你正在做什么，当前在哪一步不方便？What are you trying to do and where does it get difficult?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 希望怎样改进 / Suggested improvement
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充信息 / Additional context
+      description: 平台、替代办法或示意图。Platform, workarounds, or examples.

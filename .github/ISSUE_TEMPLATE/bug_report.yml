@@ -1,0 +1,38 @@
+name: 问题反馈 / Bug report
+description: 安装、配对、终端显示或更新遇到问题 / Report a reproducible problem
+body:
+  - type: markdown
+    attributes:
+      value: 请勿提交密码、令牌、配对二维码或私密会话。Please remove credentials and private content from attachments.
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本 / App version
+      placeholder: Windows 1.0.0.8 / Android 1.2.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 系统与 CLI / OS and CLI
+      description: 系统版本、Codex / Claude 等 CLI 的版本；手机问题也请注明电脑系统。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 从哪个页面开始，执行了哪些操作？Where did you start and what did you do?
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 预期与实际结果 / Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: attachments
+    attributes:
+      label: 补充信息 / Additional context
+      description: 可提供已脱敏的截图或日志。Sanitized screenshots or logs are optional.
