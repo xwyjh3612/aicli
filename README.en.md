@@ -9,7 +9,9 @@
 
 AiCli organizes command-line AI tools into projects with their own working directories, launch commands, groups, and notes. It runs them in an embedded Windows Terminal control. Pair an Android phone to read live output, send messages, upload images, and switch between projects on your PC.
 
-I wanted to check Codex task progress from my phone while away from the PC, send a quick “continue,” or add another instruction. After looking around without finding a ready-made tool that fit my needs, I built AiCli. I have used it for several months, improving it as I go, and am now sharing it under the MIT license. If you have similar needs, I welcome you to try it and share feedback. The current interface is primarily in Chinese.
+I wanted to check Codex task progress from my phone while away from the PC, send a quick “continue,” or add another instruction. After looking around without finding a ready-made tool that fit my needs, I built AiCli. I have used it for several months, improving it as I go. If you have similar needs, I welcome you to try it and share feedback.
+
+The desktop and Android interfaces currently use Chinese, with no English UI switch. English terminal input and output are supported. This document provides English setup instructions.
 
 ## Download
 
@@ -62,6 +64,19 @@ These images use demo projects and simulated conversation content. The desktop C
     <td><img src="docs/screenshots/android-projects.png" alt="Android project list example" width="360"></td>
   </tr>
 </table>
+
+<details>
+<summary>More desktop screenshots: workspace and appearance settings</summary>
+
+**Project workspace**: manage projects, groups, working directories, launch commands, and notes.
+
+![AiCli native Win32 project workspace](docs/screenshots/win32-workspace.png)
+
+**Appearance settings**: choose a theme, configure taskbar indicators, and keep the PC awake while tasks are working.
+
+![AiCli native Win32 appearance settings](docs/screenshots/win32-settings.png)
+
+</details>
 
 ## Feedback and development
 
