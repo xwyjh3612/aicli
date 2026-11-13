@@ -9,7 +9,7 @@
 
 AiCli organizes command-line AI tools into projects with their own working directories, launch commands, groups, and notes. It runs them in an embedded Windows Terminal control. Pair an Android phone to read live output, send messages, upload images, and switch between projects on your PC.
 
-The author has used AiCli for several months and continues to improve it based on everyday use. It is now open source under the MIT license. Feedback on first-time setup and real workflows is especially welcome. The current interface is primarily in Chinese.
+I wanted to check Codex task progress from my phone while away from the PC, send a quick “continue,” or add another instruction. After looking around without finding a ready-made tool that fit my needs, I built AiCli. I have used it for several months, improving it as I go, and am now sharing it under the MIT license. If you have similar needs, I welcome you to try it and share feedback. The current interface is primarily in Chinese.
 
 ## Download
 
