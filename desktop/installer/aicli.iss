@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0.10"
+  #define MyAppVersion "1.0.0.11"
 #endif
 
 #define MyAppName "AiCli"
@@ -76,8 +76,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDi
 ; is identical to opening the desktop/Start-menu shortcut.
 #if MyPackageIdentity == "AiCli.Desktop.Release"
 Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; Description: "启动 {#MyAppName}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: not IsAppUpdate
-; App-initiated updates reopen as the original user even in silent mode.
-Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: IsAppUpdate
+; Automatic updates reopen from ssDone, after ssPostInstall registration.
+; A non-postinstall Run entry executes before CurStepChanged(ssPostInstall).
 #else
 Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; Description: "启动 {#MyAppName}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 #endif
@@ -86,6 +86,9 @@ Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; Descrip
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\uninstall-package.ps1"" -IdentityName ""{#MyPackageIdentity}"""; Flags: runhidden waituntilterminated; RunOnceId: "UnregisterAiCliPackage"
 
 [Code]
+var
+  PackageRegistrationSucceeded: Boolean;
+
 function IsAppUpdate: Boolean;
 var
   Index: Integer;
@@ -145,5 +148,18 @@ begin
     begin
       RaiseException('AI CLI 数据保护或运行环境注册失败，未卸载原应用包。请关闭 AI CLI 后重试。错误代码：' + IntToStr(ResultCode));
     end;
+    PackageRegistrationSucceeded := True;
   end;
+#if MyPackageIdentity == "AiCli.Desktop.Release"
+  if (CurStep = ssDone) and IsAppUpdate and PackageRegistrationSucceeded then
+  begin
+    // Use the original user's Explorer only after successful registration.
+    // Never reopen the application when registration has failed.
+    Log('Package registration succeeded; reopening AiCli after setup completed.');
+    if not ExecAsOriginalUser(ExpandConstant('{win}\explorer.exe'),
+      '"' + ExpandConstant('{app}\{#MyAppExeName}') + '"',
+      ExpandConstant('{app}'), SW_SHOWNORMAL, ewNoWait, ResultCode) then
+      Log('Unable to reopen AiCli automatically. Error code: ' + IntToStr(ResultCode));
+  end;
+#endif
 end;

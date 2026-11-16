@@ -257,6 +257,13 @@ if (NOT AICLI_USE_QT_UI)
         endif()
     endforeach()
     add_dependencies(aicli aicli-data-upgrade)
+    add_executable(aicli_installer_update_tests tests/installer_update_probe.cpp)
+    target_compile_definitions(aicli_installer_update_tests PRIVATE
+        UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(aicli_installer_update_tests PRIVATE ole32 shell32)
+    if (MSVC)
+        target_compile_options(aicli_installer_update_tests PRIVATE /W4 /EHsc /utf-8)
+    endif()
     add_executable(aicli_update_check_tests tests/update_check_tests.cpp
         src/app/auto_update.cpp src/app/update_manifest.cpp)
     add_executable(aicli_update_flow_tests tests/update_flow_tests.cpp

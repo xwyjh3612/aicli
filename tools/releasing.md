@@ -54,4 +54,6 @@ python tools/publish-release.py --tag v1.2.0 --notes-file release/notes.md --pub
 
 发布后用不带 GitHub 凭据的请求读取固定清单地址；确认两端版本、附件地址、文件大小和 SHA-256。两端“检查更新”应能返回“当前已是最新版本”。测试升级时使用同签名、较低版本的隔离测试安装；不要覆盖正在执行任务的生产桌面程序。
 
+自动重启安装器的改动还需构建 `aicli_installer_update_tests`，运行 `desktop/tools/test-installer-update-order.ps1`：以独立临时包验证真实静默升级，确认新版注册成功后才重启，注册失败时不重启。证据保存在忽略的 `local-screenshots/` 中。
+
 Win32 在用户点击“下载更新”后后台下载，校验通过并等待当前任务完成，再以 `/SILENT /NOCANCEL /NORESTART /SP- /AICLIUPDATE` 启动安装器。下载和等待阶段可取消，正式安装后禁用取消。安装器使用原有安装目录，以原用户身份自动重启应用；升级前已启动的项目名单与选择位置保存在现有数据库中，新版本启动时恢复一次。终端会重启，CLI 使用项目配置的启动命令；Windows UAC 授权仍由系统控制。Android 的“允许安装未知应用”和下载、安装确认保持原流程。GitHub 网络不可达时可稍后重试，或直接下载 Release 附件手动覆盖安装。
