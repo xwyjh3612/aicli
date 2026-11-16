@@ -584,12 +584,15 @@ void PaintSettingsContent(State &state, HDC dc)
                              ? state.palette.accent
                              : state.text_color);
         RECT update_result{x + S(24), S(394), right - S(24), S(434)};
-        DrawTextW(dc, state.update_status.text.c_str(), -1, &update_result,
+        const std::wstring update_text = update_state == aicli::update::CheckState::Downloading
+            ? state.update_status.text + L" " + std::to_wstring(state.update_status.progress) + L"%"
+            : state.update_status.text;
+        DrawTextW(dc, update_text.c_str(), -1, &update_result,
                   DT_LEFT | DT_TOP | DT_WORDBREAK);
         SelectObject(dc, state.settings_small_font ? state.settings_small_font : state.small_font);
         SetTextColor(dc, state.muted_color);
         RECT update_note{x + S(24), S(436), right - S(24), S(462)};
-        DrawTextW(dc, L"启动后自动检查，安装前会提示确认。", -1, &update_note,
+        DrawTextW(dc, L"下载后自动安装；有任务时等待完成，升级后恢复已启动项目。", -1, &update_note,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     else
@@ -689,16 +692,25 @@ void RefreshUpdateStatus(State &state, bool force)
     if (!force && status == state.update_status)
         return;
     state.update_status = status;
-    const bool checking = status.state == aicli::update::CheckState::Checking;
+    using aicli::update::CheckState;
+    const bool checking = status.state == CheckState::Checking;
+    const bool downloading = status.state == CheckState::Downloading;
+    const bool waiting = status.state == CheckState::WaitingToInstall;
+    const bool installing = status.state == CheckState::Installing;
     SetWindowTextW(state.check_update, checking ? L"正在检查…"
                                        : status.state == aicli::update::CheckState::Failed
                                            ? L"重试检查"
                                            : L"检查更新");
-    EnableWindow(state.check_update, !checking);
-    ShowWindow(state.download_update, state.settings_page == SettingsPage::About &&
-                                              status.state == aicli::update::CheckState::Available
-                                          ? SW_SHOW
-                                          : SW_HIDE);
+    EnableWindow(state.check_update, !checking && !downloading && !waiting && !installing);
+    SetWindowTextW(state.download_update,
+        downloading ? L"取消下载" : waiting ? L"取消等待" : installing ? L"正在安装…"
+                    : status.state == CheckState::InstallFailed ? L"重试安装" : L"下载更新");
+    EnableWindow(state.download_update, !checking && !installing);
+    ShowWindow(state.download_update,
+        state.settings_page == SettingsPage::About && status.update_available ? SW_SHOW : SW_HIDE);
+    InvalidateRect(state.settings_about, nullptr, FALSE);
+    InvalidateRect(state.check_update, nullptr, FALSE);
+    InvalidateRect(state.download_update, nullptr, FALSE);
     InvalidateRect(state.content, nullptr, FALSE);
 }
 
@@ -737,15 +749,9 @@ void UpdateSettingsPage(State &state, SettingsPage page)
     visible(state.keep_awake, appearance);
     visible(state.check_update, page == SettingsPage::About);
     visible(state.download_update, false);
-    if (page == SettingsPage::About)
-    {
-        RefreshUpdateStatus(state, true);
-        SetTimer(state.window, kUpdateStatusTimerId, 250, nullptr);
-    }
-    else
-    {
-        KillTimer(state.window, kUpdateStatusTimerId);
-    }
+    // The About navigation badge must also update while another page is open.
+    RefreshUpdateStatus(state, true);
+    SetTimer(state.window, kUpdateStatusTimerId, 250, nullptr);
     // The project/group/device list overlaps the connection form. Hide it
     // before revealing connection fields; otherwise each EDIT receives its
     // first WM_PAINT while still clipped by the higher-z-order list, and the

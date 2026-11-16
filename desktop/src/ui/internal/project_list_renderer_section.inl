@@ -341,17 +341,21 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         const int gap=ScaleUi(5);
         const int padding=ScaleUi(8);
         const int contentWidth=iconSize.cx+gap+textSize.cx;
-        const int availableWidth=std::max(1L,r.right-r.left-padding*2);
+        const bool has_update_badge=item->CtlID==ID_SETTINGS&&aicli::update::HasAvailableUpdate();
+        const int badge_space=has_update_badge?ScaleUi(8):0;
+        const int availableWidth=std::max(1L,r.right-r.left-padding*2-badge_space);
         const int startX=r.left+padding+
             std::max(0,(availableWidth-std::min(contentWidth,availableWidth))/2);
         RECT iconRect{startX,r.top,startX+iconSize.cx,r.bottom};
         SelectObject(item->hDC,g_font_header_icon);
         DrawTextW(item->hDC,icon,-1,&iconRect,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-        RECT textRect{iconRect.right+gap,r.top,r.right-padding,r.bottom};
+        RECT textRect{iconRect.right+gap,r.top,r.right-padding-badge_space,r.bottom};
         SelectObject(item->hDC,g_font_header);
         DrawTextW(item->hDC,text,-1,&textRect,
                   DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
         SelectObject(item->hDC,previousFont);
+        if(item->CtlID==ID_SETTINGS&&aicli::update::HasAvailableUpdate())
+            aicli::ui::DrawUpdateBadge(item->hDC,r,GetDpiForWindow(item->hwndItem));
         return;
     }
     SelectObject(item->hDC,text_font);DrawTextW(item->hDC,text,-1,&r,text_format);

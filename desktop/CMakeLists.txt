@@ -158,6 +158,7 @@ else()
     )
     list(APPEND AICLI_COMMON_SOURCES
         src/app/auto_update.cpp
+        src/app/update_restart.cpp
         src/app/native_remote_bridge.cpp
         src/features/project_configuration.cpp
         src/data/data_migration.cpp
@@ -258,6 +259,18 @@ if (NOT AICLI_USE_QT_UI)
     add_dependencies(aicli aicli-data-upgrade)
     add_executable(aicli_update_check_tests tests/update_check_tests.cpp
         src/app/auto_update.cpp src/app/update_manifest.cpp)
+    add_executable(aicli_update_flow_tests tests/update_flow_tests.cpp
+        src/app/auto_update.cpp src/app/update_manifest.cpp src/app/update_restart.cpp
+        src/data/data_store.cpp src/core/text_utils.cpp src/ui/drawing_utils.cpp)
+    target_include_directories(aicli_update_flow_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}/generated" "${AICLI_NLOHMANN_ROOT}")
+    target_compile_definitions(aicli_update_flow_tests PRIVATE
+        AICLI_UPDATE_TESTING UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(aicli_update_flow_tests PRIVATE
+        winhttp bcrypt comctl32 shell32 ole32 winsqlite3 gdiplus)
+    if (MSVC)
+        target_compile_options(aicli_update_flow_tests PRIVATE /W4 /EHsc /utf-8)
+    endif()
     target_include_directories(aicli_update_check_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}/generated" "${AICLI_NLOHMANN_ROOT}")
     target_compile_definitions(aicli_update_check_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -417,6 +430,7 @@ if (NOT AICLI_USE_QT_UI)
     target_include_directories(aicli_native_module_tests PRIVATE ${AICLI_APP_INCLUDES})
     target_link_libraries(aicli_native_module_tests PRIVATE ${AICLI_APP_LIBRARIES})
     target_compile_definitions(aicli_native_module_tests PRIVATE
+        AICLI_UPDATE_TESTING
         UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN USE_WEBSOCKET NO_SSL_DL OPENSSL_API_3_0)
     if (MSVC)
         target_compile_options(aicli_native_module_tests PRIVATE /W4 /EHsc /utf-8 /FS)

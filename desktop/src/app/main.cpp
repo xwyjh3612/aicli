@@ -36,6 +36,7 @@
 #include "agent/terminal_stream_publisher.h"
 #include "app/application_activation.h"
 #include "app/auto_update.h"
+#include "app/update_restart.h"
 #include "app/native_remote_bridge.h"
 #include "app/keep_awake.h"
 #include "app/powershell_runtime.h"
@@ -55,6 +56,7 @@
 #include "ui/styled_input.h"
 #include "ui/taskbar_working_indicator.h"
 #include "ui/drawing_utils.h"
+#include "ui/update_badge.h"
 #include "ui/footer_status.h"
 #include "ui/main_window_renderer.h"
 #include "ui/management_dialog.h"
@@ -242,6 +244,7 @@ const std::wstring& DefaultGroupName(){return g_default_group_name;}
 std::size_t g_group_project_count{};
 bool g_group_dropdown_open{};
 std::wstring g_last_project_id;
+std::optional<aicli::update::RestartPlan> g_update_restart_plan;
 std::wstring g_startup_project_id;
 aicli::ui::ThemeManager g_theme_manager;
 auto& g_theme = g_theme_manager.palette();
@@ -763,6 +766,7 @@ bool InitializePersistentState() {
         [](const ProjectGroup& group){return group.builtin;});
        builtin!=g_groups.end()) g_default_group_name=builtin->name;
     g_projects=g_store.LoadProjects();
+    g_update_restart_plan=aicli::update::TakeRestartPlan(g_store,AICLI_VERSION);
     for(auto& project:g_projects){
         if(project.status==L"running"||project.status==L"paused"){
             project.status=L"created";
@@ -1117,6 +1121,7 @@ bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const s
     Layout(); return false;
 }
 void StartSession(bool restart=false){
+    if(aicli::update::IsInstalling())return;
     const int i=SelectedProjectIndex();if(i<0||i>=(int)g_projects.size())return;
     auto& project=g_projects[i];
     if(g_island.HasSession(project.id)){
@@ -1148,6 +1153,7 @@ void UpdateHeaderTelemetry(){
 }
 void OnRemoteControl(const RemoteControlMessage &command)
 {
+    if(aicli::update::IsInstalling())return;
     if (!SelectProjectById(command.project_id))
         return;
     const int selected = SelectedProjectIndex();
@@ -1227,16 +1233,16 @@ void OnRemoteStatus(bool online, const std::wstring &text)
 
 aicli::app::native_remote::UiCallbacks MakeRemoteUiCallbacks()
 {
-    return {[](const std::wstring &id) { return SelectProjectById(id); },
+    return {[](const std::wstring &id) { return !aicli::update::IsInstalling() && SelectProjectById(id); },
             [](bool restart) { StartSession(restart); },
             [](const std::wstring &id) { return g_island.HasSession(id); },
             [](const std::wstring &id, const std::wstring &text) {
-                return g_island.WriteInput(id, text);
+                return !aicli::update::IsInstalling() && g_island.WriteInput(id, text);
             },
             [](const std::wstring &id, const std::wstring &text) {
-                return g_island.SubmitInput(id, text);
+                return !aicli::update::IsInstalling() && g_island.SubmitInput(id, text);
             },
-            [](const std::wstring &id, UINT key) { return g_island.SendKey(id, key); },
+            [](const std::wstring &id, UINT key) { return !aicli::update::IsInstalling() && g_island.SendKey(id, key); },
             OnRemoteControl,
             OnRemoteProjectCreated,
             OnRemotePairing,
@@ -1498,6 +1504,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         if(id==ID_CLOSE){SendMessageW(h,WM_CLOSE,0,0);return 0;}
         if(id==ID_MINIMIZE){ShowWindow(h,SW_MINIMIZE);return 0;}
         if(id==ID_MAXIMIZE){ShowWindow(h,IsZoomed(h)?SW_RESTORE:SW_MAXIMIZE);Layout();return 0;}
+        if(aicli::update::IsInstalling())return 0;
         // Root toolbar commands are blocked while an owned modal is active;
         // caption buttons continue to work through the custom frame path.
         if(aicli::ui::HasActiveModal(h))return 0;
@@ -1576,7 +1583,36 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
             ReloadPersistentModels();
         }
         return 0;
-    case WM_RESTORE_LAST_SESSION:if(!g_startup_project_id.empty()&&SelectProjectById(g_startup_project_id)){g_startup_project_id.clear();StartSession();}return 0;
+    case aicli::update::kStatusChangedMessage:
+        if(g_settings)InvalidateRect(g_settings,nullptr,FALSE);
+        return 0;
+    case WM_RESTORE_LAST_SESSION:
+        if(g_update_restart_plan){
+            auto plan=std::move(*g_update_restart_plan);
+            g_update_restart_plan.reset();
+            g_startup_project_id.clear();
+            for(const auto& id:plan.projects){
+                const int index=ProjectIndexById(id);
+                if(index<0)continue;
+                auto& project=g_projects[index];
+                const auto cmd=aicli::terminal::EnsureCodexInlineScrollback(project.type,
+                    project.command.empty()?aicli::project_configuration::DefaultCommand(g_project_types,project.type):project.command);
+                if(StartCommandSession(cmd,project.folder,project.name,project.type,project.id)){
+                    project.status=L"running";
+                    g_store.UpdateProjectStatus(project.id,project.status);
+                    RecordAndBroadcastEvent(project.id,L"conversation.running",nlohmann::json{{"status","running"}});
+                }
+            }
+            if(!plan.group.empty())g_group_name=plan.group;
+            RefreshProjectList();
+            if(!SelectProjectById(plan.selected)&&!plan.projects.empty())SelectProjectById(plan.projects.front());
+            if(const int index=SelectedProjectIndex();index>=0&&g_island.HasSession(g_projects[index].id))
+                g_island.Activate(g_projects[index].id);
+            Layout();
+        }else if(!g_startup_project_id.empty()&&SelectProjectById(g_startup_project_id)){
+            g_startup_project_id.clear();StartSession();
+        }
+        return 0;
 
     case WM_AGENT_WORKING_STATE:{std::unique_ptr<AgentWorkingStateMessage> message(reinterpret_cast<AgentWorkingStateMessage*>(l));if(message){LogWorkingDetector(message->project_id,L"ui-working-message",message->working?L"working=true":L"working=false");SetProjectWorkingState(message->project_id,message->working);}return 0;}
     case WM_GIT_STATUS_READY:{
@@ -1739,10 +1775,23 @@ int WINAPI wWinMain(HINSTANCE instance,
     ApplyWindowChromeTheme();
     ShowWindow(g_hwnd, show_command);
     UpdateWindow(g_hwnd);
-    aicli::update::Start(g_hwnd);
+    aicli::update::Start(g_hwnd,{
+        []{return g_working_projects.empty();},
+        [](std::wstring_view version){
+            aicli::update::RestartPlan plan;
+            plan.selected=g_last_project_id;
+            plan.group=g_group_name;
+            for(const auto& project:g_projects)
+                if(g_island.HasSession(project.id))plan.projects.push_back(project.id);
+            return aicli::update::SaveRestartPlan(g_store,version,plan);
+        },
+        []{aicli::update::CancelRestartPlan(g_store);}
+    });
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0)) {
+        if(aicli::update::IsInstalling() && message.message>=WM_KEYFIRST && message.message<=WM_KEYLAST &&
+           (message.hwnd==g_island.Window() || IsChild(g_island.Window(),message.hwnd)))continue;
         if (g_island.PreTranslateMessage(message)) continue;
         TranslateMessage(&message);
         DispatchMessageW(&message);

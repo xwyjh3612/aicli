@@ -11,13 +11,11 @@ AiCli 把命令行 AI 工具组织成项目，在 Windows 原生终端里运行�
 
 我想在离开电脑时，也能用手机查看 Codex 的任务进度，发一句“继续”，或补充新的指令。找了一圈，没有找到符合自己需求的现成工具，于是做了 AiCli。自己用了几个月，边用边改，欢迎有类似需求的朋友试用和反馈。
 
-目前桌面端和 Android 端使用中文界面，暂不支持切换为英文界面；终端支持英文输入和输出。英文 README 提供对应的使用说明。
-
 ## 下载与运行条件
 
 | 平台 | 当前版本 | 安装包 |
 | --- | --- | --- |
-| Windows 10 / 11，x64 | 1.0.0.8 | [下载 Windows 安装器](https://github.com/xwyjh3612/aicli/releases/latest/download/AI-CLI-Setup-1.0.0.8-x64.exe) |
+| Windows 10 / 11，x64 | 1.0.0.9 | [下载 Windows 安装器](https://github.com/xwyjh3612/aicli/releases/latest/download/AI-CLI-Setup-1.0.0.9-x64.exe) |
 | Android 8.0 及以上 | 1.2.0 | [下载 Android APK](https://github.com/xwyjh3612/aicli/releases/latest/download/AI-CLI-Android-1.2.0-release.apk) |
 
 使用发布的安装包即可，无需编译源码。Windows 需为 Windows 10 20H1 或更高版本。电脑需要自行安装并登录你使用的 AI CLI，例如 [Codex CLI](https://github.com/openai/codex) 或 [Claude Code](https://github.com/anthropics/claude-code)。AiCli 不包含模型服务或付费账号；模型使用条件和费用由所选 CLI 的服务商决定。推荐安装 PowerShell 7，未安装时会回退到 Windows PowerShell 5.1。
@@ -96,10 +94,10 @@ AiCli 把命令行 AI 工具组织成项目，在 Windows 原生终端里运行�
 ## 自动更新
 
 - Win32 版启动 10 秒后在后台检查，此后运行期间每 6 小时检查一次。也可在“设置 → 关于 → 检查更新”手动检查。
-- 手动检查在“关于”页内显示进度和结果，不弹出检查窗口；发现新版时显示“下载更新”按钮。
+- 发现新版只在“设置”“关于”“检查更新”显示红点，不弹出升级提示；检查和下载进度显示在“关于”页。
 - Android 在启动或返回前台时检查，成功检查后 6 小时内不重复请求。设置页提供“自动检查应用更新”开关和“检查更新”按钮。
-- 检测到新版后先确认下载；显示下载进度并支持取消。下载完成后验证大小和 SHA-256，再确认安装。网络失败不会影响原有功能。
-- Windows 安装器沿用已有的安装位置与数据，安装会关闭运行中的终端会话；安装前请保存工作。安装器可能显示 UAC 提示。
+- Win32 点击“下载更新”后后台下载并验证大小和 SHA-256，等待当前任务完成后自动安装；下载和等待期间可取消，正式安装后禁止取消。Android 保留下载与安装确认。
+- Windows 升级沿用安装位置与数据，安装后自动打开并恢复升级前已启动的项目。终端会重启，CLI 按项目配置的启动命令恢复；Windows 仍可能要求 UAC 授权。
 - Win32 终端以独立的 Windows Job 管理 PowerShell 和其启动的 CLI。关闭终端、退出应用或更新强制关闭应用时，一并结束该终端的子进程并释放会话占用。安装器升级旧版本时先获取目标安装目录的进程树，保留安装程序及其他安装目录的进程。
 - Android 额外验证 APK 包名、版本号和签名与当前应用匹配，通过 FileProvider 交给系统安装器。首次更新需要允许 AiCli 安装应用，并确认系统安装提示。
 - 1.0.0.3 / Android 1.1.0 及更早版本没有更新模块，需要手动安装一次新版。Qt 版本未接入自动更新。

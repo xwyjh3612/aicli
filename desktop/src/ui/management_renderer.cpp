@@ -2,6 +2,7 @@
 #include "ui/drawing_utils.h"
 #include "ui/layout_metrics.h"
 #include "ui/modal_host.h"
+#include "ui/update_badge.h"
 #include <algorithm>
 #include <ctime>
 #include <iterator>
@@ -167,6 +168,8 @@ void DrawButton(const DRAWITEMSTRUCT *item)
         SelectObject(item->hDC, state->settings_nav_font ? state->settings_nav_font : state->font);
         RECT chevron{rect.right - S(27), rect.top, rect.right - S(8), rect.bottom};
         DrawTextW(item->hDC, L">", -1, &chevron, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (item->CtlID == kSettingsAbout && aicli::update::HasAvailableUpdate())
+            DrawUpdateBadge(item->hDC, rect, GetDpiForWindow(item->hwndItem), 2);
         return;
     }
 
@@ -433,6 +436,8 @@ void DrawButton(const DRAWITEMSTRUCT *item)
     }
     RECT text_rect = rect;
     DrawTextW(item->hDC, text, -1, &text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (item->CtlID == kCheckUpdate && aicli::update::HasAvailableUpdate())
+        DrawUpdateBadge(item->hDC, rect, GetDpiForWindow(item->hwndItem), 2);
 }
 
 void DrawListItem(const DRAWITEMSTRUCT *item)

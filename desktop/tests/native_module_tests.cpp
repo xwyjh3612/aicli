@@ -1,4 +1,5 @@
 #include "app/native_remote_bridge.h"
+#include "app/auto_update_testing.h"
 #include "agent/conversation_bridge.h"
 #include "agent/remote_agent.h"
 #include "data/data_store.h"
@@ -217,6 +218,107 @@ void TestDialogs(HWND owner, aicli::DataStore &store, aicli::agent::RemoteAgent 
                         [](const auto &value) { return value.name == L"扩展 CLI"; }),
             "Nested type editor persists through management actions");
     std::cout << "Independent editors, all settings pages and nested management actions passed\n";
+}
+
+int RedBadgeSegments(HWND button)
+{
+    RECT rect{};
+    GetClientRect(button, &rect);
+    HDC dc = CreateCompatibleDC(nullptr);
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = rect.right;
+    info.bmiHeader.biHeight = -rect.bottom;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    void* pixels{};
+    const auto bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+    const auto previous = SelectObject(dc, bitmap);
+    DRAWITEMSTRUCT item{};
+    item.CtlType = ODT_BUTTON;
+    item.CtlID = static_cast<UINT>(GetDlgCtrlID(button));
+    item.hwndItem = button;
+    item.hDC = dc;
+    item.rcItem = rect;
+    management::DrawButton(&item);
+    int segments{}, previous_red{};
+    for (int x = 0; x < rect.right; ++x)
+    {
+        int red{};
+        for (int y = 0; y < rect.bottom; ++y)
+        {
+            const auto color = GetPixel(dc, x, y);
+            if (GetRValue(color) > 180 && GetGValue(color) < 100 && GetBValue(color) < 120)
+                red = 1;
+        }
+        if (red && !previous_red) ++segments;
+        previous_red = red;
+    }
+    SelectObject(dc, previous);
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+    return segments;
+}
+
+void TestUpdateSettings(HWND owner, aicli::DataStore& store, aicli::agent::RemoteAgent& agent)
+{
+    namespace update = aicli::update;
+    update::Start(owner, {[]{return false;}, {}, {}});
+    update::testing::Services services;
+    services.check = []{return update::Release{"65535.1.1", "", "", 1};};
+    services.download = [](std::atomic<bool>& cancelled, std::atomic<int>& progress) {
+        progress = 65;
+        while (!cancelled) Sleep(5);
+        return fs::path{};
+    };
+    update::testing::SetServices(std::move(services));
+    update::testing::BeginAutomaticCheck();
+    int stage{};
+    Schedule(owner, [&] {
+        update::testing::Poll();
+        const auto window = FindOwnWindow(L"AicliManagementDialog");
+        if (!window || !update::HasAvailableUpdate()) return;
+        auto* state = management::GetState(window);
+        management::RefreshUpdateStatus(*state, true);
+        if (stage == 0)
+        {
+            Require(state->settings_page == management::SettingsPage::Appearance,
+                    "Settings opens on appearance page");
+            Require(RedBadgeSegments(state->settings_about) == 2,
+                    "About navigation shows two red dots while another page is open");
+            Click(window, management::kSettingsAbout);
+            Require(RedBadgeSegments(state->check_update) == 2,
+                    "Check update button shows two red dots");
+            Require(IsWindowVisible(state->download_update), "available update reveals download action");
+            Click(window, management::kDownloadUpdate);
+            ++stage;
+        }
+        else if (update::GetCheckStatus().progress == 65)
+        {
+            Require(!IsWindowEnabled(state->check_update), "check action disabled during download");
+            wchar_t caption[64]{};
+            GetWindowTextW(state->download_update, caption, 64);
+            Require(std::wstring_view{caption} == L"取消下载", "download action becomes cancellation");
+            ++stage;
+            Click(window, management::kClose);
+        }
+    });
+    ShowManagementDialog(owner, ManagementMode::Settings, store, agent);
+    Finish(owner);
+    Require(stage == 2 && update::GetCheckStatus().state == update::CheckState::Downloading,
+            "closing settings leaves background download running");
+    update::CancelDownloadOrInstall();
+    const auto cancel_deadline = GetTickCount64() + 3000;
+    while (update::GetCheckStatus().state == update::CheckState::Downloading && GetTickCount64() < cancel_deadline)
+    {
+        update::testing::Poll();
+        Sleep(5);
+    }
+    Require(update::GetCheckStatus().state == update::CheckState::Available,
+            "cancel background download after settings closes");
+    update::Stop();
+    update::testing::SetServices({});
+    std::cout << "Live settings update badges, inline download and close/cancel behavior passed\n";
 }
 
 aicli::Project TestProjectEditors(HWND owner, aicli::DataStore &store, const fs::path &directory)
@@ -470,6 +572,7 @@ int wmain()
             aicli::agent::RemoteAgent agent;
             agent.AttachStore(&store);
             TestDialogs(owner, store, agent);
+            TestUpdateSettings(owner, store, agent);
             const auto project = TestProjectEditors(owner, store, root / L"workspace");
             TestRemoteMessages(store, agent, project, root / L"workspace");
         }

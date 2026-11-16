@@ -288,7 +288,13 @@ LRESULT HandleCommand(State &context, WPARAM wparam)
         }
         if (id == kDownloadUpdate)
         {
-            aicli::update::DownloadAvailableUpdate(state->window);
+            const auto status = aicli::update::GetCheckStatus();
+            if (status.state == aicli::update::CheckState::Downloading ||
+                status.state == aicli::update::CheckState::WaitingToInstall)
+                aicli::update::CancelDownloadOrInstall();
+            else
+                aicli::update::DownloadAvailableUpdate(state->window);
+            RefreshUpdateStatus(*state, true);
             return 0;
         }
         if (id == kSettingsAppearance)

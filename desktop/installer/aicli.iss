@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0.7"
+  #define MyAppVersion "1.0.0.9"
 #endif
 
 #define MyAppName "AiCli"
@@ -74,12 +74,28 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDi
 ; registration may not resolve that link even though its PATH is correct.
 ; Forward the launch request to the user's existing Explorer process so this
 ; is identical to opening the desktop/Start-menu shortcut.
+#if MyPackageIdentity == "AiCli.Desktop.Release"
+Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; Description: "启动 {#MyAppName}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: not IsAppUpdate
+; App-initiated updates reopen as the original user even in silent mode.
+Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: IsAppUpdate
+#else
 Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; Description: "启动 {#MyAppName}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+#endif
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\uninstall-package.ps1"" -IdentityName ""{#MyPackageIdentity}"""; Flags: runhidden waituntilterminated; RunOnceId: "UnregisterAiCliPackage"
 
 [Code]
+function IsAppUpdate: Boolean;
+var
+  Index: Integer;
+begin
+  Result := False;
+  for Index := 1 to ParamCount do
+    if CompareText(ParamStr(Index), '/AICLIUPDATE') = 0 then
+      Result := True;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   PowerShellPath: String;
