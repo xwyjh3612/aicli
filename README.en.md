@@ -15,7 +15,7 @@ I wanted to check Codex task progress from my phone while away from the PC, send
 
 | Platform | Version | Installer |
 | --- | --- | --- |
-| Windows 10 20H1 or newer / Windows 11, x64 | 1.0.0.9 | [Windows installer](https://github.com/xwyjh3612/aicli/releases/latest/download/AI-CLI-Setup-1.0.0.9-x64.exe) |
+| Windows 10 20H1 or newer / Windows 11, x64 | 1.0.0.10 | [Windows installer](https://github.com/xwyjh3612/aicli/releases/latest/download/AI-CLI-Setup-1.0.0.10-x64.exe) |
 | Android 8.0 or newer | 1.2.0 | [Android APK](https://github.com/xwyjh3612/aicli/releases/latest/download/AI-CLI-Android-1.2.0-release.apk) |
 
 No source build is needed to try the release. Install and authenticate your preferred CLI separately, such as [Codex CLI](https://github.com/openai/codex) or [Claude Code](https://github.com/anthropics/claude-code). AiCli does not include a model service or a paid account; provider requirements and charges still apply. PowerShell 7 is recommended, with Windows PowerShell 5.1 as a fallback.

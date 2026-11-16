@@ -7,11 +7,11 @@ void EndProjectDragPreview(){
     g_project_drag_preview=nullptr;
     g_project_drag_hotspot={};
 }
-bool BeginProjectDragPreview(HWND list,int row,POINT cursor_screen){
+bool PaintProjectDragPreview(HWND list,int row,POINT cursor_screen,bool initialize){
     // Dispose the previous layered preview before calculating the new drag
     // hotspot. EndProjectDragPreview also clears the hotspot, so calling it
     // later would make the preview's top-left corner jump under the cursor.
-    EndProjectDragPreview();
+    if(initialize)EndProjectDragPreview();
     RECT item{};
     if(SendMessageW(list,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))==LB_ERR)return false;
     const int project_index=static_cast<int>(SendMessageW(list,LB_GETITEMDATA,row,0));
@@ -71,17 +71,17 @@ bool BeginProjectDragPreview(HWND list,int row,POINT cursor_screen){
         graphics.FillPath(&card_brush,&card_path);
         graphics.DrawPath(&card_pen,&card_path);
 
-        Gdiplus::Pen grip(SmoothColor(g_light_theme?RGB(107,123,145):RGB(151,164,184),230),1.4f);
+        Gdiplus::Pen grip(SmoothColor(g_light_theme?RGB(107,123,145):RGB(151,164,184),230),ScaleUiF(1.25f));
         grip.SetStartCap(Gdiplus::LineCapRound);
         grip.SetEndCap(Gdiplus::LineCapRound);
         const float grip_center=shadow_margin+card_height/2.0f;
-        for(float offset=-4.0f;offset<=4.0f;offset+=4.0f)
-            graphics.DrawLine(&grip,static_cast<float>(shadow_margin+11),grip_center+offset,
-                              static_cast<float>(shadow_margin+20),grip_center+offset);
+        for(float offset=-ScaleUiF(4.0f);offset<=ScaleUiF(4.0f);offset+=ScaleUiF(4.0f))
+            graphics.DrawLine(&grip,shadow_margin+ScaleUiF(11.0f),grip_center+offset,
+                              shadow_margin+ScaleUiF(20.0f),grip_center+offset);
 
         const auto& project=g_projects[project_index];
         Gdiplus::FontFamily family(L"Segoe UI");
-        Gdiplus::Font preview_font(&family,15.0f,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
+        Gdiplus::Font preview_font(&family,ScaleUiF(15.0f),Gdiplus::FontStyleRegular,Gdiplus::UnitPixel);
         Gdiplus::SolidBrush text_brush(SmoothColor(fg,245));
         Gdiplus::StringFormat text_format;
         text_format.SetAlignment(Gdiplus::StringAlignmentNear);
@@ -89,53 +89,22 @@ bool BeginProjectDragPreview(HWND list,int row,POINT cursor_screen){
         text_format.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
         text_format.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
         Gdiplus::RectF text_bounds{
-            static_cast<float>(shadow_margin+29),static_cast<float>(shadow_margin),
-            static_cast<float>(std::max(1,card_width-69)),static_cast<float>(card_height)};
+            static_cast<float>(shadow_margin+ScaleUi(29)),static_cast<float>(shadow_margin),
+            static_cast<float>(std::max(1,card_width-ScaleUi(69))),static_cast<float>(card_height)};
         graphics.DrawString(project.name.c_str(),static_cast<INT>(project.name.size()),
                             &preview_font,text_bounds,&text_format,&text_brush);
 
-        COLORREF state_color=g_light_theme?RGB(100,113,131):RGB(139,157,183);
-        enum class PreviewState{Idle,Running,Paused,Warning};
-        PreviewState state=PreviewState::Idle;
-        if(g_island.HasSession(project.id)){
-            state=PreviewState::Running;
-            state_color=g_light_theme?RGB(28,139,91):RGB(73,203,145);
-        }else if(project.status==L"paused"){
-            state=PreviewState::Paused;
-            state_color=g_light_theme?RGB(177,113,16):RGB(245,178,72);
-        }else if(project.status==L"cancelled"||project.status==L"error"){
-            state=PreviewState::Warning;
-            state_color=g_light_theme?RGB(190,132,26):RGB(244,187,72);
-        }
-        const float icon_size=20.0f;
-        const float icon_x=shadow_margin+card_width-icon_size-11.0f;
+        const float icon_size=ScaleUiF(20.0f);
+        const float icon_x=shadow_margin+card_width-icon_size-ScaleUiF(11.0f);
         const float icon_y=shadow_margin+(card_height-icon_size)/2.0f;
-        const float cx=icon_x+icon_size/2.0f,cy=icon_y+icon_size/2.0f;
-        Gdiplus::SolidBrush halo(SmoothColor(state_color,34));
-        Gdiplus::SolidBrush icon_brush(SmoothColor(state_color,245));
-        Gdiplus::Pen icon_pen(SmoothColor(state_color,245),1.65f);
-        icon_pen.SetStartCap(Gdiplus::LineCapRound);
-        icon_pen.SetEndCap(Gdiplus::LineCapRound);
-        graphics.FillEllipse(&halo,icon_x,icon_y,icon_size,icon_size);
-        if(state==PreviewState::Running){
-            graphics.DrawEllipse(&icon_pen,icon_x+2.0f,icon_y+2.0f,icon_size-4.0f,icon_size-4.0f);
-            graphics.FillEllipse(&icon_brush,cx-3.0f,cy-3.0f,6.0f,6.0f);
-        }else if(state==PreviewState::Paused){
-            graphics.DrawLine(&icon_pen,cx-2.5f,cy-4.0f,cx-2.5f,cy+4.0f);
-            graphics.DrawLine(&icon_pen,cx+2.5f,cy-4.0f,cx+2.5f,cy+4.0f);
-        }else if(state==PreviewState::Warning){
-            Gdiplus::PointF triangle[3]{{cx,icon_y+3.0f},
-                {icon_x+3.0f,icon_y+icon_size-3.0f},
-                {icon_x+icon_size-3.0f,icon_y+icon_size-3.0f}};
-            graphics.DrawPolygon(&icon_pen,triangle,3);
-            graphics.DrawLine(&icon_pen,cx,cy-2.5f,cx,cy+1.5f);
-            graphics.FillEllipse(&icon_brush,cx-0.9f,cy+3.0f,1.8f,1.8f);
-        }else graphics.DrawEllipse(&icon_pen,cx-4.0f,cy-4.0f,8.0f,8.0f);
+        const bool selected=SendMessageW(list,LB_GETCURSEL,0,0)==row;
+        DrawProjectStateIcon(graphics,project,{icon_x,icon_y,icon_size,icon_size},
+                             selected,row==g_project_hover_row);
     }
 
     POINT card_origin{item.left+3,item.top+3};
     ClientToScreen(list,&card_origin);
-    g_project_drag_hotspot={
+    if(initialize)g_project_drag_hotspot={
         std::clamp<int>(static_cast<int>(cursor_screen.x-card_origin.x)+shadow_margin,0,width-1),
         std::clamp<int>(static_cast<int>(cursor_screen.y-card_origin.y)+shadow_margin,0,height-1)};
     POINT destination{cursor_screen.x-g_project_drag_hotspot.x,
@@ -144,7 +113,7 @@ bool BeginProjectDragPreview(HWND list,int row,POINT cursor_screen){
     POINT source_origin{};
     BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
 
-    g_project_drag_preview=CreateWindowExW(
+    if(initialize)g_project_drag_preview=CreateWindowExW(
         WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE,
         L"STATIC",L"",WS_POPUP,destination.x,destination.y,width,height,
         g_hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -158,6 +127,17 @@ bool BeginProjectDragPreview(HWND list,int row,POINT cursor_screen){
     ReleaseDC(nullptr,screen);
     if(!updated){EndProjectDragPreview();return false;}
     return true;
+}
+bool BeginProjectDragPreview(HWND list,int row,POINT cursor_screen){
+    return PaintProjectDragPreview(list,row,cursor_screen,true);
+}
+void RefreshProjectDragPreview(){
+    if(!g_project_drag_preview||!g_project_dragging)return;
+    RECT bounds{};
+    if(!GetWindowRect(g_project_drag_preview,&bounds))return;
+    const POINT cursor{bounds.left+g_project_drag_hotspot.x,
+                       bounds.top+g_project_drag_hotspot.y};
+    PaintProjectDragPreview(g_list,g_project_drag_source,cursor,false);
 }
 void MoveProjectDragPreview(POINT cursor_screen){
     if(!g_project_drag_preview)return;

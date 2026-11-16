@@ -62,6 +62,7 @@
 #include "ui/management_dialog.h"
 #include "ui/project_editor_dialog.h"
 #include "ui/project_list_view.h"
+#include "ui/project_status_icon.h"
 #include "ui/rounded_context_menu.h"
 #include "ui/rounded_select_popup.h"
 #include "ui/theme.h"
@@ -1478,7 +1479,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
                      RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
         return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshots.MarkDirtyMessageHandled();if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
-    case WM_TIMER:if(g_footer_status.HandleTimer(w))return 0;if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kStatusClearTimerId){KillTimer(h,kStatusClearTimerId);SetText(g_status,L"");return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);g_project_idle_pulse_angle=std::fmod(g_project_idle_pulse_angle+9.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
+    case WM_TIMER:if(g_footer_status.HandleTimer(w))return 0;if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kStatusClearTimerId){KillTimer(h,kStatusClearTimerId);SetText(g_status,L"");return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);g_project_idle_pulse_angle=std::fmod(g_project_idle_pulse_angle+9.0f,360.0f);RefreshProjectDragPreview();if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);info->ptMinTrackSize.x=metrics.Scale(900);info->ptMinTrackSize.y=metrics.Scale(600);return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;

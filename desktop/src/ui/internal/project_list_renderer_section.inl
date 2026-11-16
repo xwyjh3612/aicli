@@ -360,18 +360,30 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
     }
     SelectObject(item->hDC,text_font);DrawTextW(item->hDC,text,-1,&r,text_format);
 }
-constexpr std::uint32_t kProjectSpinnerPhaseSalt=0x5350494eu;
-constexpr std::uint32_t kProjectPulsePhaseSalt=0x50554c53u;
-
-float ProjectAnimationPhase(std::wstring_view projectId,std::uint32_t salt) noexcept{
-    // A persistent ID keeps each row's phase stable across refreshes, filtering
-    // and reordering. Separate salts give spinning and breathing distinct phases.
-    std::uint32_t hash=2166136261u^salt;
-    for(const wchar_t unit:projectId){
-        hash^=static_cast<std::uint32_t>(unit);
-        hash*=16777619u;
+void DrawProjectStateIcon(Gdiplus::Graphics& graphics,const Project& project,
+                          const Gdiplus::RectF& bounds,bool selected,bool hovered){
+    COLORREF stateColor=g_light_theme?RGB(100,113,131):RGB(139,157,183);
+    using StateIcon=aicli::ui::ProjectStatusIcon;
+    StateIcon stateIcon=StateIcon::Idle;
+    if(g_island.HasSession(project.id)){
+        stateIcon=StateIcon::Running;
+        stateColor=RGB(73,203,145);
+    }else if(project.status==L"paused"){
+        stateIcon=StateIcon::Paused;
+        stateColor=g_light_theme?RGB(177,113,16):RGB(245,178,72);
+    }else if(project.status==L"cancelled"||project.status==L"error"){
+        // A stopped project is a recoverable state, so use a warm warning
+        // triangle instead of a red close/cancel glyph.
+        stateIcon=StateIcon::Warning;
+        stateColor=g_light_theme?RGB(190,132,26):RGB(244,187,72);
     }
-    return static_cast<float>(hash%36000u)/100.0f;
+    if(!g_light_theme&&stateIcon==StateIcon::Idle){
+        stateColor=selected?RGB(168,199,240):
+            (hovered?RGB(145,164,189):RGB(113,128,150));
+    }
+    if(stateIcon==StateIcon::Running&&IsProjectWorking(project))stateIcon=StateIcon::Working;
+    aicli::ui::DrawProjectStatusIcon(graphics,bounds,stateIcon,stateColor,project.id,
+                                    g_project_spinner_angle,g_project_idle_pulse_angle);
 }
 
 void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
@@ -403,27 +415,6 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     }
     DrawSmoothRoundedRect(item->hDC,card,2.0f,cardFill,cardFill,0.0f);
 
-    COLORREF stateColor=g_light_theme?RGB(100,113,131):RGB(139,157,183);
-    enum class StateIcon{Idle,Running,Paused,Warning};
-    StateIcon stateIcon=StateIcon::Idle;
-    if(g_island.HasSession(project.id)){
-        stateIcon=StateIcon::Running;
-        stateColor=RGB(73,203,145);
-    }else if(project.status==L"paused"){
-        stateIcon=StateIcon::Paused;
-        stateColor=g_light_theme?RGB(177,113,16):RGB(245,178,72);
-    }else if(project.status==L"cancelled"||project.status==L"error"){
-        // A stopped project is a recoverable state, so use a warm warning
-        // triangle instead of a red close/cancel glyph.
-        stateIcon=StateIcon::Warning;
-        stateColor=g_light_theme?RGB(190,132,26):RGB(244,187,72);
-    }
-    if(!g_light_theme&&stateIcon==StateIcon::Idle){
-        stateColor=selected?RGB(168,199,240):
-            (hovered?RGB(145,164,189):RGB(113,128,150));
-    }
-    if(sourceDragging)stateColor=muted;
-
     {
         Gdiplus::Graphics graphics(item->hDC);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -444,57 +435,7 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         const float iconX=static_cast<float>(card.right)-iconSize-ScaleUiF(11.0f);
         const float iconY=(card.top+card.bottom-iconSize)/2.0f;
         Gdiplus::RectF iconBounds{iconX,iconY,iconSize,iconSize};
-        const bool workingSpinner=stateIcon==StateIcon::Running&&IsProjectWorking(project);
-        Gdiplus::SolidBrush halo(SmoothColor(stateColor,30));
-        if(!workingSpinner&&stateIcon!=StateIcon::Running&&
-           stateIcon!=StateIcon::Idle)
-            graphics.FillEllipse(&halo,iconBounds);
-        Gdiplus::Pen iconPen(SmoothColor(stateColor),ScaleUiF(1.65f));
-        iconPen.SetStartCap(Gdiplus::LineCapRound);
-        iconPen.SetEndCap(Gdiplus::LineCapRound);
-        Gdiplus::SolidBrush iconBrush(SmoothColor(stateColor));
-        const float cx=iconX+iconSize/2.0f,cy=iconY+iconSize/2.0f;
-        if(workingSpinner){
-            const float spinnerAngle=std::fmod(g_project_spinner_angle+
-                ProjectAnimationPhase(project.id,kProjectSpinnerPhaseSalt),360.0f);
-            Gdiplus::Pen trackPen(SmoothColor(stateColor,65),ScaleUiF(1.65f));
-            Gdiplus::Pen spinnerPen(SmoothColor(stateColor),ScaleUiF(2.35f));
-            trackPen.SetStartCap(Gdiplus::LineCapRound);
-            trackPen.SetEndCap(Gdiplus::LineCapRound);
-            spinnerPen.SetStartCap(Gdiplus::LineCapRound);
-            spinnerPen.SetEndCap(Gdiplus::LineCapRound);
-            graphics.DrawEllipse(&trackPen,iconX+ScaleUiF(2.0f),iconY+ScaleUiF(2.0f),
-                                 iconSize-ScaleUiF(4.0f),iconSize-ScaleUiF(4.0f));
-            graphics.DrawArc(&spinnerPen,iconX+ScaleUiF(2.0f),iconY+ScaleUiF(2.0f),
-                             iconSize-ScaleUiF(4.0f),iconSize-ScaleUiF(4.0f),
-                             spinnerAngle,112.0f);
-        }else if(stateIcon==StateIcon::Running){
-            const float pulseAngle=std::fmod(g_project_idle_pulse_angle+
-                ProjectAnimationPhase(project.id,kProjectPulsePhaseSalt),360.0f);
-            const float pulse=(std::sin(pulseAngle*3.14159265f/180.0f)+1.0f)*0.5f;
-            const float diameter=ScaleUiF(8.0f+2.0f*pulse);
-            const auto channel=[pulse](BYTE low,BYTE high){
-                return static_cast<BYTE>(low+(high-low)*pulse+0.5f);
-            };
-            const COLORREF pulseColor=RGB(
-                channel(0x1f,0x49),channel(0x79,0xcb),channel(0x55,0x91));
-            Gdiplus::SolidBrush pulseBrush(SmoothColor(pulseColor));
-            graphics.FillEllipse(&pulseBrush,cx-diameter/2.0f,cy-diameter/2.0f,
-                                 diameter,diameter);
-        }else if(stateIcon==StateIcon::Paused){
-            graphics.DrawLine(&iconPen,cx-ScaleUiF(2.5f),cy-ScaleUiF(4.0f),cx-ScaleUiF(2.5f),cy+ScaleUiF(4.0f));
-            graphics.DrawLine(&iconPen,cx+ScaleUiF(2.5f),cy-ScaleUiF(4.0f),cx+ScaleUiF(2.5f),cy+ScaleUiF(4.0f));
-        }else if(stateIcon==StateIcon::Warning){
-            Gdiplus::PointF triangle[3]{
-                {cx,iconY+ScaleUiF(3.0f)},
-                {iconX+ScaleUiF(3.0f),iconY+iconSize-ScaleUiF(3.0f)},
-                {iconX+iconSize-ScaleUiF(3.0f),iconY+iconSize-ScaleUiF(3.0f)}};
-            graphics.DrawPolygon(&iconPen,triangle,3);
-            graphics.DrawLine(&iconPen,cx,cy-ScaleUiF(2.5f),cx,cy+ScaleUiF(1.5f));
-            graphics.FillEllipse(&iconBrush,cx-ScaleUiF(0.9f),cy+ScaleUiF(3.0f),ScaleUiF(1.8f),ScaleUiF(1.8f));
-        }else{
-            graphics.DrawEllipse(&iconPen,cx-ScaleUiF(4.0f),cy-ScaleUiF(4.0f),ScaleUiF(8.0f),ScaleUiF(8.0f));
-        }
+        DrawProjectStateIcon(graphics,project,iconBounds,selected,hovered);
     }
 
     SetBkMode(item->hDC,TRANSPARENT);
