@@ -15,7 +15,7 @@ AiCli 把命令行 AI 工具组织成项目，在 Windows 原生终端里运行�
 
 | 平台 | 当前版本 | 安装包 |
 | --- | --- | --- |
-| Windows 10 / 11，x64 | 1.0.0.11 | [下载 Windows 安装器](https://github.com/xwyjh3612/aicli/releases/latest/download/AI-CLI-Setup-1.0.0.11-x64.exe) |
+| Windows 10 / 11，x64 | 1.0.0.12 | [下载 Windows 安装器](https://github.com/xwyjh3612/aicli/releases/latest/download/AI-CLI-Setup-1.0.0.12-x64.exe) |
 | Android 8.0 及以上 | 1.2.0 | [下载 Android APK](https://github.com/xwyjh3612/aicli/releases/latest/download/AI-CLI-Android-1.2.0-release.apk) |
 
 使用发布的安装包即可，无需编译源码。Windows 需为 Windows 10 20H1 或更高版本。电脑需要自行安装并登录你使用的 AI CLI，例如 [Codex CLI](https://github.com/openai/codex) 或 [Claude Code](https://github.com/anthropics/claude-code)。AiCli 不包含模型服务或付费账号；模型使用条件和费用由所选 CLI 的服务商决定。推荐安装 PowerShell 7，未安装时会回退到 Windows PowerShell 5.1。

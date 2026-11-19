@@ -5,6 +5,8 @@
 #include <gdiplus.h>
 
 #include <algorithm>
+#include <cmath>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,13 +17,18 @@ namespace {
 
 constexpr UINT kSetThemeMessage = WM_APP + 0x271;
 
-struct ProjectListItem {
-    std::wstring text;
-    LPARAM data{};
+struct ProjectReorderState {
+    int candidate{-1}, source{-1}, destination{-1}, first{}, last{};
+    POINT down{}, pointer{};
+    float grab_y{}, floating_y{}, settle_from{};
+    bool valid{}, settling{};
+    ULONGLONG animation_start{}, settle_start{}, last_tick{};
+    std::vector<float> offsets;
+    std::vector<float> from_offsets;
 };
 
 struct ProjectListState {
-    std::vector<ProjectListItem> items;
+    std::vector<ProjectListEntry> items;
     ProjectListViewTheme theme{
         RGB(10, 17, 31), RGB(86, 100, 121),
         RGB(159, 159, 159), RGB(159, 159, 159)};
@@ -36,6 +43,8 @@ struct ProjectListState {
     bool scrollbar_hovered{};
     bool scrollbar_dragging{};
     int scrollbar_drag_offset{};
+    ProjectListReorderCallbacks reorder_callbacks;
+    ProjectReorderState reorder;
 };
 
 ProjectListState* State(HWND window) {
@@ -213,6 +222,8 @@ void DrawScrollbar(HWND window, ProjectListState& state, HDC dc) {
     graphics.FillPath(&brush, &path);
 }
 
+#include "ui/internal/project_list_drag.inl"
+
 void Paint(HWND window, ProjectListState& state, HDC target,
            const RECT& dirty) {
     RECT client{};
@@ -228,27 +239,16 @@ void Paint(HWND window, ProjectListState& state, HDC target,
         const int first = std::clamp(
             state.scroll_offset / item_height, 0,
             static_cast<int>(state.items.size() - 1));
-        int y = first * item_height - state.scroll_offset;
-        HWND parent = GetParent(window);
-        for (int row = first;
-             row < static_cast<int>(state.items.size()) && y < client.bottom;
-             ++row, y += item_height) {
-            DRAWITEMSTRUCT item{};
-            item.CtlType = ODT_LISTBOX;
-            item.CtlID = static_cast<UINT>(GetDlgCtrlID(window));
-            item.itemID = static_cast<UINT>(row);
-            item.itemAction = ODA_DRAWENTIRE;
-            item.itemState = row == state.selected ? ODS_SELECTED : 0;
-            if (GetFocus() == window && row == state.selected)
-                item.itemState |= ODS_FOCUS;
-            item.hwndItem = window;
-            item.hDC = dc;
-            item.rcItem = {client.left, y, client.right, y + item_height};
-            item.itemData = static_cast<ULONG_PTR>(state.items[row].data);
-            if (parent)
-                SendMessageW(parent, WM_DRAWITEM, item.CtlID,
-                             reinterpret_cast<LPARAM>(&item));
+        if (state.reorder.source >= 0) DrawReorderPlaceholder(window, state, dc);
+        const int start = std::max(0, first - 1);
+        for (int row = start; row < static_cast<int>(state.items.size()); ++row) {
+            const int y = row * item_height - state.scroll_offset +
+                (state.reorder.source >= 0 ? static_cast<int>(std::lround(state.reorder.offsets[row])) : 0);
+            if (y > client.bottom + item_height) break;
+            if (y + item_height < 0 || row == state.reorder.source) continue;
+            DrawOwnerRow(window, state, dc, row, y);
         }
+        if (state.reorder.source >= 0) DrawFloatingProject(window, state, dc);
     }
     DrawScrollbar(window, state, dc);
 }
@@ -257,6 +257,7 @@ LRESULT HandleListMessage(HWND window, ProjectListState& state,
                           UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
     case LB_RESETCONTENT:
+        ResetReorder(window, state);
         state.items.clear();
         state.selected = -1;
         state.scroll_offset = 0;
@@ -303,6 +304,7 @@ LRESULT HandleListMessage(HWND window, ProjectListState& state,
     case LB_GETCURSEL:
         return state.selected >= 0 ? state.selected : LB_ERR;
     case LB_SETITEMHEIGHT: {
+        ResetReorder(window, state);
         const int next = std::max(1, static_cast<int>(lparam));
         if (next == state.item_height) return 0;
         const int previous = std::max(1, state.item_height);
@@ -359,6 +361,9 @@ LRESULT CALLBACK ProjectListViewProc(HWND window, UINT message,
     if (message >= LB_ADDSTRING && message <= LB_MSGMAX)
         return HandleListMessage(window, *state, message, wparam, lparam);
 
+    if (const auto handled = HandleReorderMessage(window, *state, message, wparam, lparam))
+        return *handled;
+
     switch (message) {
     case kSetThemeMessage:
         if (lparam) {
@@ -377,6 +382,7 @@ LRESULT CALLBACK ProjectListViewProc(HWND window, UINT message,
     case WM_GETFONT:
         return reinterpret_cast<LRESULT>(state->font);
     case WM_SIZE: {
+        ResetReorder(window, *state);
         const int old_max = std::max(
             0, ContentHeight(*state) - state->viewport_height);
         const bool was_at_bottom = old_max > 0 &&
@@ -411,6 +417,7 @@ LRESULT CALLBACK ProjectListViewProc(HWND window, UINT message,
             SetScrollOffset(window, *state,
                             state->scroll_offset - steps * amount);
         }
+        if (state->reorder.source >= 0 && !state->reorder.settling) UpdateReorderDestination(window, *state);
         return 0;
     }
     case WM_MOUSEMOVE: {
@@ -506,6 +513,7 @@ LRESULT CALLBACK ProjectListViewProc(HWND window, UINT message,
                                 reinterpret_cast<WPARAM>(window), lparam);
         return 0;
     case WM_NCDESTROY: {
+        ResetReorder(window, *state);
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
         delete state;
         return DefWindowProcW(window, message, wparam, lparam);
@@ -585,6 +593,32 @@ void SetProjectListViewTheme(HWND window,
     if (!window) return;
     SendMessageW(window, kSetThemeMessage, 0,
                  reinterpret_cast<LPARAM>(&theme));
+}
+
+void SetProjectListReorderCallbacks(HWND window, ProjectListReorderCallbacks callbacks) {
+    if (auto* state = State(window)) {
+        ResetReorder(window, *state);
+        state->reorder_callbacks = std::move(callbacks);
+    }
+}
+
+bool IsProjectListReordering(HWND window) {
+    const auto* state = State(window);
+    return state && (state->reorder.candidate >= 0 || state->reorder.source >= 0);
+}
+
+void CancelProjectListReorder(HWND window) {
+    if (auto* state = State(window)) ResetReorder(window, *state);
+}
+
+void ReplaceProjectListEntries(HWND window, std::vector<ProjectListEntry> entries, int selected) {
+    if (auto* state = State(window)) {
+        ResetReorder(window, *state);
+        state->items = std::move(entries);
+        state->selected = selected >= 0 && selected < static_cast<int>(state->items.size()) ? selected : -1;
+        state->scroll_offset = std::clamp(state->scroll_offset, 0, MaximumScroll(window, *state));
+        InvalidateRect(window, nullptr, FALSE);
+    }
 }
 
 } // namespace aicli::ui

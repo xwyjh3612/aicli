@@ -76,62 +76,7 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
             }
         }
         return result;
-    }else if(m==WM_LBUTTONDOWN){
-        POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
-        if(aicli::ui::BeginProjectListScrollbarDrag(h,point))return 0;
-        g_project_drag_candidate=-1;
-        int clicked_row=-1;
-        bool on_drag_handle=false;
-        if(aicli::ui::GetStyledInputText(g_search).empty()){
-            const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
-            if(!HIWORD(hit)){
-                const int row=static_cast<int>(LOWORD(hit));
-                clicked_row=row;
-                RECT item{};
-                if(SendMessageW(h,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))!=LB_ERR){
-                    const RECT handle{item.left+ScaleUi(3),item.top+ScaleUi(3),item.left+ScaleUi(31),item.bottom-ScaleUi(3)};
-                    if(PtInRect(&handle,point)){
-                        g_project_drag_candidate=row;
-                        on_drag_handle=true;
-                    }
-                }
-            }
-        }else{
-            const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
-            if(!HIWORD(hit))clicked_row=static_cast<int>(LOWORD(hit));
-        }
-        if(clicked_row>=0){
-            // MakeDragList is designed for the stock LISTBOX procedure. This
-            // view implements the LB_* contract itself, so the drag subclass
-            // can consume the original mouse message after changing the row
-            // without ever producing LBN_SELCHANGE. Own normal selection at
-            // the outermost subclass and activate the matching terminal now.
-            SetFocus(h);
-            SendMessageW(h,LB_SETCURSEL,clicked_row,0);
-            SendMessageW(GetParent(h),WM_COMMAND,
-                         MAKEWPARAM(GetDlgCtrlID(h),LBN_SELCHANGE),
-                         reinterpret_cast<LPARAM>(h));
-            if(!on_drag_handle)return 0;
-        }
-    }else if(m==WM_LBUTTONDBLCLK){
-        POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
-        const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
-        if(!HIWORD(hit)){
-            const int row=static_cast<int>(LOWORD(hit));
-            SetFocus(h);
-            SendMessageW(h,LB_SETCURSEL,row,0);
-            SendMessageW(GetParent(h),WM_COMMAND,
-                         MAKEWPARAM(GetDlgCtrlID(h),LBN_DBLCLK),
-                         reinterpret_cast<LPARAM>(h));
-            return 0;
-        }
-    }else if(m==WM_LBUTTONUP){
-        if(aicli::ui::EndProjectListScrollbarDrag(h)){
-            g_project_drag_candidate=-1;
-            return 0;
-        }
-        if(!g_project_dragging)g_project_drag_candidate=-1;
-    }else if(m==WM_KEYDOWN&&w==VK_DELETE){
+    }else if(m==WM_KEYDOWN&&w==VK_DELETE&&!aicli::ui::IsProjectListReordering(h)){
         if(SendMessageW(h,LB_GETCURSEL,0,0)!=LB_ERR){
             SendMessageW(GetParent(h),WM_COMMAND,
                          MAKEWPARAM(ID_CTX_DELETE,0),
@@ -140,6 +85,7 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
         }
     }else if(m==WM_MOUSEMOVE){
         POINT point{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
+        if(aicli::ui::IsProjectListReordering(h))return DefSubclassProc(h,m,w,l);
         if(aicli::ui::UpdateProjectListScrollbarDrag(h,point))return 0;
         const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,l);
         const int next=HIWORD(hit)?-1:static_cast<int>(LOWORD(hit));
@@ -155,25 +101,6 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
         const int previous=g_project_hover_row;
         g_project_hover_row=-1;
         InvalidateProjectRow(h,previous);
-    }else if(m==WM_CAPTURECHANGED){
-        aicli::ui::CancelProjectListScrollbarDrag(h);
-    }else if(m==WM_SETCURSOR&&LOWORD(l)==HTCLIENT&&
-             aicli::ui::GetStyledInputText(g_search).empty()){
-        POINT point{};
-        GetCursorPos(&point);
-        ScreenToClient(h,&point);
-        const LRESULT hit=SendMessageW(h,LB_ITEMFROMPOINT,0,MAKELPARAM(point.x,point.y));
-        if(!HIWORD(hit)){
-            RECT item{};
-            const int row=static_cast<int>(LOWORD(hit));
-            if(SendMessageW(h,LB_GETITEMRECT,row,reinterpret_cast<LPARAM>(&item))!=LB_ERR){
-                const RECT handle{item.left+ScaleUi(3),item.top+ScaleUi(3),item.left+ScaleUi(31),item.bottom-ScaleUi(3)};
-                if(PtInRect(&handle,point)){
-                    SetCursor(LoadCursorW(nullptr,IDC_SIZEALL));
-                    return TRUE;
-                }
-            }
-        }
     }else if(m==WM_SETFOCUS||m==WM_KILLFOCUS){
         const LRESULT result=DefSubclassProc(h,m,w,l);
         const LRESULT selected=SendMessageW(h,LB_GETCURSEL,0,0);
@@ -394,9 +321,9 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
 
     const auto& project=g_projects[projectIndex];
     const bool selected=(item->itemState&ODS_SELECTED)!=0;
-    const bool hovered=static_cast<int>(item->itemID)==g_project_hover_row;
-    const bool sourceDragging=g_project_dragging&&
-        static_cast<int>(item->itemID)==g_project_drag_source;
+    const bool floating=(item->itemState&aicli::ui::kProjectItemDragPreview)!=0;
+    const bool hovered=!aicli::ui::IsProjectListReordering(item->hwndItem)&&
+        static_cast<int>(item->itemID)==g_project_hover_row;
     RECT row=item->rcItem;
     HBRUSH rowBackground=CreateSolidBrush(SidebarBackground());
     FillRect(item->hDC,&row,rowBackground);
@@ -406,14 +333,14 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
     // two-pixel corner radius as requested for the compact sidebar.
     RECT card{row.left+1,row.top+1,row.right-1,row.bottom-1};
     COLORREF cardFill=g_light_theme?RGB(250,251,253):SidebarBackground();
-    if(sourceDragging){
-        cardFill=SidebarBackground();
-    }else if(selected){
+    if(selected){
         cardFill=g_light_theme?RGB(238,245,254):RGB(23,38,65);
     }else if(hovered){
         cardFill=g_light_theme?RGB(243,247,252):RGB(17,28,48);
     }
-    DrawSmoothRoundedRect(item->hDC,card,2.0f,cardFill,cardFill,0.0f);
+    DrawSmoothRoundedRect(item->hDC,card,2.0f,cardFill,
+        floating?aicli::ui::BlendBackdropColor(cardFill,accent,100):cardFill,
+        floating?1.0f:0.0f);
 
     {
         Gdiplus::Graphics graphics(item->hDC);
@@ -421,7 +348,7 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
         Gdiplus::Pen grip(SmoothColor(
-            hovered&&!sourceDragging
+            hovered||floating
                 ?(g_light_theme?RGB(111,128,150):RGB(131,145,165))
                 :(g_light_theme?RGB(157,166,178):RGB(91,101,116))),ScaleUiF(1.25f));
         grip.SetStartCap(Gdiplus::LineCapRound);
@@ -440,36 +367,11 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
 
     SetBkMode(item->hDC,TRANSPARENT);
     auto oldFont=SelectObject(item->hDC,g_font_project_list);
-    wchar_t name[256]{};
-    SendMessageW(item->hwndItem,LB_GETTEXT,item->itemID,(LPARAM)name);
-    SetTextColor(item->hDC,sourceDragging?muted:fg);
+    SetTextColor(item->hDC,fg);
     RECT title{card.left+ScaleUi(29),card.top,card.right-ScaleUi(39),card.bottom};
-    DrawTextW(item->hDC,name,-1,&title,
+    DrawTextW(item->hDC,project.name.c_str(),static_cast<int>(project.name.size()),&title,
               DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
     SelectObject(item->hDC,oldFont);
-
-    if(g_project_dragging){
-        const int count=static_cast<int>(SendMessageW(item->hwndItem,LB_GETCOUNT,0,0));
-        int markerY=-1;
-        if(g_project_drag_insert==static_cast<int>(item->itemID))markerY=row.top+2;
-        else if(g_project_drag_insert==count&&static_cast<int>(item->itemID)==count-1)
-            markerY=row.bottom-3;
-        if(markerY>=0){
-            Gdiplus::Graphics graphics(item->hDC);
-            graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-            Gdiplus::Pen glow(SmoothColor(accent,70),4.0f);
-            Gdiplus::Pen marker(SmoothColor(accent),2.0f);
-            glow.SetStartCap(Gdiplus::LineCapRound);glow.SetEndCap(Gdiplus::LineCapRound);
-            marker.SetStartCap(Gdiplus::LineCapRound);marker.SetEndCap(Gdiplus::LineCapRound);
-            graphics.DrawLine(&glow,static_cast<float>(row.left+10),static_cast<float>(markerY),
-                              static_cast<float>(row.right-8),static_cast<float>(markerY));
-            graphics.DrawLine(&marker,static_cast<float>(row.left+10),static_cast<float>(markerY),
-                              static_cast<float>(row.right-8),static_cast<float>(markerY));
-            Gdiplus::SolidBrush markerDot(SmoothColor(accent));
-            graphics.FillEllipse(&markerDot,static_cast<float>(row.left+6),
-                                  static_cast<float>(markerY-3),6.0f,6.0f);
-        }
-    }
 }
 void DrawProjectItem(const DRAWITEMSTRUCT* item){
     if(!item||!item->hDC||item->itemID==(UINT)-1)return;

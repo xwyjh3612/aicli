@@ -50,6 +50,7 @@
 #include "data/data_migration.h"
 #include "features/mobile_project_creation.h"
 #include "features/project_configuration.h"
+#include "features/project_order.h"
 #include "terminal/conpty_connection_bridge.h"
 #include "terminal/terminal_working_detector.h"
 #include "terminal/xaml_island_adapter.h"
@@ -283,15 +284,8 @@ std::atomic_uint64_t g_git_status_request_id{};
 std::atomic_bool g_git_status_query_active{};
 std::unordered_set<std::wstring> g_working_projects;
 aicli::app::KeepAwakeRequest g_keep_awake;
-int g_project_drag_source=-1;
-int g_project_drag_insert=-1;
-int g_project_drag_candidate=-1;
 int g_project_hover_row=-1;
-bool g_project_dragging{};
-UINT g_project_drag_message{};
 UINT g_taskbar_button_created_message{};
-HWND g_project_drag_preview{};
-POINT g_project_drag_hotspot{};
 
 int ScaleUi(int value) noexcept {
     return g_layout_metrics.Scale(value);
@@ -801,6 +795,7 @@ void UpdateGroupButton(){
     InvalidateRect(g_group,nullptr,FALSE);
 }
 void RefreshProjectList(){
+    aicli::ui::CancelProjectListReorder(g_list);
     const int selected=SelectedProjectIndex();
     const std::wstring preferred_id=(selected>=0&&selected<(int)g_projects.size())?g_projects[selected].id:g_last_project_id;
     SendMessageW(g_list,WM_SETREDRAW,FALSE,0);
@@ -1367,7 +1362,6 @@ void ResizeModalHosts(HWND owner){
     (void)owner;
 }
 LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
-    if(g_project_drag_message&&m==g_project_drag_message)return HandleProjectDragListMessage(h,l);
     if(g_taskbar_button_created_message&&m==g_taskbar_button_created_message){g_taskbar_working_indicator.OnTaskbarButtonCreated();return 0;}
     if (aicli::app::native_remote::HandleMessage(
             m, l, g_remote_ui, g_store, g_conversation_bridge)) return 0;
@@ -1385,8 +1379,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
             g_light_theme?RGB(141,151,164):RGB(159,159,159),
             g_light_theme?RGB(116,127,142):RGB(159,159,159)};
         aicli::ui::SetProjectListViewTheme(g_list,list_theme);
-        g_project_drag_message=RegisterWindowMessageW(DRAGLISTMSGSTRING);
-        MakeDragList(g_list);
+        ConfigureProjectReordering();
         SetWindowSubclass(g_list,ProjectListSubclassProc,
                           kProjectListSubclassId,0);
         RefreshProjectList();
@@ -1479,7 +1472,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
                      RDW_INVALIDATE | RDW_NOERASE | RDW_ALLCHILDREN);
         return 0;
     case WM_TERMINAL_DIRTY:g_terminal_snapshots.MarkDirtyMessageHandled();if(!g_terminal_snapshot_timer_active){SetTimer(h,kTerminalSnapshotTimerId,200,nullptr);g_terminal_snapshot_timer_active=true;}return 0;
-    case WM_TIMER:if(g_footer_status.HandleTimer(w))return 0;if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kStatusClearTimerId){KillTimer(h,kStatusClearTimerId);SetText(g_status,L"");return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);g_project_idle_pulse_angle=std::fmod(g_project_idle_pulse_angle+9.0f,360.0f);RefreshProjectDragPreview();if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
+    case WM_TIMER:if(g_footer_status.HandleTimer(w))return 0;if(w==1){RefreshGitStatus();UpdateHeaderTelemetry();return 0;}if(w==kStatusClearTimerId){KillTimer(h,kStatusClearTimerId);SetText(g_status,L"");return 0;}if(w==kTerminalSnapshotTimerId){if(g_terminal_snapshots.TakeDirty())g_terminal_snapshots.Publish(g_island,g_conversation_bridge,g_terminal_streams);else{KillTimer(h,kTerminalSnapshotTimerId);g_terminal_snapshot_timer_active=false;}return 0;}if(w==kProjectSpinnerTimerId){g_project_spinner_angle=std::fmod(g_project_spinner_angle+18.0f,360.0f);g_project_idle_pulse_angle=std::fmod(g_project_idle_pulse_angle+9.0f,360.0f);if(!InvalidateWorkingProjectRows())StopProjectSpinnerTimer();return 0;}if(w==kGitSpinnerTimerId){if(!g_footer_status.AdvanceRepositorySpinner())KillTimer(h,kGitSpinnerTimerId);return 0;}break;
     case WM_GETMINMAXINFO:{auto* info=(MINMAXINFO*)l;const auto metrics=aicli::ui::LayoutMetrics::ForWindow(h);info->ptMinTrackSize.x=metrics.Scale(900);info->ptMinTrackSize.y=metrics.Scale(600);return 0;}
     case WM_ERASEBKGND: return 1;
     case WM_CONTEXTMENU: if((HWND)w==g_list){ShowProjectContextMenu(h,l);return 0;} break;
@@ -1655,7 +1648,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         EndPaint(h,&ps);
         return 0;
     }
-    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();g_keep_awake.Update(false);EndProjectDragPreview();if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_header)DeleteObject(g_font_header);if(g_font_header_icon)DeleteObject(g_font_header_icon);if(g_font_search)DeleteObject(g_font_search);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_font_empty_state_icon)DeleteObject(g_font_empty_state_icon);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_search_brush){DeleteObject(g_search_brush);g_search_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
+    case WM_DESTROY:++g_git_status_request_id;KillTimer(h,kGitSpinnerTimerId);StopProjectSpinnerTimer();g_taskbar_working_indicator.Detach();g_terminal_snapshots.Detach();g_footer_status.Detach();g_remote_agent.Stop();g_island.StopAll();g_keep_awake.Update(false);aicli::ui::CancelProjectListReorder(g_list);if(g_detail_tooltip)DestroyWindow(g_detail_tooltip);if(g_font)DeleteObject(g_font);if(g_font_medium)DeleteObject(g_font_medium);if(g_font_small)DeleteObject(g_font_small);if(g_font_header)DeleteObject(g_font_header);if(g_font_header_icon)DeleteObject(g_font_header_icon);if(g_font_search)DeleteObject(g_font_search);if(g_font_sidebar_title)DeleteObject(g_font_sidebar_title);if(g_font_project_list)DeleteObject(g_font_project_list);if(g_font_modal_title)DeleteObject(g_font_modal_title);if(g_font_modal_subtitle)DeleteObject(g_font_modal_subtitle);if(g_font_project_heading)DeleteObject(g_font_project_heading);if(g_font_monospace)DeleteObject(g_font_monospace);if(g_font_empty_state_icon)DeleteObject(g_font_empty_state_icon);if(g_icon_font)DeleteObject(g_icon_font);if(g_edit_brush){DeleteObject(g_edit_brush);g_edit_brush=nullptr;}if(g_focus_brush){DeleteObject(g_focus_brush);g_focus_brush=nullptr;}if(g_search_brush){DeleteObject(g_search_brush);g_search_brush=nullptr;}if(g_list_brush){DeleteObject(g_list_brush);g_list_brush=nullptr;}if(g_panel_brush){DeleteObject(g_panel_brush);g_panel_brush=nullptr;}if(g_bg_brush){DeleteObject(g_bg_brush);g_bg_brush=nullptr;}if(g_detail_surface_brush){DeleteObject(g_detail_surface_brush);g_detail_surface_brush=nullptr;}PostQuitMessage(0);return 0; }
     if(m==WM_NCDESTROY&&g_font_git){
         DeleteObject(g_font_git);
         g_font_git=nullptr;
@@ -1777,7 +1770,7 @@ int WINAPI wWinMain(HINSTANCE instance,
     ShowWindow(g_hwnd, show_command);
     UpdateWindow(g_hwnd);
     aicli::update::Start(g_hwnd,{
-        []{return g_working_projects.empty();},
+        []{return g_working_projects.empty()&&!aicli::ui::IsProjectListReordering(g_list);},
         [](std::wstring_view version){
             aicli::update::RestartPlan plan;
             plan.selected=g_last_project_id;
