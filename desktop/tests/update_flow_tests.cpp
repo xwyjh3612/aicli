@@ -79,22 +79,20 @@ void TestDots() {
     const auto bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
     const auto old = SelectObject(dc, bitmap);
     for (UINT dpi : {96u, 144u, 192u}) {
-        for (int dots : {1, 2}) {
-            RECT rect{0, 0, 200, 80};
-            FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-            aicli::ui::DrawUpdateBadge(dc, rect, dpi, dots);
-            int segments{}, previous{};
-            for (int x = 0; x < 200; ++x) {
-                int red{};
-                for (int y = 0; y < 80; ++y) {
-                    const auto color = GetPixel(dc, x, y);
-                    if (GetRValue(color) > 180 && GetGValue(color) < 100) red = 1;
-                }
-                if (red && !previous) ++segments;
-                previous = red;
+        RECT rect{0, 0, 200, 80};
+        FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        aicli::ui::DrawUpdateBadge(dc, rect, dpi);
+        int segments{}, previous{};
+        for (int x = 0; x < 200; ++x) {
+            int red{};
+            for (int y = 0; y < 80; ++y) {
+                const auto color = GetPixel(dc, x, y);
+                if (GetRValue(color) > 180 && GetGValue(color) < 100) red = 1;
             }
-            Require(segments == dots, "red dots remain separate at each DPI");
+            if (red && !previous) ++segments;
+            previous = red;
         }
+        Require(segments == 1, "update badge shows exactly one red dot at each DPI");
     }
     SelectObject(dc, old);
     DeleteObject(bitmap);

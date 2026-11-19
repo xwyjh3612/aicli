@@ -284,11 +284,11 @@ void TestUpdateSettings(HWND owner, aicli::DataStore& store, aicli::agent::Remot
         {
             Require(state->settings_page == management::SettingsPage::Appearance,
                     "Settings opens on appearance page");
-            Require(RedBadgeSegments(state->settings_about) == 2,
-                    "About navigation shows two red dots while another page is open");
+            Require(RedBadgeSegments(state->settings_about) == 1,
+                    "About navigation shows one red dot while another page is open");
             Click(window, management::kSettingsAbout);
-            Require(RedBadgeSegments(state->check_update) == 2,
-                    "Check update button shows two red dots");
+            Require(RedBadgeSegments(state->check_update) == 1,
+                    "Check update button shows one red dot");
             Require(IsWindowVisible(state->download_update), "available update reveals download action");
             Click(window, management::kDownloadUpdate);
             ++stage;

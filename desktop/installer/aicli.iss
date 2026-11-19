@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0.12"
+  #define MyAppVersion "1.0.0.13"
 #endif
 
 #define MyAppName "AiCli"
