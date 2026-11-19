@@ -30,6 +30,8 @@ struct RoundedContextMenuOptions {
     int dpi{96};
     int width{224};
     int row_height{36};
+    // Terminal popups keep ordinary typing away from the running CLI.
+    bool consume_keyboard_input{};
     // Opens a submenu for the hovered/clicked entry. Returning true means
     // the submenu handled the action and the parent menu should close;
     // returning false keeps the parent menu available.

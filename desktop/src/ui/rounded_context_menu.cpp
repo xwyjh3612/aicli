@@ -395,6 +395,8 @@ std::optional<RoundedContextMenuResult> ShowRoundedContextMenu(
                 continue;
             }
         }
+        if (options.consume_keyboard_input && message.message >= WM_KEYFIRST &&
+            message.message <= WM_KEYLAST) continue;
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }

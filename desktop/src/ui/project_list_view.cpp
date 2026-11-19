@@ -22,6 +22,8 @@ struct ProjectReorderState {
     POINT down{}, pointer{};
     float grab_y{}, floating_y{}, settle_from{};
     bool valid{}, settling{};
+    bool handle{}, hold_cancelled{};
+    ULONGLONG press_start{};
     ULONGLONG animation_start{}, settle_start{}, last_tick{};
     std::vector<float> offsets;
     std::vector<float> from_offsets;

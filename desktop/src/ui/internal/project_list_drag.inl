@@ -2,6 +2,7 @@
 // share the same buffered surface as the rows. No layered preview window.
 constexpr UINT_PTR kReorderTimer = 0xA1C1;
 constexpr float kReorderAnimationMs = 140.0f;
+constexpr ULONGLONG kReorderLongPressMs = 3000;
 
 bool ReorderActive(const ProjectListState& state) {
     return state.reorder.candidate >= 0 || state.reorder.source >= 0;
@@ -50,8 +51,19 @@ void UpdateReorderDestination(HWND window, ProjectListState& state) {
         drag.animation_start = GetTickCount64();
         drag.destination = proposed;
     }
-    SetCursor(LoadCursorW(nullptr, drag.valid ? IDC_SIZENS : IDC_NO));
+    SetCursor(LoadCursorW(nullptr, drag.valid ? IDC_HAND : IDC_NO));
     InvalidateRect(window, nullptr, FALSE);
+}
+
+void BeginReorder(HWND window, ProjectListState& state) {
+    auto& drag = state.reorder;
+    drag.source = drag.destination = drag.candidate;
+    drag.candidate = -1;
+    drag.offsets.assign(state.items.size(), 0);
+    drag.from_offsets = drag.offsets;
+    drag.animation_start = drag.last_tick = GetTickCount64();
+    SetFocus(window);
+    UpdateReorderDestination(window, state);
 }
 
 void DrawOwnerRow(HWND window, ProjectListState& state, HDC dc, int row, int y, bool floating = false) {
@@ -117,9 +129,14 @@ std::optional<LRESULT> HandleReorderMessage(HWND window, ProjectListState& state
         return 0; // Never change selection or delete projects during a drag.
     }
     if (message == WM_CONTEXTMENU && ReorderActive(state)) return 0;
+    if (message == WM_MOUSEWHEEL && drag.candidate >= 0) ResetReorder(window, state);
     if (message == WM_TIMER && wparam == kReorderTimer) {
-        if (drag.source < 0) return 0;
         const auto now = GetTickCount64();
+        if (drag.source < 0) {
+            if (drag.candidate >= 0 && !drag.hold_cancelled && now - drag.press_start >= kReorderLongPressMs)
+                BeginReorder(window, state);
+            return 0;
+        }
         SampleReorderAnimation(state, now);
         if (drag.settling) {
             const float t = std::clamp(static_cast<float>(now - drag.settle_start) / kReorderAnimationMs, 0.0f, 1.0f);
@@ -150,7 +167,8 @@ std::optional<LRESULT> HandleReorderMessage(HWND window, ProjectListState& state
         return 0;
     }
     if (message == WM_SETCURSOR && ReorderActive(state)) {
-        SetCursor(LoadCursorW(nullptr, drag.source >= 0 && !drag.valid ? IDC_NO : IDC_SIZENS));
+        SetCursor(LoadCursorW(nullptr, drag.source >= 0 && !drag.valid ? IDC_NO :
+            (drag.source >= 0 || drag.handle ? IDC_HAND : IDC_ARROW)));
         return TRUE;
     }
     if (message == WM_SETCURSOR && LOWORD(lparam) == HTCLIENT && state.reorder_callbacks.begin) {
@@ -160,7 +178,7 @@ std::optional<LRESULT> HandleReorderMessage(HWND window, ProjectListState& state
         bool outside{};
         HitTestRow(window, state, point, &outside);
         if (!outside && point.x >= Scale(window, 3) && point.x < Scale(window, 31)) {
-            SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
             return TRUE;
         }
     }
@@ -170,7 +188,11 @@ std::optional<LRESULT> HandleReorderMessage(HWND window, ProjectListState& state
         POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         bool outside{};
         const int row = HitTestRow(window, state, point, &outside);
-        if (!outside && point.x >= Scale(window, 3) && point.x < Scale(window, 31) && state.reorder_callbacks.begin) {
+        RECT client{};
+        GetClientRect(window, &client);
+        const bool handle = point.x >= Scale(window, 3) && point.x < Scale(window, 31);
+        // Leave the scrollbar's hit strip available for thumb/page dragging.
+        if (!outside && point.x < client.right - Scale(window, 14) && state.reorder_callbacks.begin) {
             int first = 0, last = static_cast<int>(state.items.size()) - 1;
             if (state.reorder_callbacks.begin(row, first, last) && first >= 0 && first <= row && last >= row && last < static_cast<int>(state.items.size())) {
                 ResetReorder(window, state);
@@ -178,9 +200,15 @@ std::optional<LRESULT> HandleReorderMessage(HWND window, ProjectListState& state
                 drag.first = first;
                 drag.last = last;
                 drag.down = drag.pointer = point;
+                drag.handle = handle;
+                drag.press_start = GetTickCount64();
                 drag.grab_y = static_cast<float>(point.y - (row * state.item_height - state.scroll_offset));
                 SetFocus(window); // Escape must cancel even before the drag threshold.
                 SetCapture(window);
+                if (!SetTimer(window, kReorderTimer, 16, nullptr)) {
+                    ResetReorder(window, state);
+                    return std::nullopt;
+                }
                 return 0;
             }
         }
@@ -188,24 +216,33 @@ std::optional<LRESULT> HandleReorderMessage(HWND window, ProjectListState& state
     if (message == WM_MOUSEMOVE && ReorderActive(state)) {
         drag.pointer = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         if (drag.source < 0) {
-            const int threshold = GetSystemMetricsForDpi(SM_CYDRAG, GetDpiForWindow(window));
-            if (std::abs(drag.pointer.y - drag.down.y) < threshold) return 0;
-            drag.source = drag.destination = drag.candidate;
-            drag.candidate = -1;
-            drag.offsets.assign(state.items.size(), 0);
-            drag.from_offsets = drag.offsets;
-            drag.animation_start = drag.last_tick = GetTickCount64();
-            SetFocus(window);
-            if (!SetTimer(window, kReorderTimer, 16, nullptr)) {
-                ResetReorder(window, state);
+            const UINT dpi = GetDpiForWindow(window);
+            const int threshold = GetSystemMetricsForDpi(SM_CYDRAG, dpi);
+            if (!drag.handle) {
+                if (std::abs(drag.pointer.x - drag.down.x) >= GetSystemMetricsForDpi(SM_CXDRAG, dpi) ||
+                    std::abs(drag.pointer.y - drag.down.y) >= threshold) {
+                    drag.hold_cancelled = true;
+                    KillTimer(window, kReorderTimer);
+                }
                 return 0;
             }
+            if (std::abs(drag.pointer.y - drag.down.y) < threshold) return 0;
+            BeginReorder(window, state);
         }
         UpdateReorderDestination(window, state);
         return 0;
     }
     if (message == WM_LBUTTONUP && ReorderActive(state)) {
-        if (drag.source < 0) { ResetReorder(window, state); return 0; }
+        if (drag.source < 0) {
+            const int candidate = drag.candidate;
+            const bool click = !drag.handle;
+            const POINT released{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            bool outside{};
+            const int row = HitTestRow(window, state, released, &outside);
+            ResetReorder(window, state);
+            if (click && !outside && row == candidate) SetSelection(window, state, candidate, true);
+            return 0;
+        }
         drag.pointer = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
         UpdateReorderDestination(window, state);
         if (!drag.valid) { ResetReorder(window, state); return 0; }

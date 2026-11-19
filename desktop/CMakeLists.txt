@@ -170,6 +170,7 @@ else()
         src/ui/overlay_scrollbar.cpp
         src/ui/project_list_view.cpp
         src/ui/rounded_context_menu.cpp
+        src/terminal/terminal_context_menu.cpp
         src/ui/rounded_select_popup.cpp
         src/ui/styled_input.cpp
         ${AICLI_NATIVE_DIALOG_SOURCES}
@@ -434,6 +435,32 @@ if (NOT AICLI_USE_QT_UI)
     )
     get_target_property(AICLI_APP_INCLUDES aicli INCLUDE_DIRECTORIES)
     get_target_property(AICLI_APP_LIBRARIES aicli LINK_LIBRARIES)
+    add_executable(aicli_terminal_context_menu_tests
+        tests/terminal_context_menu_tests.cpp
+        src/terminal/xaml_island_adapter.cpp
+        src/terminal/terminal_context_menu.cpp
+        src/terminal/conpty_connection_bridge.cpp
+        src/app/runtime_components.cpp src/app/powershell_runtime.cpp
+        src/core/text_utils.cpp src/ui/rounded_context_menu.cpp
+        src/ui/drawing_utils.cpp src/ui/theme.cpp)
+    target_include_directories(aicli_terminal_context_menu_tests PRIVATE ${AICLI_APP_INCLUDES})
+    target_link_libraries(aicli_terminal_context_menu_tests PRIVATE ${AICLI_APP_LIBRARIES})
+    target_compile_definitions(aicli_terminal_context_menu_tests PRIVATE
+        UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    set_target_properties(aicli_terminal_context_menu_tests PROPERTIES OUTPUT_NAME aicli
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terminal-menu-tests/$<CONFIG>")
+    if (MSVC)
+        target_compile_options(aicli_terminal_context_menu_tests PRIVATE /W4 /EHsc /utf-8 /FS)
+        target_link_options(aicli_terminal_context_menu_tests PRIVATE "/MANIFEST:EMBED"
+            "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/src/app/aicli.manifest")
+    endif()
+    add_custom_command(TARGET aicli_terminal_context_menu_tests POST_BUILD
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/stage-runtime.ps1"
+            -Output "$<TARGET_FILE_DIR:aicli_terminal_context_menu_tests>"
+            -Configuration "$<CONFIG>" -Platform x64
+            -PackageIdentityName "AiCli.Desktop.MenuProbe"
+            -ApplicationLogo "${AICLI_APPLICATION_LOGO}" -UnvirtualizedData)
     add_executable(aicli_hyperlink_launcher_tests tests/hyperlink_launcher_tests.cpp)
     target_include_directories(aicli_hyperlink_launcher_tests PRIVATE ${AICLI_APP_INCLUDES})
     target_compile_definitions(aicli_hyperlink_launcher_tests PRIVATE

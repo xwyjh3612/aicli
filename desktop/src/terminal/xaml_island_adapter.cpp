@@ -40,6 +40,7 @@
 #include "terminal/conpty_connection_bridge.h"
 #ifndef AICLI_QT_UI_BUILD
 #include "terminal/hyperlink_launcher.h"
+#include "terminal/terminal_context_menu.h"
 #endif
 
 namespace aicli::terminal {
@@ -394,6 +395,12 @@ public:
             ConfigureClipboardBridge(*session);
 #ifndef AICLI_QT_UI_BUILD
             ConfigureHyperlinkBridge(*session);
+            session->control.Initialized(
+                [this, project_id](const Control::TermControl& control,
+                    const winrt::Windows::UI::Xaml::RoutedEventArgs&) noexcept {
+                    if (auto* ready = FindSession(project_id); ready && ready->control == control)
+                        ready->initialized = true;
+                });
 #endif
             set_stage(L"attach TermControl");
             // TermControl derives the TSF/IME candidate-window position from
@@ -694,6 +701,9 @@ public:
     std::wstring ReadEntireBuffer(std::wstring_view project_id = {}) const {
         const auto* session = project_id.empty() ? ActiveSession() : FindSession(project_id);
         if (!session || !session->control) return {};
+#ifndef AICLI_QT_UI_BUILD
+        if (!session->initialized) return {};
+#endif
         try {
             const auto value = session->control.ReadEntireBuffer();
             return {value.c_str(), value.size()};
@@ -881,12 +891,77 @@ public:
         if (key == 'C') copy_shortcut_active_ = false;
     }
     void CancelClipboardShortcut() noexcept { copy_shortcut_active_ = false; }
+#ifndef AICLI_QT_UI_BUILD
+    void OpenContextMenu(POINT position) noexcept {
+        if (context_menu_open_ || !visible_ || !hwnd_) return;
+        auto* session = ActiveSession();
+        if (!session || !session->control || !session->initialized) return;
+        // Keep the selected control alive while the popup pumps messages, and
+        // reject the command if a remote action switches or stops the project.
+        const auto control = session->control;
+        const auto project_id = active_project_id_;
+        context_menu_open_ = true;
+        try {
+            const auto command = ShowTerminalContextMenu(parent_, position, light_theme_,
+                control.HasSelection(), IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE);
+            session = ActiveSession();
+            if (command && visible_ && session && active_project_id_ == project_id &&
+                session->control == control) {
+                switch (*command) {
+                case TerminalMenuCommand::CopySelection:
+                    if (control.HasSelection()) (void)CopySelectionToClipboard();
+                    break;
+                case TerminalMenuCommand::Paste:
+                    (void)PasteFromClipboard();
+                    break;
+                case TerminalMenuCommand::SelectAll:
+                    control.SelectAll();
+                    break;
+                case TerminalMenuCommand::CopyAll: {
+                    const auto text = control.ReadEntireBuffer();
+                    (void)WriteUnicodeClipboard(hwnd_, {text.c_str(), text.size()});
+                    break;
+                }
+                }
+            }
+        } catch (...) {}
+        context_menu_open_ = false;
+        FocusActiveTerminal();
+    }
+    void OpenKeyboardContextMenu() noexcept {
+        RECT bounds{};
+        if (!hwnd_ || !GetWindowRect(hwnd_, &bounds)) return;
+        const int inset = MulDiv(24, static_cast<int>(GetDpiForWindow(hwnd_)), 96);
+        OpenContextMenu({bounds.left + inset, bounds.top + inset});
+    }
+#endif
     bool PreTranslateMessage(const MSG& message) noexcept {
         if (!visible_ || !hwnd_ || !ActiveSession()) return false;
 
         const auto belongs_to_terminal = [this](HWND window) noexcept {
             return window && (window == hwnd_ || IsChild(hwnd_, window));
         };
+#ifndef AICLI_QT_UI_BUILD
+        // Consume right-clicks before a deeper XAML input HWND can copy/paste
+        // or clear selection. Mouse routing must use the target, not focus.
+        if (belongs_to_terminal(message.hwnd)) {
+            if (message.message == WM_RBUTTONDOWN || message.message == WM_RBUTTONDBLCLK) {
+                FocusActiveTerminal();
+                return true;
+            }
+            if (message.message == WM_RBUTTONUP) {
+                POINT position{GET_X_LPARAM(message.lParam), GET_Y_LPARAM(message.lParam)};
+                ClientToScreen(message.hwnd, &position);
+                OpenContextMenu(position);
+                return true;
+            }
+            if (message.message == WM_CONTEXTMENU) {
+                if (message.lParam == static_cast<LPARAM>(-1)) OpenKeyboardContextMenu();
+                else OpenContextMenu({GET_X_LPARAM(message.lParam), GET_Y_LPARAM(message.lParam)});
+                return true;
+            }
+        }
+#endif
         // Depending on the Windows build, the queued key message can target
         // either the DesktopWindowXamlSource child or a deeper XAML input HWND.
         // GetFocus covers the latter without stealing shortcuts from the app's
@@ -899,6 +974,14 @@ public:
         switch (message.message) {
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:
+#ifndef AICLI_QT_UI_BUILD
+            if (message.wParam == VK_APPS || (message.wParam == VK_F10 &&
+                (GetKeyState(VK_SHIFT) & 0x8000) && !(GetKeyState(VK_CONTROL) & 0x8000) &&
+                !(GetKeyState(VK_MENU) & 0x8000))) {
+                if (!(message.lParam & (1LL << 30))) OpenKeyboardContextMenu();
+                return true;
+            }
+#endif
             ObservePhysicalKey(message.wParam, message.lParam);
             return HandleClipboardKeyDown(message.wParam, message.lParam);
         case WM_CHAR:
@@ -1004,6 +1087,9 @@ private:
     }
 
     struct TerminalSession {
+#ifndef AICLI_QT_UI_BUILD
+        bool initialized{};
+#endif
         winrt::Microsoft::Terminal::Control::TermControl control{nullptr};
         winrt::Microsoft::Terminal::Settings::Model::TerminalSettings control_settings{nullptr};
         winrt::Microsoft::Terminal::Settings::Model::TerminalSettings unfocused_settings{nullptr};
@@ -1341,6 +1427,9 @@ private:
     UINT last_resize_dpi_{};
     bool has_resize_rect_{};
     bool copy_shortcut_active_{};
+#ifndef AICLI_QT_UI_BUILD
+    bool context_menu_open_{};
+#endif
     std::wstring last_error_;
     HWND parent_{};
     HWND hwnd_{};
@@ -1395,10 +1484,22 @@ LRESULT CALLBACK XamlIslandSubclassProc(
             return 0;
         }
         if (message == WM_RBUTTONUP) {
+#ifndef AICLI_QT_UI_BUILD
+            POINT position{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            ClientToScreen(hwnd, &position);
+            adapter->OpenContextMenu(position);
+#else
             (void)adapter->PasteFromClipboard();
+#endif
             return 0;
         }
-        if (message == WM_CONTEXTMENU) return 0;
+        if (message == WM_CONTEXTMENU) {
+#ifndef AICLI_QT_UI_BUILD
+            if (lparam == static_cast<LPARAM>(-1)) adapter->OpenKeyboardContextMenu();
+            else adapter->OpenContextMenu({GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+#endif
+            return 0;
+        }
         if (message == WM_NCDESTROY) {
             adapter->OnIslandDestroyed(hwnd);
             RemoveWindowSubclass(hwnd, XamlIslandSubclassProc, subclass_id);

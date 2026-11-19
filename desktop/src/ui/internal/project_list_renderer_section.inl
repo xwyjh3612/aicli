@@ -339,7 +339,7 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         cardFill=g_light_theme?RGB(243,247,252):RGB(17,28,48);
     }
     DrawSmoothRoundedRect(item->hDC,card,2.0f,cardFill,
-        floating?aicli::ui::BlendBackdropColor(cardFill,accent,100):cardFill,
+        floating?aicli::ui::BlendBackdropColor(cardFill,accent,170):cardFill,
         floating?1.0f:0.0f);
 
     {

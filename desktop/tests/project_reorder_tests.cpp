@@ -12,10 +12,11 @@ namespace {
 using namespace aicli::ui;
 struct DrawnRow { UINT row{}, flags{}; RECT rect{}; };
 std::vector<DrawnRow> drawn;
-int selection_events{}, commits{}, committed_source{-1}, committed_destination{-1};
+int selection_events{}, double_click_events{}, commits{}, committed_source{-1}, committed_destination{-1};
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 LRESULT CALLBACK OwnerProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_COMMAND && HIWORD(wparam) == LBN_SELCHANGE) { ++selection_events; return 0; }
+    if (message == WM_COMMAND && HIWORD(wparam) == LBN_DBLCLK) { ++double_click_events; return 0; }
     if (message == WM_DRAWITEM) {
         const auto& item = *reinterpret_cast<DRAWITEMSTRUCT*>(lparam);
         drawn.push_back({item.itemID, item.itemState, item.rcItem});
@@ -89,6 +90,8 @@ void TestView(HWND owner) {
 
     Mouse(list, WM_LBUTTONDOWN, 15, 60);
     Mouse(list, WM_MOUSEMOVE, 90, 112);
+    SendMessageW(list, WM_SETCURSOR, reinterpret_cast<WPARAM>(list), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    Require(GetCursor() == LoadCursorW(nullptr, IDC_HAND), "valid project drag uses the hand cursor");
     Pump(180);
     drawn.clear();
     RedrawWindow(list,nullptr,nullptr,RDW_INVALIDATE|RDW_UPDATENOW);
@@ -175,6 +178,38 @@ void TestView(HWND owner) {
     Pump(180);
     Require(committed_source==0&&committed_destination==1&&SendMessageW(list,LB_GETCURSEL,0,0)==1,
             "empty space below a short list accepts insertion at the end and retains selected project identity");
+    ReplaceProjectListEntries(list, Entries(5), 0); range_last = 4;
+    SendMessageW(list, LB_SETTOPINDEX, 0, 0);
+    const int before_hold = commits, selection_before_hold = selection_events;
+    Mouse(list, WM_LBUTTONDOWN, 120, 60);
+    Pump(2900);
+    drawn.clear(); RedrawWindow(list, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+    Require(std::none_of(drawn.begin(), drawn.end(), [](const auto& row) {return (row.flags & kProjectItemDragPreview) != 0;}),
+        "holding the row body for less than three seconds does not start dragging");
+    Pump(180);
+    drawn.clear(); RedrawWindow(list, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+    Require(std::any_of(drawn.begin(), drawn.end(), [](const auto& row) {return row.row == 1 && (row.flags & kProjectItemDragPreview) != 0;}),
+        "stationary three-second hold begins dragging with the floating row feedback");
+    SendMessageW(list, WM_SETCURSOR, reinterpret_cast<WPARAM>(list), MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
+    Require(GetCursor() == LoadCursorW(nullptr, IDC_HAND), "long-press drag uses the hand cursor");
+    Require(selection_events == selection_before_hold && SendMessageW(list, LB_GETCURSEL, 0, 0) == 0,
+        "holding a different project does not activate its terminal");
+    Mouse(list, WM_MOUSEMOVE, 120, 112); Mouse(list, WM_LBUTTONUP, 120, 112); Pump(180);
+    Require(commits == before_hold + 1 && committed_source == 1 && committed_destination == 2,
+        "long-press uses the same reorder and persistence path as the drag handle");
+    Mouse(list, WM_LBUTTONDOWN, 120, 60); Mouse(list, WM_LBUTTONUP, 120, 60);
+    Require(SendMessageW(list, LB_GETCURSEL, 0, 0) == 1 && !IsProjectListReordering(list),
+        "short row click still selects on release and disarms the hold timer");
+    Mouse(list, WM_LBUTTONDBLCLK, 120, 100);
+    Require(SendMessageW(list, LB_GETCURSEL, 0, 0) == 2 && double_click_events == 1,
+        "normal double-click retains its original activation notification");
+    Mouse(list, WM_LBUTTONDOWN, 120, 60); Mouse(list, WM_MOUSEMOVE, 150, 60); Pump(3100);
+    drawn.clear(); RedrawWindow(list, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+    Require(std::none_of(drawn.begin(), drawn.end(), [](const auto& row) {return (row.flags & kProjectItemDragPreview) != 0;}),
+        "moving before the long-press deadline cancels hold recognition");
+    SendMessageW(list, WM_KEYDOWN, VK_ESCAPE, 0);
+    Require(!IsProjectListReordering(list) && commits == before_hold + 1,
+        "cancelled row hold leaves no timer, capture or persisted change");
     DestroyWindow(list);
     std::cout << "Native reorder input, single row rendering, animation, cancellation, pixel scrolling and selection preservation passed\n";
 }
