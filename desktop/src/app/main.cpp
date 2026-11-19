@@ -51,6 +51,7 @@
 #include "features/mobile_project_creation.h"
 #include "features/project_configuration.h"
 #include "features/project_order.h"
+#include "features/project_group_views.h"
 #include "terminal/conpty_connection_bridge.h"
 #include "terminal/terminal_working_detector.h"
 #include "terminal/xaml_island_adapter.h"
@@ -240,6 +241,8 @@ std::vector<Project> g_projects;
 std::vector<ProjectType> g_project_types;
 std::vector<ProjectGroup> g_groups;
 std::vector<int> g_visible_project_indices;
+aicli::project_views::UsageHistory g_project_usage;
+std::vector<std::wstring> g_running_project_order;
 std::wstring g_default_group_name=L"默认分组";
 std::wstring g_group_name=g_default_group_name;
 const std::wstring& DefaultGroupName(){return g_default_group_name;}
@@ -319,6 +322,7 @@ void Layout();
 void UpdateDeviceHeader();
 void UpdateHeaderTelemetry();
 void RefreshConversationsCache();
+void ConfigureProjectReordering();
 bool ApplyStoredTheme(){
     const auto stored=g_store.GetSetting(L"theme",L"dark");
     const bool next_light=stored==L"light";
@@ -761,6 +765,8 @@ bool InitializePersistentState() {
         [](const ProjectGroup& group){return group.builtin;});
        builtin!=g_groups.end()) g_default_group_name=builtin->name;
     g_projects=g_store.LoadProjects();
+    g_project_usage.Load(g_store,g_projects);
+    g_running_project_order=aicli::project_views::LoadRunningOrder(g_store);
     g_update_restart_plan=aicli::update::TakeRestartPlan(g_store,AICLI_VERSION);
     for(auto& project:g_projects){
         if(project.status==L"running"||project.status==L"paused"){
@@ -776,22 +782,28 @@ bool InitializePersistentState() {
     if(g_store.GetSetting(L"seeded_projects",L"0")!=L"1")
         g_store.SetSetting(L"seeded_projects",L"1");
     g_group_name=g_store.GetSetting(L"last_group",DefaultGroupName());
-    if(g_group_name!=kAllGroupsName&&g_group_name!=kStartedProjectsName&&std::none_of(g_groups.begin(),g_groups.end(),[&](const ProjectGroup& group){return group.name==g_group_name;}))g_group_name=DefaultGroupName();
+    if(!aicli::project_views::IsSystem(g_group_name)&&std::none_of(g_groups.begin(),g_groups.end(),[&](const ProjectGroup& group){return group.name==g_group_name;}))g_group_name=DefaultGroupName();
     g_last_project_id=g_store.GetSetting(L"last_project_id");
     g_startup_project_id=g_last_project_id;
     ApplyStoredTheme();
     return true;
 }
+std::vector<int> ProjectViewRows(const std::vector<Project>& projects,const std::wstring& group){
+    std::unordered_set<std::wstring> running;
+    if(group==kStartedProjectsName)
+        for(const auto& project:projects)if(g_island.HasSession(project.id))running.insert(project.id);
+    return aicli::project_views::Build(projects,group,DefaultGroupName(),running,
+                                      g_running_project_order,g_project_usage);
+}
+bool MatchesProjectSearch(const Project& project,const std::wstring& query){
+    return query.empty()||project.name.find(query)!=std::wstring::npos||
+        project.note.find(query)!=std::wstring::npos||project.folder.find(query)!=std::wstring::npos||
+        project.type.find(query)!=std::wstring::npos;
+}
 void UpdateGroupButton(){
     if(!g_group)return;
-    g_group_project_count=g_group_name==kAllGroupsName?g_projects.size():
-        static_cast<std::size_t>(std::count_if(
-            g_projects.begin(),g_projects.end(),[](const Project& project){
-                if(g_group_name==kStartedProjectsName)return g_island.HasSession(project.id);
-                const std::wstring group=project.group.empty()?DefaultGroupName():project.group;
-                return group==g_group_name;
-            }));
-    SetText(g_group,g_group_name);
+    g_group_project_count=ProjectViewRows(g_projects,g_group_name).size();
+    SetText(g_group,aicli::project_views::Label(g_group_name));
     InvalidateRect(g_group,nullptr,FALSE);
 }
 void RefreshProjectList(){
@@ -802,15 +814,9 @@ void RefreshProjectList(){
     SendMessageW(g_list,LB_RESETCONTENT,0,0);
     g_visible_project_indices.clear();
     const std::wstring query=aicli::ui::GetStyledInputText(g_search);
-    for(size_t i=0;i<g_projects.size();++i){
+    for(const int i:ProjectViewRows(g_projects,g_group_name)){
         const auto& project=g_projects[i];
-        const std::wstring group=project.group.empty()?DefaultGroupName():project.group;
-        if(g_group_name==kStartedProjectsName){if(!g_island.HasSession(project.id))continue;}
-        else if(g_group_name!=kAllGroupsName&&group!=g_group_name)continue;
-        if(!query.empty()&&project.name.find(query)==std::wstring::npos&&
-           project.note.find(query)==std::wstring::npos&&
-           project.folder.find(query)==std::wstring::npos&&
-           project.type.find(query)==std::wstring::npos)continue;
+        if(!MatchesProjectSearch(project,query))continue;
         const LRESULT row=SendMessageW(g_list,LB_ADDSTRING,0,(LPARAM)project.name.c_str());
         if(row!=LB_ERR){SendMessageW(g_list,LB_SETITEMDATA,row,static_cast<LPARAM>(i));g_visible_project_indices.push_back(static_cast<int>(i));}
     }
@@ -823,6 +829,7 @@ void RefreshProjectList(){
     RefreshConversationsCache();
     UpdateGroupButton();
     SyncProjectSpinnerTimer();
+    ConfigureProjectReordering();
 }
 #include "ui/internal/project_drag_section.inl"
 void Layout(){
@@ -1116,12 +1123,16 @@ bool StartCommandSession(const std::wstring& cmd,const std::wstring& cwd,const s
     SetStatusText(L"终端启动失败: "+error);
     Layout(); return false;
 }
-void StartSession(bool restart=false){
+void StartSession(bool restart=false,bool record_usage=true){
     if(aicli::update::IsInstalling())return;
     const int i=SelectedProjectIndex();if(i<0||i>=(int)g_projects.size())return;
     auto& project=g_projects[i];
     if(g_island.HasSession(project.id)){
-        if(!restart){g_island.Activate(project.id);Layout();return;}
+        if(!restart){
+            g_island.Activate(project.id);
+            if(record_usage)g_project_usage.RecordUse(g_store,project.id);
+            RefreshProjectList();Layout();return;
+        }
         SetProjectWorkingState(project.id,false);
         g_island.Stop(project.id);
     }
@@ -1131,11 +1142,26 @@ void StartSession(bool restart=false){
         project.status=L"running";
         g_store.UpdateProjectStatus(project.id,L"running");
         RecordAndBroadcastEvent(project.id,L"conversation.running",nlohmann::json{{"status","running"}});
+        if(record_usage)g_project_usage.RecordUse(g_store,project.id);
         RefreshProjectDetails();RefreshProjectList();Layout();
     }
 }
 int ProjectIndexById(const std::wstring& project_id){for(size_t i=0;i<g_projects.size();++i)if(g_projects[i].id==project_id)return static_cast<int>(i);return -1;}
-bool SelectProjectById(const std::wstring& project_id){const int index=ProjectIndexById(project_id);if(index<0)return false;const bool visible_in_filter=g_group_name==kAllGroupsName||(g_group_name==kStartedProjectsName?g_island.HasSession(project_id):(g_projects[index].group.empty()?DefaultGroupName():g_projects[index].group)==g_group_name);if(!visible_in_filter){g_group_name=g_projects[index].group.empty()?DefaultGroupName():g_projects[index].group;SetText(g_group,g_group_name);g_store.SetSetting(L"last_group",g_group_name);}RefreshProjectList();for(size_t row=0;row<g_visible_project_indices.size();++row)if(g_visible_project_indices[row]==index){SendMessageW(g_list,LB_SETCURSEL,row,0);RefreshProjectDetails(true);Layout();return true;}return false;}
+bool SelectProjectById(const std::wstring& project_id,bool record_usage=true){
+    const int index=ProjectIndexById(project_id);if(index<0)return false;
+    if(!MatchesProjectSearch(g_projects[index],aicli::ui::GetStyledInputText(g_search)))return false;
+    if(record_usage&&g_last_project_id!=project_id)g_project_usage.RecordUse(g_store,project_id);
+    const auto rows=ProjectViewRows(g_projects,g_group_name);
+    if(std::find(rows.begin(),rows.end(),index)==rows.end()){
+        g_group_name=g_projects[index].group.empty()?DefaultGroupName():g_projects[index].group;
+        g_store.SetSetting(L"last_group",g_group_name);
+    }
+    RefreshProjectList();
+    for(size_t row=0;row<g_visible_project_indices.size();++row)if(g_visible_project_indices[row]==index){
+        SendMessageW(g_list,LB_SETCURSEL,row,0);RefreshProjectDetails(true);Layout();return true;
+    }
+    return false;
+}
 void RefreshConversationsCache(){g_conversation_bridge.RefreshConversations(g_projects);}
 void UpdateDeviceHeader(){UpdateHeaderTelemetry();}
 void UpdateHeaderTelemetry(){
@@ -1189,7 +1215,7 @@ void OnRemoteProjectCreated(const aicli::mobile_projects::CreateResult &result)
     g_last_project_id = project_id;
     g_store.SetSetting(L"last_group", g_group_name);
     g_store.SetSetting(L"last_project_id", project_id);
-    SetText(g_group, g_group_name);
+    SetText(g_group, aicli::project_views::Label(g_group_name));
     SendMessageW(g_list, LB_SETCURSEL, static_cast<WPARAM>(-1), 0);
     RefreshProjectList();
     Layout();
@@ -1298,12 +1324,12 @@ void ReloadPersistentModels() {
     if(const auto builtin=std::find_if(g_groups.begin(),g_groups.end(),
         [](const ProjectGroup& group){return group.builtin;});
        builtin!=g_groups.end()) g_default_group_name=builtin->name;
-    if (g_group_name != kAllGroupsName && g_group_name != kStartedProjectsName && std::none_of(g_groups.begin(), g_groups.end(), [&](const ProjectGroup& value) {
+    if (!aicli::project_views::IsSystem(g_group_name) && std::none_of(g_groups.begin(), g_groups.end(), [&](const ProjectGroup& value) {
             return value.name == g_group_name;
         })) {
         g_group_name = DefaultGroupName();
     }
-    SetText(g_group, g_group_name);
+    SetText(g_group, aicli::project_views::Label(g_group_name));
     RefreshProjectList();
     RefreshProjectDetails();
     UpdateDeviceHeader();
@@ -1367,7 +1393,7 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
             m, l, g_remote_ui, g_store, g_conversation_bridge)) return 0;
     switch(m){
     case WM_CREATE:{g_hwnd=h;if(g_taskbar_button_created_message)ChangeWindowMessageFilterEx(h,g_taskbar_button_created_message,MSGFLT_ALLOW,nullptr);g_taskbar_working_indicator.Attach(h);g_footer_status.Attach(h);g_terminal_snapshots.Attach(h,WM_TERMINAL_DIRTY);g_layout_metrics=aicli::ui::LayoutMetrics::ForWindow(h);RecreateMainFontsForDpi();
-        g_group=CreateWindowW(L"BUTTON",g_group_name.c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,170,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,344,8,30,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,381,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"\xE710",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)(b==g_new_project?g_font:g_font_header),TRUE);EnableButtonHover(b);}
+        g_group=CreateWindowW(L"BUTTON",aicli::project_views::Label(g_group_name).c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,168,8,170,32,h,(HMENU)(INT_PTR)ID_GROUP_DEFAULT,GetModuleHandleW(nullptr),nullptr);g_group_add=CreateWindowW(L"BUTTON",L"+",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,344,8,30,32,h,(HMENU)(INT_PTR)ID_GROUP_ADD,GetModuleHandleW(nullptr),nullptr);g_bind=CreateWindowW(L"BUTTON",L"绑定手机",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,381,8,100,32,h,(HMENU)(INT_PTR)ID_BIND_PHONE,GetModuleHandleW(nullptr),nullptr);g_new_project=CreateWindowW(L"BUTTON",L"\xE710",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,8,55,34,30,h,(HMENU)(INT_PTR)ID_NEW_PROJECT,GetModuleHandleW(nullptr),nullptr);g_settings=CreateWindowW(L"BUTTON",L"设置",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON|BS_OWNERDRAW,1000,8,70,32,h,(HMENU)(INT_PTR)ID_SETTINGS,GetModuleHandleW(nullptr),nullptr);HWND controls[]={g_group,g_group_add,g_bind,g_new_project,g_settings};for(HWND b:controls){SendMessageW(b,WM_SETFONT,(WPARAM)(b==g_new_project?g_font:g_font_header),TRUE);EnableButtonHover(b);}
         g_sidebar_title=CreateWindowW(L"STATIC",L"项目列表",WS_CHILD|WS_VISIBLE|SS_LEFT|SS_CENTERIMAGE,0,0,0,0,h,nullptr,GetModuleHandleW(nullptr),nullptr);SendMessageW(g_sidebar_title,WM_SETFONT,(WPARAM)g_font_sidebar_title,TRUE);g_search=aicli::ui::CreateStyledInput(h,ID_SEARCH_PROJECTS,g_font_search,L"输入项目名、路径或备注搜索");aicli::ui::SetStyledInputLeadingIcon(g_search,L"\xE721");aicli::ui::SetStyledInputTheme(g_search,SearchInputPalette());aicli::ui::SetStyledInputFocusBorderOnly(g_search);aicli::ui::SetStyledInputParentFrame(g_search,true,2);
         g_list=aicli::ui::CreateProjectListView(
             h,ID_PROJECT_LIST,GetModuleHandleW(nullptr));
@@ -1379,7 +1405,6 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
             g_light_theme?RGB(141,151,164):RGB(159,159,159),
             g_light_theme?RGB(116,127,142):RGB(159,159,159)};
         aicli::ui::SetProjectListViewTheme(g_list,list_theme);
-        ConfigureProjectReordering();
         SetWindowSubclass(g_list,ProjectListSubclassProc,
                           kProjectListSubclassId,0);
         RefreshProjectList();
@@ -1503,7 +1528,12 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
         // caption buttons continue to work through the custom frame path.
         if(aicli::ui::HasActiveModal(h))return 0;
         if(id==ID_SEARCH_PROJECTS&&notification==EN_CHANGE){RefreshProjectList();Layout();return 0;}
-        if(id==ID_PROJECT_LIST&&notification==LBN_SELCHANGE){RefreshProjectDetails(true);Layout();return 0;}
+        if(id==ID_PROJECT_LIST&&notification==LBN_SELCHANGE){
+            const int index=SelectedProjectIndex();
+            if(index>=0&&index<static_cast<int>(g_projects.size()))g_project_usage.RecordUse(g_store,g_projects[index].id);
+            // Keep rows under the pointer stable through a possible double-click.
+            RefreshProjectDetails(true);UpdateGroupButton();Layout();return 0;
+        }
         if(id==ID_PROJECT_LIST&&notification==LBN_DBLCLK){StartSession();return 0;}
         if(id==ID_NEW_PROJECT){CreateProject();return 0;}
         if(id==ID_START_PROJECT){StartSession();return 0;}
@@ -1599,12 +1629,12 @@ LRESULT CALLBACK WndProc(HWND h,UINT m,WPARAM w,LPARAM l){
             }
             if(!plan.group.empty())g_group_name=plan.group;
             RefreshProjectList();
-            if(!SelectProjectById(plan.selected)&&!plan.projects.empty())SelectProjectById(plan.projects.front());
+            if(!SelectProjectById(plan.selected,false)&&!plan.projects.empty())SelectProjectById(plan.projects.front(),false);
             if(const int index=SelectedProjectIndex();index>=0&&g_island.HasSession(g_projects[index].id))
                 g_island.Activate(g_projects[index].id);
             Layout();
-        }else if(!g_startup_project_id.empty()&&SelectProjectById(g_startup_project_id)){
-            g_startup_project_id.clear();StartSession();
+        }else if(!g_startup_project_id.empty()&&SelectProjectById(g_startup_project_id,false)){
+            g_startup_project_id.clear();StartSession(false,false);
         }
         return 0;
 

@@ -12,6 +12,7 @@
 | `features/project_configuration.h/.cpp` | 项目类型的默认启动命令选择 | 默认命令规则；供表单和会话启动共用 |
 | `ui/project_list_view.h/.cpp`、`ui/internal/project_list_drag.inl` | 项目列表、像素滚动、拖动捕获、让位与落位动画 | 列表交互、拖动反馈；通过回调连接模型 |
 | `features/project_order.h`、`ui/internal/project_drag_section.inl` | 组内排序计划、隐藏项目保留、排序保存与视图更新 | 排序规则；保存完整分组，保留当前选择和滚动位置 |
+| `features/project_group_views.h/.cpp` | 已启动独立排序、最近/常用系统视图、使用记录持久化 | 系统视图筛选、自动排名和旧数据初始化；不写入用户分组 |
 | `terminal/terminal_context_menu.h/.cpp` | CLI 右键菜单的操作列表、选区状态、主题和 DPI | 新终端菜单操作；由 `xaml_island_adapter` 调用已有终端接口 |
 | `ui/management_dialog.h/.cpp` | 管理窗口入口、外层消息循环、关闭与资源释放 | 管理窗口生命周期 |
 | `ui/settings_content.cpp` | 设置页导航、页面内容、布局、滚动、更新状态 | 新设置页及页面布局 |
@@ -44,9 +45,10 @@
 ```powershell
 $cmake = 'cmake'
 & $cmake -S desktop -B desktop/build -G 'Visual Studio 17 2022' -A x64 -DAICLI_USE_QT_UI=OFF
-& $cmake --build desktop/build --config Debug --target aicli aicli_native_module_tests aicli_project_reorder_tests -- /m:2
+& $cmake --build desktop/build --config Debug --target aicli aicli_native_module_tests aicli_project_reorder_tests aicli_project_group_views_tests -- /m:2
 & ./desktop/bin/Debug/aicli_native_module_tests.exe
 & ./desktop/bin/Debug/aicli_project_reorder_tests.exe
+& ./desktop/bin/Debug/aicli_project_group_views_tests.exe
 ```
 
 `tests/native_module_tests.cpp` 使用临时数据库和自己的窗口，覆盖独立弹窗、嵌套项目草稿、
@@ -55,6 +57,9 @@ $cmake = 'cmake'
 
 `tests/project_reorder_tests.cpp` 用独立原生窗口及临时数据库验证拖动阈值、让位绘制、
 取消、边缘像素滚动、当前项目和视口保留，以及“已启动”视图中隐藏项目的排序持久化。
+
+`tests/project_group_views_tests.cpp` 使用临时数据库验证已启动项目跨组排序、原分组顺序保留、
+最近/常用排名、使用去重、重启持久化、写入失败回滚和已有启动记录的初始化。
 
 `aicli_terminal_context_menu_tests` 构建到独立的 `build/terminal-menu-tests/Debug` 目录。
 运行 `desktop/tools/test-terminal-context-menu.ps1`，使用自己的临时包和 PowerShell 会话验证

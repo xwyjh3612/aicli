@@ -196,8 +196,7 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
     if(header_action_button){
         const wchar_t* icon=L"\xE710";
         if(item->CtlID==ID_GROUP_DEFAULT){
-            icon=g_group_name==kAllGroupsName?L"\xE71D":
-                 (g_group_name==kStartedProjectsName?L"\xE768":L"\xE8B7");
+            icon=aicli::project_views::Icon(g_group_name);
         }else if(item->CtlID==ID_BIND_PHONE){icon=L"\xE717";}
         else if(item->CtlID==ID_DEVICES){icon=L"\xE772";}
         else if(item->CtlID==ID_SETTINGS){icon=L"\xE713";}
@@ -354,9 +353,10 @@ void DrawProjectItemContent(const DRAWITEMSTRUCT* item){
         grip.SetStartCap(Gdiplus::LineCapRound);
         grip.SetEndCap(Gdiplus::LineCapRound);
         const float gripCenter=(card.top+card.bottom)/2.0f;
-        for(float offset=-ScaleUiF(4.0f);offset<=ScaleUiF(4.0f);offset+=ScaleUiF(4.0f))
-            graphics.DrawLine(&grip,static_cast<float>(card.left)+ScaleUiF(11.0f),gripCenter+offset,
-                              static_cast<float>(card.left)+ScaleUiF(20.0f),gripCenter+offset);
+        if(!aicli::project_views::IsAutomatic(g_group_name))
+            for(float offset=-ScaleUiF(4.0f);offset<=ScaleUiF(4.0f);offset+=ScaleUiF(4.0f))
+                graphics.DrawLine(&grip,static_cast<float>(card.left)+ScaleUiF(11.0f),gripCenter+offset,
+                                  static_cast<float>(card.left)+ScaleUiF(20.0f),gripCenter+offset);
 
         const float iconSize=ScaleUiF(20.0f);
         const float iconX=static_cast<float>(card.right)-iconSize-ScaleUiF(11.0f);

@@ -161,6 +161,7 @@ else()
         src/app/update_restart.cpp
         src/app/native_remote_bridge.cpp
         src/features/project_configuration.cpp
+        src/features/project_group_views.cpp
         src/data/data_migration.cpp
         src/app/update_manifest.cpp
         src/app/main.cpp
@@ -265,6 +266,15 @@ if (NOT AICLI_USE_QT_UI)
     target_link_libraries(aicli_project_reorder_tests PRIVATE gdiplus comctl32 winsqlite3 shell32 ole32)
     if (MSVC)
         target_compile_options(aicli_project_reorder_tests PRIVATE /W4 /EHsc /utf-8)
+    endif()
+    add_executable(aicli_project_group_views_tests tests/project_group_views_tests.cpp
+        src/features/project_group_views.cpp src/core/text_utils.cpp src/data/data_store.cpp)
+    target_include_directories(aicli_project_group_views_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src" "${AICLI_NLOHMANN_ROOT}")
+    target_compile_definitions(aicli_project_group_views_tests PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(aicli_project_group_views_tests PRIVATE winsqlite3 shell32 ole32)
+    if (MSVC)
+        target_compile_options(aicli_project_group_views_tests PRIVATE /W4 /EHsc /utf-8)
     endif()
     add_executable(aicli_installer_update_tests tests/installer_update_probe.cpp)
     target_compile_definitions(aicli_installer_update_tests PRIVATE

@@ -4,6 +4,7 @@
 #include "ui/drawing_utils.h"
 #include "ui/theme.h"
 #include "ui/modal_host.h"
+#include "features/project_group_views.h"
 #include <commctrl.h>
 #include <algorithm>
 #include <iterator>
@@ -323,6 +324,10 @@ LRESULT CALLBACK GroupNameWindowProc(HWND h, UINT message, WPARAM wparam, LPARAM
                 MessageBoxW(h, L"分组名称不能为空", L"AI CLI", MB_OK | MB_ICONWARNING);
                 SetFocus(state->input);
                 return 0;
+            }
+            if(state->value!=state->initial_name&&project_views::IsReservedName(state->value)){
+                MessageBoxW(h,L"此名称用于系统分组，请换一个名称",L"AI CLI",MB_OK|MB_ICONWARNING);
+                SetFocus(state->input);return 0;
             }
             state->accepted = true;
             CloseModalSurface(h);

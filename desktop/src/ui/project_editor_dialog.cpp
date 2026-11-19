@@ -6,6 +6,7 @@
 #include "ui/rounded_select_popup.h"
 #include "data/data_store.h"
 #include "features/project_configuration.h"
+#include "features/project_group_views.h"
 
 #include <commctrl.h>
 #include <shobjidl.h>
@@ -30,8 +31,6 @@ enum
     ID_D_NOTE = 2009,
     ID_D_CLOSE = 2010
 };
-constexpr wchar_t kAllGroupsName[] = L"全部";
-constexpr wchar_t kStartedProjectsName[] = L"已启动";
 constexpr UINT_PTR kProjectButtonSubclassId = 0xA1C40;
 
 bool PickFolder(HWND owner, std::wstring &path)
@@ -555,8 +554,7 @@ struct ProjectEditorDialog::Impl
             this->type_control = MakeDialogControl(
                 L"BUTTON", initialType.c_str(), BS_NOTIFY | WS_TABSTOP, ID_D_TYPE, h, 0, 0, 1, 1);
             const std::wstring initialGroup =
-                draft.group.empty() ? ((context.selected_group() == kAllGroupsName ||
-                                        context.selected_group() == kStartedProjectsName)
+                draft.group.empty() ? (aicli::project_views::IsSystem(context.selected_group())
                                            ? context.default_group()
                                            : context.selected_group())
                                     : draft.group;

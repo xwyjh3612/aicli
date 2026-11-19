@@ -4,6 +4,7 @@
 #include "agent/remote_agent.h"
 #include "data/data_store.h"
 #include "features/project_configuration.h"
+#include "features/project_group_views.h"
 #include "ui/group_name_dialog.h"
 #include "ui/project_type_editor_dialog.h"
 #include "ui/project_editor_dialog.h"
@@ -327,6 +328,7 @@ aicli::Project TestProjectEditors(HWND owner, aicli::DataStore &store, const fs:
     const auto groups = store.LoadGroups();
     const auto projects = store.LoadProjects();
     const auto group = groups.front().name;
+    std::wstring selected_group = group;
     auto palette = MakeThemePalette(false);
     const auto font = CreateDialogFont(owner, 15, FW_NORMAL);
     ProjectEditorOptions options{
@@ -336,7 +338,7 @@ aicli::Project TestProjectEditors(HWND owner, aicli::DataStore &store, const fs:
         groups,
         palette,
         [&] { return ProjectEditorFonts{font, font, font, font, font, font}; },
-        [&] { return group; },
+        [&] { return selected_group; },
         [&] { return group; },
         [] {}};
     ProjectEditorDialog first(options), second(options);
@@ -413,6 +415,22 @@ aicli::Project TestProjectEditors(HWND owner, aicli::DataStore &store, const fs:
     const auto edited = first.Show(owner, cancelled, &outer);
     Finish(owner);
     Require(!edited && cancelled.id == L"keep-result", "Cancel preserves caller's result");
+    for(const auto* view:{aicli::project_views::kRecent,aicli::project_views::kFrequent}){
+        selected_group=view;
+        aicli::Project draft;
+        Schedule(owner,[&]{
+            if(first.window()){
+                wchar_t displayed_group[256]{};
+                GetWindowTextW(GetDlgItem(first.window(),2003),displayed_group,256);
+                Require(displayed_group==group,"New project in automatic view defaults to real group");
+                Enter(first.window(),2001,L"Automatic view draft");
+                Enter(first.window(),2004,directory.wstring());
+                Click(first.window(),2006);
+            }
+        });
+        const bool saved=first.Show(owner,draft);Finish(owner);
+        Require(saved&&draft.group==group,"System key cannot become a project group");
+    }
     DeleteObject(font);
     std::cout
         << "Instance-owned project forms, nested drafts, theme refresh and cancellation passed\n";
