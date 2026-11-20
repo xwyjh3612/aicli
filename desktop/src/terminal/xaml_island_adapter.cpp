@@ -934,6 +934,50 @@ public:
         const int inset = MulDiv(24, static_cast<int>(GetDpiForWindow(hwnd_)), 96);
         OpenContextMenu({bounds.left + inset, bounds.top + inset});
     }
+    bool IsTerminalPoint(POINT position) const noexcept {
+        RECT bounds{};
+        if (!visible_ || !hwnd_ || !GetWindowRect(hwnd_, &bounds) || !PtInRect(&bounds, position)) return false;
+        const HWND hit = WindowFromPoint(position);
+        if (!hit) return false;
+        if (hit == hwnd_ || IsChild(hwnd_, hit)) return true;
+        // Composition islands use an independent InputSite HWND, and their
+        // hit test can resolve to the owning frame instead of the island.
+        // Check both the workspace bounds and the actual frame under the
+        // pointer so menus/other apps covering the terminal are excluded.
+        return parent_ && GetAncestor(hit, GA_ROOT) == GetAncestor(parent_, GA_ROOT);
+    }
+    bool HandlePointerContextMenu(const MSG& message) noexcept {
+        if (message.message != WM_POINTERDOWN && message.message != WM_POINTERUP &&
+            message.message != WM_POINTERUPDATE && message.message != WM_POINTERCAPTURECHANGED) return false;
+        const UINT32 id = GET_POINTERID_WPARAM(message.wParam);
+        if (message.message == WM_POINTERCAPTURECHANGED) {
+            if (context_pointer_id_ != id) return false;
+            context_pointer_id_ = 0; context_pointer_project_.clear();
+            return true;
+        }
+        POINTER_INFO pointer{};
+        if (!GetPointerInfo(id, &pointer) || pointer.pointerType != PT_MOUSE) return false;
+        if (pointer.pointerFlags & POINTER_FLAG_CANCELED) {
+            const bool handled = context_pointer_id_ == id;
+            if (handled) { context_pointer_id_ = 0; context_pointer_project_.clear(); }
+            return handled;
+        }
+        if (message.message == WM_POINTERDOWN &&
+            pointer.ButtonChangeType == POINTER_CHANGE_SECONDBUTTON_DOWN && IsTerminalPoint(pointer.ptPixelLocation)) {
+            context_pointer_id_ = id;
+            context_pointer_project_ = active_project_id_;
+            FocusActiveTerminal();
+            return true;
+        }
+        if (context_pointer_id_ != id) return false;
+        if (message.message == WM_POINTERUP && pointer.ButtonChangeType == POINTER_CHANGE_SECONDBUTTON_UP) {
+            const bool same_project = context_pointer_project_ == active_project_id_;
+            context_pointer_id_ = 0; context_pointer_project_.clear();
+            if (same_project && IsTerminalPoint(pointer.ptPixelLocation)) OpenContextMenu(pointer.ptPixelLocation);
+            return true;
+        }
+        return message.message == WM_POINTERUPDATE && (pointer.pointerFlags & POINTER_FLAG_SECONDBUTTON);
+    }
 #endif
     bool PreTranslateMessage(const MSG& message) noexcept {
         if (!visible_ || !hwnd_ || !ActiveSession()) return false;
@@ -942,16 +986,22 @@ public:
             return window && (window == hwnd_ || IsChild(hwnd_, window));
         };
 #ifndef AICLI_QT_UI_BUILD
+        if (HandlePointerContextMenu(message)) return true;
         // Consume right-clicks before a deeper XAML input HWND can copy/paste
         // or clear selection. Mouse routing must use the target, not focus.
-        if (belongs_to_terminal(message.hwnd)) {
+        if (belongs_to_terminal(message.hwnd) ||
+            ((message.message == WM_RBUTTONDOWN || message.message == WM_RBUTTONUP ||
+              message.message == WM_RBUTTONDBLCLK) && IsTerminalPoint(message.pt))) {
             if (message.message == WM_RBUTTONDOWN || message.message == WM_RBUTTONDBLCLK) {
                 FocusActiveTerminal();
                 return true;
             }
             if (message.message == WM_RBUTTONUP) {
-                POINT position{GET_X_LPARAM(message.lParam), GET_Y_LPARAM(message.lParam)};
-                ClientToScreen(message.hwnd, &position);
+                POINT position=message.pt;
+                if(belongs_to_terminal(message.hwnd)){
+                    position={GET_X_LPARAM(message.lParam), GET_Y_LPARAM(message.lParam)};
+                    ClientToScreen(message.hwnd, &position);
+                }
                 OpenContextMenu(position);
                 return true;
             }
@@ -1429,6 +1479,8 @@ private:
     bool copy_shortcut_active_{};
 #ifndef AICLI_QT_UI_BUILD
     bool context_menu_open_{};
+    UINT32 context_pointer_id_{};
+    std::wstring context_pointer_project_;
 #endif
     std::wstring last_error_;
     HWND parent_{};
@@ -1444,6 +1496,12 @@ LRESULT CALLBACK XamlIslandSubclassProc(
     DWORD_PTR reference_data) {
     auto* adapter = reinterpret_cast<XamlIslandAdapter::Impl*>(reference_data);
     if (adapter) {
+#ifndef AICLI_QT_UI_BUILD
+        MSG pointer_message{};
+        pointer_message.hwnd=hwnd;pointer_message.message=message;
+        pointer_message.wParam=wparam;pointer_message.lParam=lparam;
+        if(adapter->HandlePointerContextMenu(pointer_message))return 0;
+#endif
         // The DesktopWindowXamlSource child fills the terminal workspace all
         // the way to the host's right edge. Without passing sizing hit tests
         // through, the island consumes the pointer before the custom frame can

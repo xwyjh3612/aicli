@@ -63,5 +63,7 @@ $cmake = 'cmake'
 
 `aicli_terminal_context_menu_tests` 构建到独立的 `build/terminal-menu-tests/Debug` 目录。
 运行 `desktop/tools/test-terminal-context-menu.ps1`，使用自己的临时包和 PowerShell 会话验证
-中文多行选区复制、粘贴、全选、复制全部、取消、键盘菜单、深层 XAML 窗口的右键路由及项目切换。
+真实鼠标右键和菜单点击、中文多行选区复制、粘贴、全选、复制全部、取消、键盘菜单、
+深层 XAML 窗口的右键路由及项目切换。
+自动回归会短暂显示自己的测试窗口，完成菜单操作后恢复鼠标位置和之前的前台窗口。
 测试结束撤销本次注册的测试包；加 `-Interactive` 可手动检查菜单，关闭测试窗口后完成清理。
