@@ -16,7 +16,8 @@ namespace aicli::terminal {
 // private to the implementation file.
 class XamlIslandAdapter {
 public:
-    XamlIslandAdapter();
+    using LinkOpener = std::function<bool(HWND, std::wstring_view)>;
+    explicit XamlIslandAdapter(LinkOpener link_opener = {});
     ~XamlIslandAdapter();
 
     XamlIslandAdapter(const XamlIslandAdapter&) = delete;
@@ -50,7 +51,7 @@ public:
     bool WriteInput(const std::wstring& value);
     bool WriteInput(std::wstring_view project_id, const std::wstring& value);
     bool SubmitInput(std::wstring_view project_id, const std::wstring& value);
-    bool SendKey(std::wstring_view project_id, UINT virtual_key);
+    bool SendKey(std::wstring_view project_id, UINT virtual_key, std::uint32_t modifiers = 0);
     // Called by the legacy Win32 message loop before TranslateMessage. XAML
     // keyboard focus lives below the island host HWND, so terminal clipboard
     // shortcuts must be intercepted at the thread-message boundary.

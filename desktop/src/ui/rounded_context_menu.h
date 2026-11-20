@@ -36,6 +36,9 @@ struct RoundedContextMenuOptions {
     // the submenu handled the action and the parent menu should close;
     // returning false keeps the parent menu available.
     std::function<bool(int, const RECT&)> submenu_handler;
+    // XAML InputSite can receive mouse pointer messages despite Win32 capture.
+    // Terminal popups route those messages before they reach the CLI surface.
+    bool route_mouse_pointer_input{};
 };
 
 struct RoundedContextMenuResult {

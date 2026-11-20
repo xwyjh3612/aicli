@@ -367,6 +367,30 @@ std::optional<RoundedContextMenuResult> ShowRoundedContextMenu(
             if (result == 0) PostQuitMessage(static_cast<int>(message.wParam));
             break;
         }
+        if (options.route_mouse_pointer_input &&
+            (message.message == WM_POINTERDOWN || message.message == WM_POINTERUP ||
+             message.message == WM_POINTERUPDATE)) {
+            POINTER_INFO pointer{};
+            if (GetPointerInfo(GET_POINTERID_WPARAM(message.wParam), &pointer) &&
+                pointer.pointerType == PT_MOUSE) {
+                POINT point = pointer.ptPixelLocation;
+                ScreenToClient(popup, &point);
+                if (pointer.pointerFlags & POINTER_FLAG_CANCELED) {
+                    Finish(&state);
+                } else if (message.message == WM_POINTERUP &&
+                    pointer.ButtonChangeType == POINTER_CHANGE_FIRSTBUTTON_UP) {
+                    SendMessageW(popup, WM_LBUTTONUP, 0, MAKELPARAM(point.x, point.y));
+                } else if (message.message == WM_POINTERUP &&
+                    pointer.ButtonChangeType == POINTER_CHANGE_SECONDBUTTON_UP) {
+                    Finish(&state);
+                } else if (message.message == WM_POINTERUPDATE) {
+                    SendMessageW(popup, WM_MOUSEMOVE, 0, MAKELPARAM(point.x, point.y));
+                }
+                // Do not dispatch mouse pointer input to the independent XAML
+                // InputSite or let it generate compatibility terminal clicks.
+                continue;
+            }
+        }
         if (message.message == WM_KEYDOWN) {
             if (message.wParam == VK_ESCAPE || message.wParam == VK_LEFT) {
                 Finish(&state);

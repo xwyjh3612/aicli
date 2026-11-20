@@ -449,6 +449,7 @@ if (NOT AICLI_USE_QT_UI)
         tests/terminal_context_menu_tests.cpp
         src/terminal/xaml_island_adapter.cpp
         src/terminal/terminal_context_menu.cpp
+        src/terminal/terminal_working_detector.cpp
         src/terminal/conpty_connection_bridge.cpp
         src/app/runtime_components.cpp src/app/powershell_runtime.cpp
         src/core/text_utils.cpp src/ui/rounded_context_menu.cpp
@@ -459,6 +460,15 @@ if (NOT AICLI_USE_QT_UI)
         UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
     set_target_properties(aicli_terminal_context_menu_tests PROPERTIES OUTPUT_NAME aicli
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/terminal-menu-tests/$<CONFIG>")
+    # Installer builds set a global Release output directory. CMake initializes
+    # per-configuration target properties from it, which takes precedence over
+    # the generic property above and would replace the real aicli.exe.
+    foreach(configuration IN LISTS CMAKE_CONFIGURATION_TYPES)
+        string(TOUPPER "${configuration}" configuration_upper)
+        set_target_properties(aicli_terminal_context_menu_tests PROPERTIES
+            "RUNTIME_OUTPUT_DIRECTORY_${configuration_upper}"
+            "${CMAKE_CURRENT_BINARY_DIR}/terminal-menu-tests/${configuration}")
+    endforeach()
     if (MSVC)
         target_compile_options(aicli_terminal_context_menu_tests PRIVATE /W4 /EHsc /utf-8 /FS)
         target_link_options(aicli_terminal_context_menu_tests PRIVATE "/MANIFEST:EMBED"

@@ -38,7 +38,10 @@ void ShowGroupDropdown(){
     options.dpi=g_layout_metrics.dpi;
     options.open_state_changed=[](bool open){
         g_group_dropdown_open=open;
-        if(g_group)InvalidateRect(g_group,nullptr,FALSE);
+        // Flush only the anchor before the popup is shown/removed. A queued
+        // hover/focus repaint must not display the previous expansion state.
+        if(g_group)RedrawWindow(g_group,nullptr,nullptr,
+                               RDW_INVALIDATE|RDW_NOERASE|RDW_UPDATENOW);
     };
     const auto selected=aicli::ui::ShowRoundedSelectPopup(
         options,std::move(entries));
@@ -46,6 +49,5 @@ void ShowGroupDropdown(){
     g_group_name=*selected;
     g_store.SetSetting(L"last_group",g_group_name);
     RefreshProjectList();
-    RefreshProjectDetails();
     Layout();
 }

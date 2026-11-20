@@ -112,7 +112,7 @@ LRESULT CALLBACK ProjectListSubclassProc(HWND h,UINT m,WPARAM w,LPARAM l,
     }
     return DefSubclassProc(h,m,w,l);
 }
-void DrawModernButton(const DRAWITEMSTRUCT* item){
+void DrawModernButtonContent(const DRAWITEMSTRUCT* item){
     RECT r=item->rcItem;const bool down=(item->itemState&ODS_SELECTED)!=0;const bool disabled=(item->itemState&ODS_DISABLED)!=0;const bool hover=item->hwndItem==g_hover_button;HWND parentWindow=GetParent(item->hwndItem);
     COLORREF under=panel;
     bool onMainTitleBar=false;
@@ -171,8 +171,10 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         stroke=disabled?RGB(35,41,62):(hover?RGB(67,79,108):RGB(42,49,75));
     }
     if(item->CtlID==ID_GROUP_DEFAULT&&g_group_dropdown_open&&!disabled){
-        fill=g_light_theme?RGB(232,241,253):RGB(27,44,75);
-        stroke=g_light_theme?RGB(83,156,255):RGB(83,156,255);
+        // Keep the open surface at the header's hover color. Only the arrow
+        // signals expansion; opening/closing must not flash a bright frame.
+        fill=g_light_theme?RGB(229,235,243):RGB(22,28,51);
+        stroke=g_light_theme?RGB(164,181,205):RGB(67,79,108);
     }
     if(item->CtlID==ID_NEW_PROJECT){
         RECT shell{r.left,r.top,r.right-1,r.bottom-1};
@@ -285,6 +287,17 @@ void DrawModernButton(const DRAWITEMSTRUCT* item){
         return;
     }
     SelectObject(item->hDC,text_font);DrawTextW(item->hDC,text,-1,&r,text_format);
+}
+void DrawModernButton(const DRAWITEMSTRUCT* item){
+    // Native BUTTON sends synchronous owner-draw messages on press, focus,
+    // capture and hover changes, outside WM_PAINT. Present the completed
+    // group surface at once so its background-only phase is never visible.
+    if(item->CtlID==ID_GROUP_DEFAULT&&GetParent(item->hwndItem)==g_hwnd){
+        aicli::ui::BufferedWindowPaint paint(item->hDC,item->rcItem,item->rcItem);
+        auto buffered=*item;
+        buffered.hDC=paint.dc();
+        DrawModernButtonContent(&buffered);
+    }else DrawModernButtonContent(item);
 }
 void DrawProjectStateIcon(Gdiplus::Graphics& graphics,const Project& project,
                           const Gdiplus::RectF& bounds,bool selected,bool hovered){

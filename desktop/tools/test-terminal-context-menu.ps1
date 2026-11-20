@@ -1,11 +1,15 @@
 param(
     [string]$Output = (Join-Path $PSScriptRoot '..\build\terminal-menu-tests\Debug'),
-    [switch]$Interactive
+    [switch]$Interactive,
+    [switch]$Codex,
+    [switch]$Headless
 )
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSEdition -eq 'Core') {
     $parameters = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-Output', $Output)
     if ($Interactive) { $parameters += '-Interactive' }
+    if ($Codex) { $parameters += '-Codex' }
+    if ($Headless) { $parameters += '-Headless' }
     & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @parameters
     exit $LASTEXITCODE
 }
@@ -30,6 +34,8 @@ try {
     }
     $parameters = @()
     if ($Interactive) { $parameters += '--interactive' }
+    if ($Codex) { $parameters += '--codex' }
+    if ($Headless) { $parameters += '--headless' }
     & (Join-Path $outputPath 'aicli.exe') @parameters
     if ($LASTEXITCODE) { throw "Terminal context menu test failed: $LASTEXITCODE" }
 } finally {

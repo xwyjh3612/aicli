@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -40,7 +41,9 @@
 #include "terminal/conpty_connection_bridge.h"
 #ifndef AICLI_QT_UI_BUILD
 #include "terminal/hyperlink_launcher.h"
+#include "terminal/codex_composer_state.h"
 #include "terminal/terminal_context_menu.h"
+#include "terminal/terminal_working_detector.h"
 #endif
 
 namespace aicli::terminal {
@@ -216,6 +219,13 @@ LRESULT CALLBACK XamlIslandSubclassProc(
 
 struct XamlIslandAdapter::Impl {
 public:
+    explicit Impl(LinkOpener link_opener) {
+#ifndef AICLI_QT_UI_BUILD
+        if (link_opener) link_opener_ = std::move(link_opener);
+#else
+        (void)link_opener;
+#endif
+    }
     ~Impl() {
         Shutdown();
     }
@@ -349,6 +359,9 @@ public:
             default_settings.InitialRows(32);
             default_settings.InitialCols(120);
             default_settings.HistorySize(10000);
+#ifndef AICLI_QT_UI_BUILD
+            default_settings.DetectURLs(true);
+#endif
 
             // A directly activated TerminalSettings instance uses white as its
             // default foreground. Apply Windows Terminal's Campbell palette so
@@ -378,10 +391,20 @@ public:
             // preserves every VT sequence except Codex's one fixed composer
             // background, which is mapped to the active app theme without
             // changing cursor, layout, input or scrollback sequences.
+            auto connection_input_observer = input_observer;
+#ifndef AICLI_QT_UI_BUILD
+            session->codex_input = WorkingProtocolForSession(L"", command) == AgentTitleProtocol::Codex;
+            if (input_observer) {
+                connection_input_observer = [observer = input_observer,
+                    suppressed = session->suppress_input_observer](std::wstring_view value) {
+                    if (!suppressed->load()) observer(value);
+                };
+            }
+#endif
             session->conpty_connection =
                 winrt::make_self<aicli::terminal::ConPtyConnectionBridge>(
                     cwd, command, std::move(output_observer),
-                    std::move(resize_observer), input_observer);
+                    std::move(resize_observer), std::move(connection_input_observer));
             session->input_observer = std::move(input_observer);
             session->conpty_connection->SetLightTheme(light_theme_);
             session->connection = session->conpty_connection.as<
@@ -390,8 +413,19 @@ public:
             auto control_factory = LocalActivationFactory<Control::ITermControlFactory>(
                 L"Microsoft.Terminal.Control.dll",
                 L"Microsoft.Terminal.Control.TermControl");
+#ifndef AICLI_QT_UI_BUILD
+            // This is the same construction path used by TermControl's
+            // settings constructor, but retains the public interactivity/core
+            // so native menu hit tests can query actual OSC 8 hyperlink URIs.
+            auto interactivity_factory = LocalActivationFactory<Control::IControlInteractivityFactory>(
+                L"Microsoft.Terminal.Control.dll", L"Microsoft.Terminal.Control.ControlInteractivity");
+            session->interactivity = interactivity_factory.CreateInstance(
+                session->control_settings, session->unfocused_settings, session->connection);
+            session->control = control_factory.CreateInstance(session->interactivity);
+#else
             session->control = control_factory.CreateInstance2(
                 session->control_settings, session->unfocused_settings, session->connection);
+#endif
             ConfigureClipboardBridge(*session);
 #ifndef AICLI_QT_UI_BUILD
             ConfigureHyperlinkBridge(*session);
@@ -770,19 +804,20 @@ public:
             return false;
         }
     }
-    bool SendKey(std::wstring_view project_id, UINT virtual_key) {
+    bool SendKey(std::wstring_view project_id, UINT virtual_key, std::uint32_t key_modifiers = 0) {
         auto* session = FindSession(project_id);
         if (!session || !session->control) return false;
         if (virtual_key != VK_LEFT && virtual_key != VK_RIGHT &&
             virtual_key != VK_UP && virtual_key != VK_DOWN &&
             virtual_key != VK_RETURN) return false;
+        if (key_modifiers & ~(SHIFT_PRESSED | LEFT_CTRL_PRESSED | LEFT_ALT_PRESSED)) return false;
         try {
             const auto scan_code = static_cast<uint16_t>(
                 MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC));
             const bool enhanced = virtual_key == VK_LEFT || virtual_key == VK_RIGHT ||
                                   virtual_key == VK_UP || virtual_key == VK_DOWN;
             const winrt::Microsoft::Terminal::Core::ControlKeyStates modifiers{
-                enhanced ? ENHANCED_KEY : 0u};
+                (enhanced ? ENHANCED_KEY : 0u) | key_modifiers};
             bool handled = session->control.RawWriteKeyEvent(
                 static_cast<uint16_t>(virtual_key), scan_code, modifiers, true);
             if (!handled && virtual_key == VK_RETURN) {
@@ -892,7 +927,83 @@ public:
     }
     void CancelClipboardShortcut() noexcept { copy_shortcut_active_ = false; }
 #ifndef AICLI_QT_UI_BUILD
-    void OpenContextMenu(POINT position) noexcept {
+    bool CanClearCodexInput() const noexcept {
+        const auto* session = ActiveSession();
+        if (!session || !session->codex_input || !session->initialized ||
+            !session->interactivity) return false;
+        try {
+            if (session->control.ReadOnly()) return false;
+            if (session->connection.State() !=
+                winrt::Microsoft::Terminal::TerminalConnection::ConnectionState::Connected) return false;
+            return HasLiveCodexComposer(ReadEntireBuffer());
+        } catch (...) { return false; }
+    }
+    void ClearCodexInput() noexcept {
+        if (!CanClearCodexInput()) return;
+        auto* session = ActiveSession();
+        const auto control = session->control;
+        const auto suppressed = session->suppress_input_observer;
+        struct RestoreObserver {
+            std::shared_ptr<std::atomic<bool>> value;
+            ~RestoreObserver() { value->store(false); }
+        } restore{suppressed};
+        suppressed->store(true);
+        try {
+            session->interactivity.Core().ClearSelection();
+            control.Focus(winrt::Windows::UI::Xaml::FocusState::Programmatic);
+            // Codex's native draft cancellation clears the entire composer,
+            // including multiline/paste elements, before interrupt handling.
+            // Ensure a draft exists even on an empty composer: an unmodified
+            // space is ordinary editing input, clears the prior quit hint,
+            // and makes the following Ctrl+C take only the draft-clear path.
+            // Never send Ctrl+C without this successful preceding character.
+            const auto space_scan = static_cast<uint16_t>(MapVirtualKeyW(VK_SPACE, MAPVK_VK_TO_VSC));
+            const winrt::Microsoft::Terminal::Core::ControlKeyStates no_modifiers{0};
+            if (!control.RawWriteChar(L' ', space_scan, no_modifiers)) return;
+            Sleep(150); // Same paste-burst boundary as SubmitInput.
+            const auto scan = static_cast<uint16_t>(MapVirtualKeyW('C', MAPVK_VK_TO_VSC));
+            const winrt::Microsoft::Terminal::Core::ControlKeyStates modifiers{LEFT_CTRL_PRESSED};
+            const bool handled = control.RawWriteKeyEvent('C', scan, modifiers, true);
+            if (!handled) (void)control.RawWriteChar(L'\x03', scan, modifiers);
+            (void)control.RawWriteKeyEvent('C', scan, modifiers, false);
+            // A normal navigation key dismisses Codex's Ctrl+C-again-to-quit
+            // hint without inserting text or submitting the empty composer.
+            (void)SendKey(active_project_id_, VK_RIGHT);
+        } catch (...) {}
+    }
+    std::wstring LinkAt(POINT screen_position) noexcept {
+        auto* session = ActiveSession();
+        if (!session || !session->initialized || !session->interactivity) return {};
+        try {
+            using namespace winrt::Windows::UI::Xaml;
+            const auto panel = session->control.FindName(L"SwapChainPanel").try_as<FrameworkElement>();
+            if (!panel) return {};
+            POINT native_point = screen_position;
+            if (!ScreenToClient(hwnd_, &native_point)) return {};
+            const float scale = static_cast<float>(GetDpiForWindow(hwnd_)) / 96.0f;
+            const auto point = grid_.TransformToVisual(panel).TransformPoint(
+                {native_point.x / scale, native_point.y / scale});
+            const auto core = session->interactivity.Core();
+            const auto cell = core.FontSizeInDips();
+            if (cell.Width <= 0 || cell.Height <= 0 || point.X < 0 || point.Y < 0 ||
+                point.X >= panel.ActualWidth() || point.Y >= panel.ActualHeight()) return {};
+            core.ClearHoveredCell();
+            core.SetHoveredCell({static_cast<int>(std::floor(point.X / cell.Width)),
+                static_cast<int>(std::floor(point.Y / cell.Height))});
+            const auto value = core.HoveredUriText();
+            // The runtime truncates this display API at 1024 characters.
+            // Never offer to launch a possibly truncated route/query.
+            if (value.size() >= 1024) return {};
+            const std::wstring link{value.c_str(), value.size()};
+            return IsTerminalWebLink(link) ? link : std::wstring{};
+        } catch (...) { return {}; }
+    }
+    void OpenWebLink(std::wstring_view link) noexcept {
+        try { if (IsTerminalWebLink(link) && link_opener_(parent_, link)) return; } catch (...) {}
+        MessageBoxW(parent_, L"无法打开此网页链接。请检查默认浏览器设置，或复制链接后在浏览器中打开。",
+            L"打开网页链接", MB_OK | MB_ICONWARNING);
+    }
+    void OpenContextMenu(POINT position, bool resolve_link = true) noexcept {
         if (context_menu_open_ || !visible_ || !hwnd_) return;
         auto* session = ActiveSession();
         if (!session || !session->control || !session->initialized) return;
@@ -900,10 +1011,12 @@ public:
         // reject the command if a remote action switches or stops the project.
         const auto control = session->control;
         const auto project_id = active_project_id_;
+        const auto link = resolve_link ? LinkAt(position) : std::wstring{};
         context_menu_open_ = true;
         try {
             const auto command = ShowTerminalContextMenu(parent_, position, light_theme_,
-                control.HasSelection(), IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE);
+                control.HasSelection(), IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE,
+                CanClearCodexInput(), !link.empty());
             session = ActiveSession();
             if (command && visible_ && session && active_project_id_ == project_id &&
                 session->control == control) {
@@ -922,6 +1035,12 @@ public:
                     (void)WriteUnicodeClipboard(hwnd_, {text.c_str(), text.size()});
                     break;
                 }
+                case TerminalMenuCommand::ClearInput:
+                    ClearCodexInput();
+                    break;
+                case TerminalMenuCommand::OpenLink:
+                    OpenWebLink(link);
+                    break;
                 }
             }
         } catch (...) {}
@@ -932,7 +1051,7 @@ public:
         RECT bounds{};
         if (!hwnd_ || !GetWindowRect(hwnd_, &bounds)) return;
         const int inset = MulDiv(24, static_cast<int>(GetDpiForWindow(hwnd_)), 96);
-        OpenContextMenu({bounds.left + inset, bounds.top + inset});
+        OpenContextMenu({bounds.left + inset, bounds.top + inset}, false);
     }
     bool IsTerminalPoint(POINT position) const noexcept {
         RECT bounds{};
@@ -1139,6 +1258,9 @@ private:
     struct TerminalSession {
 #ifndef AICLI_QT_UI_BUILD
         bool initialized{};
+        bool codex_input{};
+        winrt::Microsoft::Terminal::Control::ControlInteractivity interactivity{nullptr};
+        std::shared_ptr<std::atomic<bool>> suppress_input_observer{std::make_shared<std::atomic<bool>>(false)};
 #endif
         winrt::Microsoft::Terminal::Control::TermControl control{nullptr};
         winrt::Microsoft::Terminal::Settings::Model::TerminalSettings control_settings{nullptr};
@@ -1180,15 +1302,12 @@ private:
 #ifndef AICLI_QT_UI_BUILD
     void ConfigureHyperlinkBridge(TerminalSession& session) {
         session.control.OpenHyperlink(
-            [owner = parent_](const winrt::Windows::Foundation::IInspectable&,
+            [this](const winrt::Windows::Foundation::IInspectable&,
                    const winrt::Microsoft::Terminal::Control::OpenHyperlinkEventArgs& args) noexcept {
                 try {
                     const auto uri = args.Uri();
-                    if (OpenTerminalWebLink(owner, {uri.c_str(), uri.size()})) return;
+                    OpenWebLink({uri.c_str(), uri.size()});
                 } catch (...) {}
-                MessageBoxW(owner,
-                    L"无法打开此网页链接。请检查默认浏览器设置，或复制链接后在浏览器中打开。",
-                    L"打开网页链接", MB_OK | MB_ICONWARNING);
             });
     }
 #endif
@@ -1479,6 +1598,7 @@ private:
     bool copy_shortcut_active_{};
 #ifndef AICLI_QT_UI_BUILD
     bool context_menu_open_{};
+    LinkOpener link_opener_{[](HWND owner, std::wstring_view link) { return OpenTerminalWebLink(owner, link); }};
     UINT32 context_pointer_id_{};
     std::wstring context_pointer_project_;
 #endif
@@ -1569,8 +1689,8 @@ LRESULT CALLBACK XamlIslandSubclassProc(
 
 
 
-XamlIslandAdapter::XamlIslandAdapter()
-    : impl_(std::make_unique<Impl>()) {}
+XamlIslandAdapter::XamlIslandAdapter(LinkOpener link_opener)
+    : impl_(std::make_unique<Impl>(std::move(link_opener))) {}
 
 XamlIslandAdapter::~XamlIslandAdapter() = default;
 
@@ -1663,8 +1783,8 @@ bool XamlIslandAdapter::SubmitInput(std::wstring_view project_id,
                                     const std::wstring& value) {
     return impl_ && impl_->SubmitInput(project_id, value);
 }
-bool XamlIslandAdapter::SendKey(std::wstring_view project_id, UINT virtual_key) {
-    return impl_ && impl_->SendKey(project_id, virtual_key);
+bool XamlIslandAdapter::SendKey(std::wstring_view project_id, UINT virtual_key, std::uint32_t modifiers) {
+    return impl_ && impl_->SendKey(project_id, virtual_key, modifiers);
 }
 
 bool XamlIslandAdapter::PreTranslateMessage(const MSG& message) noexcept {

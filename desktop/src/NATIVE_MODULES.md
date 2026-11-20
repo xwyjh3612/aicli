@@ -13,7 +13,7 @@
 | `ui/project_list_view.h/.cpp`、`ui/internal/project_list_drag.inl` | 项目列表、像素滚动、拖动捕获、让位与落位动画 | 列表交互、拖动反馈；通过回调连接模型 |
 | `features/project_order.h`、`ui/internal/project_drag_section.inl` | 组内排序计划、隐藏项目保留、排序保存与视图更新 | 排序规则；保存完整分组，保留当前选择和滚动位置 |
 | `features/project_group_views.h/.cpp` | 已启动独立排序、最近/常用系统视图、使用记录持久化 | 系统视图筛选、自动排名和旧数据初始化；不写入用户分组 |
-| `terminal/terminal_context_menu.h/.cpp` | CLI 右键菜单的操作列表、选区状态、主题和 DPI | 新终端菜单操作；由 `xaml_island_adapter` 调用已有终端接口 |
+| `terminal/terminal_context_menu.h/.cpp`、`terminal/codex_composer_state.h` | CLI 右键菜单、Codex 输入区识别、清空输入和打开链接的入口 | 新终端菜单操作；由 `xaml_island_adapter` 调用终端编辑和链接接口 |
 | `ui/management_dialog.h/.cpp` | 管理窗口入口、外层消息循环、关闭与资源释放 | 管理窗口生命周期 |
 | `ui/settings_content.cpp` | 设置页导航、页面内容、布局、滚动、更新状态 | 新设置页及页面布局 |
 | `ui/management_controls.cpp` | 控件创建、主题应用、初始内容填充、控件文本读写 | 新控件及其初始值 |
@@ -65,5 +65,11 @@ $cmake = 'cmake'
 运行 `desktop/tools/test-terminal-context-menu.ps1`，使用自己的临时包和 PowerShell 会话验证
 真实鼠标右键和菜单点击、中文多行选区复制、粘贴、全选、复制全部、取消、键盘菜单、
 深层 XAML 窗口的右键路由及项目切换。
+链接回归覆盖普通网址、OSC 8 显示文字链接、原始查询参数和锚点、普通文本及项目切换。
 自动回归会短暂显示自己的测试窗口，完成菜单操作后恢复鼠标位置和之前的前台窗口。
 测试结束撤销本次注册的测试包；加 `-Interactive` 可手动检查菜单，关闭测试窗口后完成清理。
+
+加 `-Codex` 验证真实 Codex 的中文、多行、光标在中间、80 行草稿、6000 字符文本和重复清空。
+测试使用临时目录里的新会话，以临时外部编辑器读取草稿作为独立校验；换行先验证 Shift+Enter 编辑路径。
+加 `-Interactive -Codex` 打开同一终端实现的手动体验窗口，使用新的测试会话，不恢复已有会话。
+加 `-Headless` 可在锁屏时验证菜单可用性、真实终端的链接和 Codex 草稿，不使用系统鼠标、剪贴板或抢占前台；这不替代真实点击及复制/粘贴验证。
